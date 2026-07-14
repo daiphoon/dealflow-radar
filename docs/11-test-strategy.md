@@ -42,15 +42,17 @@
 
 实际执行结果记录在[实施记录](IMPLEMENTATION_LOG.md)。
 
-## 6. 第 2 阶段拟用命令
+## 6. 第 2 阶段验收命令
 
-依赖和代码尚未创建，以下仅定义未来验收入口：
-
-```text
-pytest tests/unit
-pytest tests/integration -m "not external"
-alembic upgrade head
-pytest tests/e2e/test_mock_vertical_slice.py
+```bash
+uv run ruff check backend migrations scripts tests
+uv run pytest -q
+DATABASE_URL=sqlite:////tmp/dealflow_radar.db uv run alembic upgrade head
+POSTGRES_RLS_DATABASE_URL='postgresql+psycopg://受限应用账户:本地密码@127.0.0.1:5432/equity_radar' uv run pytest -q tests/integration/test_postgres_rls.py
+cd frontend
+npm audit
+npm run typecheck
+npm run build
 ```
 
-任何失败必须如实报告；不得因测试环境缺失而声称功能完成。
+当前自动测试覆盖严格事件 Schema、Mock 合约、空库迁移往返、PostgreSQL DDL/RLS 编译、文档/事件幂等、人工审核发布、证据与快照、基金隔离、同步查询零 Provider 调用以及刷新任务合并。真实 PostgreSQL RLS 测试默认跳过，显式提供受限账户 URL 后验证账户非所有者/非超级用户/无 `BYPASSRLS`、6 张表启用 RLS，以及无上下文、跨租户、跨基金和无授权查询隔离。2026-07-14 已完成该测试及 API/服务端渲染页面的人工端到端验收；2026-07-15 已完成公司列表和详情页的桌面浏览器视觉验收。

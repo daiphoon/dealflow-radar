@@ -4,16 +4,70 @@
 
 ## 当前状态
 
-当前为 `DEMO / VALIDATION` 的第 1 阶段，仅完成产品、数据、架构、安全、成本和实施设计。没有应用代码、依赖安装、真实外部调用或生产部署。
+当前为 `DEMO / VALIDATION` 第 2 阶段候选版本，已实现并验证最小数据闭环：
 
-默认安全开关：
+- 10 家虚构公司及两个虚构租户/基金；
+- Mock 文档幂等导入、主体精确匹配、候选事件、证据和人工审核；
+- 审核通过后事务化发布事件并生成当前公司快照；
+- 公司列表、公司详情、证据、新鲜度和授权基金投资概览；
+- 刷新任务 `dry-run` 与重复任务合并；
+- 应用层基金授权过滤及 PostgreSQL RLS 策略迁移；
+- 外部搜索、模型、付费 API 和自动刷新默认全部关闭。
 
-```env
-APP_MODE=demo
-EXTERNAL_CALLS_ENABLED=false
-PAID_API_CALLS_ENABLED=false
-AUTO_REFRESH_ENABLED=false
+本机已完成 PostgreSQL 16 迁移、Schema 漂移检查、非表所有者 `NOBYPASSRLS` 账户的租户/基金隔离，以及 API 和服务端渲染页面的端到端验证。该版本仍不能视为生产可用：SQLite 只用于离线自动测试，测试身份 Header 也不是生产认证系统。
+
+## 本地启动
+
+要求 Python 3.12、[uv](https://docs.astral.sh/uv/) 和 Node.js 20 以上。事实主库推荐 PostgreSQL 16：
+
+```bash
+export POSTGRES_PASSWORD='请设置迁移账户本地密码'
+export APP_DATABASE_PASSWORD='请设置另一个应用账户本地密码'
+export DATABASE_ADMIN_URL="postgresql+psycopg://demo_user:${POSTGRES_PASSWORD}@127.0.0.1:5432/equity_radar"
+export DATABASE_URL="postgresql+psycopg://equity_app:${APP_DATABASE_PASSWORD}@127.0.0.1:5432/equity_radar"
+docker compose up -d db
+uv sync --all-groups
+DATABASE_URL="$DATABASE_ADMIN_URL" uv run alembic upgrade head
+DATABASE_URL="$DATABASE_ADMIN_URL" uv run python -m scripts.seed_demo
+uv run python -m scripts.bootstrap_local_database
+uv run uvicorn backend.app.main:app --reload
 ```
+
+`demo_user` 只执行迁移和虚构数据导入；API 默认使用 `equity_app`。初始化脚本可重复执行，会创建或更新该应用账户、撤销建库和绕过 RLS 等高权限，并授予当前及未来迁移表的必要权限。两个本地密码不得相同，也不得提交到 Git。
+
+如果本机暂时没有 PostgreSQL，可用 SQLite 完成无真实数据的离线烟测：
+
+```bash
+export DATABASE_URL='sqlite:///./data/demo.db'
+uv sync --all-groups
+uv run alembic upgrade head
+uv run python -m scripts.seed_demo
+uv run uvicorn backend.app.main:app --reload
+```
+
+另开终端启动前端：
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+访问 `http://127.0.0.1:3000`。前端默认使用虚构机构管理员身份；API 调试可访问 `http://127.0.0.1:8000/docs`。初始事件都在人工审核队列中，审核通过前不会显示为已发布事实。
+
+## 验证
+
+```bash
+uv run ruff check backend migrations scripts tests
+uv run pytest -q
+POSTGRES_RLS_DATABASE_URL="$DATABASE_URL" uv run pytest -q tests/integration/test_postgres_rls.py
+cd frontend
+npm audit
+npm run typecheck
+npm run build
+```
+
+默认测试不会调用付费服务；真实 PostgreSQL RLS 测试只有显式提供受限账户 URL 时才运行。
 
 ## 核心原则
 
@@ -41,5 +95,3 @@ AUTO_REFRESH_ENABLED=false
 | 离线测试与验收 | [测试策略](docs/11-test-strategy.md) |
 | 部署、恢复与故障处置 | [运维手册](docs/12-operations-runbook.md) |
 | 已确认架构决定 | [ADR 索引](docs/DECISIONS/README.md) |
-
-第 2 阶段开始前需先审核本阶段设计，详见[实施计划](docs/10-implementation-plan.md)。

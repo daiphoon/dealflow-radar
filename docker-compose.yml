@@ -1,4 +1,6 @@
-# 第 1 阶段设计草案；本阶段不启动服务。
+# 本地 PostgreSQL 运行时；需先安装 Docker 兼容运行环境并设置密码。
+name: dealflow-radar
+
 services:
   db:
     image: postgres:16
