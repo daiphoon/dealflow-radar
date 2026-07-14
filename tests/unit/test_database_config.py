@@ -15,6 +15,25 @@ def test_default_database_url_uses_restricted_application_role(
     assert make_url(Settings.from_env().database_url).username == "equity_app"
 
 
+def test_refresh_policy_is_configured_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REFRESH_POLICY_VERSION", "validation-v2")
+    monkeypatch.setenv("RECENT_QUERY_TTL_DAYS", "9")
+    monkeypatch.setenv("REFRESH_REQUEST_COOLDOWN_HOURS", "6")
+
+    policy = Settings.from_env().refresh_policy
+
+    assert policy.version == "validation-v2"
+    assert policy.recent_query_ttl_days == 9
+    assert policy.request_cooldown_hours == 6
+
+
+def test_refresh_policy_rejects_non_positive_intervals(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RECENT_QUERY_TTL_DAYS", "0")
+
+    with pytest.raises(ValueError, match="RECENT_QUERY_TTL_DAYS"):
+        Settings.from_env()
+
+
 def test_bootstrap_rejects_shared_database_password() -> None:
     with pytest.raises(RuntimeError, match="passwords must differ"):
         bootstrap_application_role(

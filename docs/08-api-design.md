@@ -10,8 +10,8 @@
 
 | 方法与路径 | 用途 | 关键行为 |
 | --- | --- | --- |
-| `GET /companies` | 公司列表 | 按权限、新鲜度、风险和关注筛选 |
-| `GET /companies/{id}` | 公司详情 | 读快照/事件/指标；过期时可合并后台任务 |
+| `GET /companies` | 公司列表 | 按权限展示新鲜度和风险；不因列表访问批量入队 |
+| `GET /companies/{id}` | 公司详情 | 读快照/事件/指标；过期且自动刷新开启时创建或合并后台任务 |
 | `GET /companies/{id}/changes?since=` | 上次查看后变化 | 只返回版本化事实变化和纠正撤回 |
 | `GET /companies/{id}/events` | 事件时间线 | 仅按权限返回发布状态与证据元数据 |
 | `GET /events/{id}/evidence` | 证据 | 按许可返回最小片段或受控存储引用 |
@@ -25,6 +25,8 @@
 | `GET /usage` | 成本仪表盘 | 聚合租户/公司/Provider/有效事件成本 |
 
 `POST /refresh` 的响应明确区分 `fresh_noop`、`queued`、`merged`、`cooldown_deferred`、`budget_deferred`、`external_disabled`。`dry_run=true` 时只返回计划 Provider、搜索数、Token 上界和预计费用，不产生外部调用。
+
+按需缓存 V1 的 `freshness_status` 由当前快照 `last_checked_at` 与配置 TTL 动态计算。首次过期详情请求返回 `stale` 并完成入队；已有活动任务时返回 `refreshing`。`AUTO_REFRESH_ENABLED=false` 时只返回状态，不创建任务；无论开关如何，同步请求都不调用 Provider。
 
 ## 3. Pydantic v2 事件候选 Schema
 

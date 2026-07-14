@@ -74,7 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def companies(
         user: User = Depends(get_current_user), session: Session = Depends(get_session)
     ) -> list[CompanyListItem]:
-        return list_companies(session, user.id)
+        return list_companies(session, user.id, app.state.settings.refresh_policy)
 
     @app.get("/api/v1/companies/{company_id}", response_model=CompanyDetail)
     def company_detail(
@@ -83,7 +83,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session: Session = Depends(get_session),
     ) -> CompanyDetail:
         try:
-            return get_company_detail(session, user.id, company_id)
+            settings = app.state.settings
+            return get_company_detail(
+                session,
+                user,
+                company_id,
+                settings.refresh_policy,
+                auto_refresh_enabled=settings.auto_refresh_enabled,
+            )
         except NotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
 
@@ -131,7 +138,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session: Session = Depends(get_session),
     ) -> RefreshResult:
         try:
-            return request_refresh(session, user, company_id, dry_run=dry_run)
+            return request_refresh(
+                session,
+                user,
+                company_id,
+                app.state.settings.refresh_policy,
+                dry_run=dry_run,
+            )
         except NotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
 

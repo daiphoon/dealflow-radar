@@ -213,6 +213,11 @@ a {
   background: #f9e4e0;
 }
 
+.status-refreshing {
+  color: #725014;
+  background: #fff0cf;
+}
+
 .status-unknown,
 .risk-unknown,
 .risk-none {

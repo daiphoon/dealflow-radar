@@ -24,6 +24,13 @@ const riskLabels: Record<string, string> = {
   critical: "严重风险",
 };
 
+const freshnessLabels: Record<string, string> = {
+  fresh: "数据新鲜",
+  stale: "数据已过期",
+  refreshing: "后台更新中",
+  unknown: "待生成快照",
+};
+
 function formatDate(value: string | null): string {
   if (!value) return "未知";
   return new Intl.DateTimeFormat("zh-CN", {
@@ -96,7 +103,7 @@ export default async function CompanyDetailPage({
             </p>
           </div>
           <span className={`status status-${company.freshness_status}`}>
-            {company.freshness_status === "fresh" ? "数据新鲜" : "需要更新"}
+            {freshnessLabels[company.freshness_status] ?? company.freshness_status}
           </span>
         </section>
 

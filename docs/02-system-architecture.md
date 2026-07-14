@@ -93,6 +93,8 @@ sequenceDiagram
 
 同公司并发请求先查活动任务并合并；冷却未过或预算不足只返回状态。搜索缓存按 Provider、规范查询、身份版本和时间窗复用，文档缓存按来源记录 ID、URL、ETag/Last-Modified 与内容哈希复用。无新内容时不得调用 LLM或重建完整报告。
 
+按需缓存 V1 先使用带版本号的环境配置：最近查询 TTL 默认 14 天，请求冷却默认 24 小时。公司列表只计算并展示新鲜度，不触发整页公司批量入队；公司详情在 `AUTO_REFRESH_ENABLED=true` 且状态为 `stale` 或 `unknown` 时创建或合并零成本后台任务。首次响应仍返回旧数据及原新鲜度，后续在活动任务存在时显示 `refreshing`。完整 `refresh_policies` 表、`next_check_at`、Cron 和 Worker 仍按第 4 阶段实施，不因本次 V1 提前引入。
+
 ## 5. 后台流水线
 
 1. Scheduler 按 `next_check_at`、关注、近期事件、风险、预算选公司。
