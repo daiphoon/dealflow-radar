@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -28,6 +29,7 @@ from backend.app.models import (
     RefreshJob,
     ReviewQueue,
     UsageLedger,
+    utc_now,
 )
 from backend.app.providers import MockResearchProvider
 
@@ -211,6 +213,89 @@ def test_refresh_dry_run_and_duplicate_job_merge(client: TestClient, migrated_ap
         headers=ALPHA_HEADERS,
     )
     assert cooldown_merge.json() == {**queued.json(), "status": "merged"}
+
+
+def test_detail_query_uses_ttl_and_enqueues_only_when_enabled(
+    client: TestClient,
+    migrated_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ingest(client)
+    with migrated_app.state.session_factory() as session:
+        review_id = session.scalar(
+            select(ReviewQueue.id)
+            .join(Event, Event.id == ReviewQueue.event_id)
+            .where(Event.company_id == SHARED_COMPANY_ID)
+        )
+    assert review_id is not None
+    approved = client.post(
+        f"/api/v1/reviews/{review_id}/decision",
+        headers=ALPHA_HEADERS,
+        json={"decision": "approve", "reason": "验证按需刷新缓存规则"},
+    )
+    assert approved.status_code == 200
+
+    def fail_if_sync_query_loads_provider(_: MockResearchProvider) -> None:
+        raise AssertionError("同步查询不得调用 Provider")
+
+    monkeypatch.setattr(MockResearchProvider, "load", fail_if_sync_query_loads_provider)
+    migrated_app.state.settings = replace(
+        migrated_app.state.settings,
+        auto_refresh_enabled=True,
+    )
+
+    fresh_detail = client.get(f"/api/v1/companies/{SHARED_COMPANY_ID}", headers=ALPHA_HEADERS)
+    assert fresh_detail.status_code == 200
+    assert fresh_detail.json()["freshness_status"] == "fresh"
+    with migrated_app.state.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(RefreshJob)) == 0
+        snapshot = session.scalar(
+            select(CompanySnapshot).where(
+                CompanySnapshot.company_id == SHARED_COMPANY_ID,
+                CompanySnapshot.is_current.is_(True),
+            )
+        )
+        assert snapshot is not None
+        snapshot.last_checked_at = utc_now() - timedelta(days=15)
+        session.commit()
+
+    stale_list = client.get("/api/v1/companies", headers=ALPHA_HEADERS)
+    stale_item = next(item for item in stale_list.json() if item["id"] == str(SHARED_COMPANY_ID))
+    assert stale_item["freshness_status"] == "stale"
+    with migrated_app.state.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(RefreshJob)) == 0
+
+    migrated_app.state.settings = replace(
+        migrated_app.state.settings,
+        auto_refresh_enabled=False,
+    )
+    disabled_detail = client.get(f"/api/v1/companies/{SHARED_COMPANY_ID}", headers=ALPHA_HEADERS)
+    assert disabled_detail.json()["freshness_status"] == "stale"
+    with migrated_app.state.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(RefreshJob)) == 0
+
+    migrated_app.state.settings = replace(
+        migrated_app.state.settings,
+        auto_refresh_enabled=True,
+    )
+    queued_detail = client.get(f"/api/v1/companies/{SHARED_COMPANY_ID}", headers=ALPHA_HEADERS)
+    assert queued_detail.json()["freshness_status"] == "stale"
+    with migrated_app.state.session_factory() as session:
+        jobs = list(session.scalars(select(RefreshJob)))
+        assert len(jobs) == 1
+        assert jobs[0].refresh_reason == "stale_query"
+        assert jobs[0].estimated_cost == Decimal("0")
+        assert jobs[0].cooldown_until is not None
+
+    merged_detail = client.get(f"/api/v1/companies/{SHARED_COMPANY_ID}", headers=ALPHA_HEADERS)
+    assert merged_detail.json()["freshness_status"] == "refreshing"
+    refreshing_list = client.get("/api/v1/companies", headers=ALPHA_HEADERS)
+    refreshing_item = next(
+        item for item in refreshing_list.json() if item["id"] == str(SHARED_COMPANY_ID)
+    )
+    assert refreshing_item["freshness_status"] == "refreshing"
+    with migrated_app.state.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(RefreshJob)) == 1
 
 
 def test_demo_auth_and_role_boundaries(client: TestClient) -> None:

@@ -7,6 +7,7 @@ export const dynamic = "force-dynamic";
 const freshnessLabels: Record<string, string> = {
   fresh: "新鲜",
   stale: "已过期",
+  refreshing: "后台更新中",
   unknown: "待生成快照",
 };
 

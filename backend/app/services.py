@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from backend.app.config import RefreshPolicy
 from backend.app.demo import (
     ALPHA_FUND_ID,
     ALPHA_TENANT_ID,
@@ -456,11 +458,45 @@ def _event_out(session: Session, event: Event) -> EventOut:
     )
 
 
-def list_companies(session: Session, user_id: UUID) -> list[CompanyListItem]:
+def _active_refresh_job(session: Session, tenant_id: UUID, company_id: UUID) -> RefreshJob | None:
+    return session.scalar(
+        select(RefreshJob).where(
+            RefreshJob.tenant_id == tenant_id,
+            RefreshJob.company_id == company_id,
+            RefreshJob.job_type == "mock_refresh",
+            RefreshJob.status.in_(["queued", "running"]),
+        )
+    )
+
+
+def _snapshot_freshness_status(
+    snapshot: CompanySnapshot | None,
+    policy: RefreshPolicy,
+    now: datetime,
+    active_job: RefreshJob | None,
+) -> str:
+    if active_job is not None:
+        return "refreshing"
+    if snapshot is None:
+        return "unknown"
+    if snapshot.freshness_status in {"unknown", "budget_deferred"}:
+        return snapshot.freshness_status
+    last_checked_at = snapshot.last_checked_at
+    if last_checked_at.tzinfo is None:
+        last_checked_at = last_checked_at.replace(tzinfo=UTC)
+    expires_at = last_checked_at + timedelta(days=policy.recent_query_ttl_days)
+    return "stale" if expires_at <= now else "fresh"
+
+
+def list_companies(session: Session, user_id: UUID, policy: RefreshPolicy) -> list[CompanyListItem]:
     investment_rows = _authorized_investments(session, user_id)
+    user = session.get(User, user_id)
+    if user is None:
+        return []
     company_ids = sorted({row[0].company_id for row in investment_rows}, key=str)
     items: list[CompanyListItem] = []
     risk_order = {"none": 0, "low": 1, "moderate": 2, "high": 3, "critical": 4}
+    now = utc_now()
     for company_id in company_ids:
         company = session.get(Company, company_id)
         if company is None:
@@ -487,7 +523,12 @@ def list_companies(session: Session, user_id: UUID) -> list[CompanyListItem]:
                 id=company.id,
                 legal_name=company.legal_name,
                 identity_status=company.identity_status,
-                freshness_status=snapshot.freshness_status if snapshot else "unknown",
+                freshness_status=_snapshot_freshness_status(
+                    snapshot,
+                    policy,
+                    now,
+                    _active_refresh_job(session, user.tenant_id, company_id),
+                ),
                 last_checked_at=snapshot.last_checked_at if snapshot else None,
                 latest_event_title=events[0].title if events else None,
                 highest_risk=highest_risk,
@@ -497,8 +538,15 @@ def list_companies(session: Session, user_id: UUID) -> list[CompanyListItem]:
     return items
 
 
-def get_company_detail(session: Session, user_id: UUID, company_id: UUID) -> CompanyDetail:
-    investment_rows = _authorized_investments(session, user_id, company_id)
+def get_company_detail(
+    session: Session,
+    user: User,
+    company_id: UUID,
+    policy: RefreshPolicy,
+    *,
+    auto_refresh_enabled: bool,
+) -> CompanyDetail:
+    investment_rows = _authorized_investments(session, user.id, company_id)
     if not investment_rows:
         raise NotFoundError("company not found")
     company = session.get(Company, company_id)
@@ -509,6 +557,13 @@ def get_company_detail(session: Session, user_id: UUID, company_id: UUID) -> Com
             CompanySnapshot.company_id == company_id, CompanySnapshot.is_current.is_(True)
         )
     )
+    now = utc_now()
+    freshness_status = _snapshot_freshness_status(
+        snapshot,
+        policy,
+        now,
+        _active_refresh_job(session, user.tenant_id, company_id),
+    )
     events = list(
         session.scalars(
             select(Event)
@@ -516,14 +571,14 @@ def get_company_detail(session: Session, user_id: UUID, company_id: UUID) -> Com
             .order_by(Event.occurred_at.desc())
         )
     )
-    return CompanyDetail(
+    detail = CompanyDetail(
         id=company.id,
         legal_name=company.legal_name,
         registered_region=company.registered_region,
         identity_status=company.identity_status,
         data_as_of=snapshot.data_as_of if snapshot else None,
         last_checked_at=snapshot.last_checked_at if snapshot else None,
-        freshness_status=snapshot.freshness_status if snapshot else "unknown",
+        freshness_status=freshness_status,
         information_gaps=snapshot.information_gaps if snapshot else ["尚无已发布快照"],
         investments=[
             InvestmentOut(
@@ -540,6 +595,16 @@ def get_company_detail(session: Session, user_id: UUID, company_id: UUID) -> Com
         ],
         events=[_event_out(session, event) for event in events],
     )
+    if auto_refresh_enabled and freshness_status in {"stale", "unknown"}:
+        _create_or_merge_refresh_job(
+            session,
+            user.tenant_id,
+            company_id,
+            policy,
+            refresh_reason="stale_query",
+            now=now,
+        )
+    return detail
 
 
 def decide_review(
@@ -613,38 +678,85 @@ def decide_review(
     return review
 
 
+def _refresh_merge_candidate(
+    session: Session, tenant_id: UUID, company_id: UUID, now: datetime
+) -> RefreshJob | None:
+    return session.scalar(
+        select(RefreshJob)
+        .where(
+            RefreshJob.tenant_id == tenant_id,
+            RefreshJob.company_id == company_id,
+            RefreshJob.job_type == "mock_refresh",
+            or_(
+                RefreshJob.status.in_(["queued", "running"]),
+                RefreshJob.cooldown_until > now,
+            ),
+        )
+        .order_by(RefreshJob.created_at.desc())
+    )
+
+
+def _create_or_merge_refresh_job(
+    session: Session,
+    tenant_id: UUID,
+    company_id: UUID,
+    policy: RefreshPolicy,
+    *,
+    refresh_reason: str,
+    now: datetime,
+) -> RefreshResult:
+    existing = _refresh_merge_candidate(session, tenant_id, company_id, now)
+    if existing is not None:
+        return RefreshResult(status="merged", job_id=existing.id)
+    cooldown = timedelta(hours=policy.request_cooldown_hours)
+    cooldown_bucket = int(now.timestamp() // cooldown.total_seconds())
+    idempotency_key = _sha256(
+        f"{tenant_id}:{company_id}:mock_refresh:{policy.version}:{cooldown_bucket}"
+    )
+    job = RefreshJob(
+        tenant_id=tenant_id,
+        company_id=company_id,
+        job_type="mock_refresh",
+        refresh_reason=refresh_reason,
+        status="queued",
+        idempotency_key=idempotency_key,
+        estimated_cost=Decimal("0"),
+        cooldown_until=now + cooldown,
+    )
+    try:
+        with session.begin_nested():
+            session.add(job)
+            session.flush()
+    except IntegrityError:
+        existing = _refresh_merge_candidate(session, tenant_id, company_id, now)
+        if existing is None:
+            existing = session.scalar(
+                select(RefreshJob).where(RefreshJob.idempotency_key == idempotency_key)
+            )
+        if existing is None:
+            raise
+        return RefreshResult(status="merged", job_id=existing.id)
+    session.commit()
+    return RefreshResult(status="queued", job_id=job.id)
+
+
 def request_refresh(
-    session: Session, user: User, company_id: UUID, *, dry_run: bool
+    session: Session,
+    user: User,
+    company_id: UUID,
+    policy: RefreshPolicy,
+    *,
+    dry_run: bool,
 ) -> RefreshResult:
     if not _authorized_investments(session, user.id, company_id):
         raise NotFoundError("company not found")
     if dry_run:
         return RefreshResult(status="dry_run")
-    idempotency_key = _sha256(
-        f"{user.tenant_id}:{company_id}:mock_refresh:{datetime.now(UTC).date()}"
-    )
-    existing = session.scalar(
-        select(RefreshJob).where(
-            RefreshJob.tenant_id == user.tenant_id,
-            RefreshJob.company_id == company_id,
-            RefreshJob.job_type == "mock_refresh",
-            or_(
-                RefreshJob.status.in_(["queued", "running"]),
-                RefreshJob.idempotency_key == idempotency_key,
-            ),
-        )
-    )
-    if existing is not None:
-        return RefreshResult(status="merged", job_id=existing.id)
-    job = RefreshJob(
-        tenant_id=user.tenant_id,
-        company_id=company_id,
-        job_type="mock_refresh",
+    return _create_or_merge_refresh_job(
+        session,
+        user.tenant_id,
+        company_id,
+        policy,
         refresh_reason="manual_request",
-        status="queued",
-        idempotency_key=idempotency_key,
-        estimated_cost=Decimal("0"),
+        now=utc_now(),
     )
-    session.add(job)
-    session.commit()
-    return RefreshResult(status="queued", job_id=job.id)
