@@ -31,7 +31,7 @@ Demo 只使用虚构公司和基金，不放入真实水印、投资人身份或
 
 公开快照构建器只读公开事件/指标；基金投资概览在响应层按授权单独拼装，不能缓存为全局公司快照。
 
-第 2 阶段迁移已为 `fund_access_grants`、`funds`、`investments`、`review_queue`、`refresh_jobs` 和 `usage_ledger` 定义 RLS 策略；API 在请求事务中设置测试用户和租户上下文。SQLite 只验证应用层过滤，不能验证 RLS。迁移账户仍可作为表所有者绕过策略，真实数据环境必须使用非所有者、无 `BYPASSRLS` 的应用账户，并在 PostgreSQL 实例上完成越权测试后才能开放。
+第 2 阶段迁移已为 `fund_access_grants`、`funds`、`investments`、`review_queue`、`refresh_jobs` 和 `usage_ledger` 定义 RLS 策略；API 在请求事务中设置测试用户和租户上下文。SQLite 只验证应用层过滤，不能验证 RLS。2026-07-14 已在 PostgreSQL 16 上使用非表所有者、无 `BYPASSRLS` 权限的应用账户完成无上下文、跨租户、跨基金和无基金授权负向验证。迁移账户仍可作为表所有者绕过策略，真实数据环境必须继续分离迁移账户和日常应用账户。
 
 ## 4. 敏感操作审计
 

@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-当前为 `DEMO / VALIDATION` 第 2 阶段候选版本，已实现并离线验证最小数据闭环：
+当前为 `DEMO / VALIDATION` 第 2 阶段候选版本，已实现并验证最小数据闭环：
 
 - 10 家虚构公司及两个虚构租户/基金；
 - Mock 文档幂等导入、主体精确匹配、候选事件、证据和人工审核；
@@ -14,7 +14,7 @@
 - 应用层基金授权过滤及 PostgreSQL RLS 策略迁移；
 - 外部搜索、模型、付费 API 和自动刷新默认全部关闭。
 
-本机尚未完成真实 PostgreSQL 运行验证，因此该阶段不能视为生产可用；SQLite 只用于离线开发和自动测试，不是事实主库。测试身份 Header 也不是生产认证系统。
+本机已完成 PostgreSQL 16 迁移、Schema 漂移检查、非表所有者 `NOBYPASSRLS` 账户的租户/基金隔离，以及 API 和服务端渲染页面的端到端验证。该版本仍不能视为生产可用：SQLite 只用于离线自动测试，测试身份 Header 也不是生产认证系统。
 
 ## 本地启动
 
@@ -28,6 +28,8 @@ uv run alembic upgrade head
 uv run python -m scripts.seed_demo
 uv run uvicorn backend.app.main:app --reload
 ```
+
+上例为本地快速启动，`demo_user` 是迁移和导入账户。真实数据环境不得让日常应用使用表所有者账户；应用应改用单独的非表所有者、无 `BYPASSRLS` 权限账户。第 2 阶段已用该账户完成越权负向验证，结果见[安全合规](docs/07-security-compliance.md)与[实施记录](docs/IMPLEMENTATION_LOG.md)。
 
 如果本机暂时没有 PostgreSQL，可用 SQLite 完成无真实数据的离线烟测：
 

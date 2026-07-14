@@ -54,4 +54,4 @@ npm run typecheck
 npm run build
 ```
 
-当前自动测试覆盖严格事件 Schema、Mock 合约、空库迁移往返、PostgreSQL DDL/RLS 编译、文档/事件幂等、人工审核发布、证据与快照、基金隔离、同步查询零 Provider 调用以及刷新任务合并。真实 PostgreSQL 实例和浏览器视觉检查仍需单独验收；不得因 SQLite 或 HTTP 烟测通过而声称两者已完成。
+当前自动测试覆盖严格事件 Schema、Mock 合约、空库迁移往返、PostgreSQL DDL/RLS 编译、文档/事件幂等、人工审核发布、证据与快照、基金隔离、同步查询零 Provider 调用以及刷新任务合并。2026-07-14 已另行完成 PostgreSQL 16 实例、非所有者 RLS、API 和服务端渲染页面的人工端到端验收；浏览器视觉截图仍需单独完成，不得以 HTTP 烟测替代视觉结论。
