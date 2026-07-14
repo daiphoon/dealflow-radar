@@ -93,7 +93,9 @@ sequenceDiagram
 
 同公司并发请求先查活动任务并合并；冷却未过或预算不足只返回状态。搜索缓存按 Provider、规范查询、身份版本和时间窗复用，文档缓存按来源记录 ID、URL、ETag/Last-Modified 与内容哈希复用。无新内容时不得调用 LLM或重建完整报告。
 
-按需缓存 V1 先使用带版本号的环境配置：最近查询 TTL 默认 14 天，请求冷却默认 24 小时。公司列表只计算并展示新鲜度，不触发整页公司批量入队；公司详情在 `AUTO_REFRESH_ENABLED=true` 且状态为 `stale` 或 `unknown` 时创建或合并零成本后台任务。首次响应仍返回旧数据及原新鲜度，后续在活动任务存在时显示 `refreshing`。完整 `refresh_policies` 表、`next_check_at`、Cron 和 Worker 仍按第 4 阶段实施，不因本次 V1 提前引入。
+按需缓存 V1 先使用带版本号的环境配置：最近查询 TTL 默认 14 天，请求冷却默认 24 小时。公司列表只计算并展示新鲜度，不触发整页公司批量入队；公司详情在 `AUTO_REFRESH_ENABLED=true` 且状态为 `stale` 或 `unknown` 时创建或合并零成本后台任务。首次响应仍返回旧数据及原新鲜度，后续在活动任务存在时显示 `refreshing`。
+
+Mock Worker V1 仅为虚构数据提供单任务命令入口：按租户使用 `FOR UPDATE SKIP LOCKED` 领取 `mock_refresh`，写入可配置的短租约与心跳，过期后允许重领，并用 `usage_ledger` 记录零次外部调用和零费用。有当前快照时只更新 `last_checked_at` 与新鲜度，保留 `data_as_of`；无快照时不生成事实，继续保持 `unknown`。完整 `refresh_policies` 表、`next_check_at`、Cron、常驻 Worker、真实 Provider 流水线和重试仍按后续阶段实施。
 
 ## 5. 后台流水线
 

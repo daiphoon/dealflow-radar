@@ -303,6 +303,7 @@ class RefreshJob(TimestampMixin, Base):
     estimated_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"))
     cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ReviewQueue(TimestampMixin, Base):

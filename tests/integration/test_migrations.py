@@ -20,6 +20,9 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     command.check(config)
     engine = create_engine(database_url)
     assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 18
+    assert "heartbeat_at" in {
+        column["name"] for column in inspect(engine).get_columns("refresh_jobs")
+    }
 
     command.downgrade(config, "base")
     assert inspect(engine).get_table_names() == ["alembic_version"]
@@ -50,3 +53,4 @@ def test_postgresql_migration_compiles_without_connecting(
         "CREATE UNIQUE INDEX uq_refresh_job_active "
         "ON refresh_jobs (tenant_id, company_id, job_type)" in ddl
     )
+    assert "ADD COLUMN heartbeat_at TIMESTAMP WITH TIME ZONE" in ddl

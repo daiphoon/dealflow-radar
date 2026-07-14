@@ -1,6 +1,6 @@
 # 12 运维手册（设计）
 
-当前没有可运行应用；本手册定义后续 Demo 的最小操作边界。
+当前已有可本地运行的 Demo；本手册定义当前能力和后续部署的最小操作边界。
 
 ## 1. 部署前检查
 
@@ -20,6 +20,17 @@ Docker Compose 文件只依赖标准容器、环境变量和卷，可迁移到�
 ## 3. 安全的更新操作
 
 更新前先运行 `dry-run`，核对公司、原因、Provider、预计搜索/Token/商业数据调用和费用。只在变更单明确授权的范围内开启 `EXTERNAL_CALLS_ENABLED`；付费能力还需 `PAID_API_CALLS_ENABLED` 与正预算。任务完成后立即核对 `usage_ledger` 和有效产出，不长期保留调试日志正文。
+
+### Mock Worker V1（仅 Demo）
+
+先确认数据库中已有 `mock_refresh` 任务，再按虚构租户运行一次：
+
+```bash
+export WORKER_TENANT_ID="$(uv run python -c 'from backend.app.demo import ALPHA_TENANT_ID; print(ALPHA_TENANT_ID)')"
+APP_MODE=demo uv run python -m scripts.run_mock_worker
+```
+
+命令每次最多领取一个任务；无任务返回 `idle`，非 `demo` 模式拒绝运行。该入口不会加载 Provider 或访问网络：有当前快照时模拟无变化检查并保留 `data_as_of`，无快照时保持 `unknown`。运行后核对任务已完成、租约已释放、心跳存在，且 `usage_ledger.external_calls = 0`、`estimated_cost = 0`。它不能代替真实公司信息检查，也不是常驻 Worker 或 Cron。
 
 ## 4. 常见事件处置
 
