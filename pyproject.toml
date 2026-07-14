@@ -22,7 +22,10 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-markers = ["external: 需要显式授权的外部集成测试"]
+markers = [
+  "external: 需要显式授权的外部集成测试",
+  "postgres: 需要显式提供本地 PostgreSQL 测试数据库",
+]
 
 [tool.ruff]
 line-length = 100

@@ -21,15 +21,19 @@
 要求 Python 3.12、[uv](https://docs.astral.sh/uv/) 和 Node.js 20 以上。事实主库推荐 PostgreSQL 16：
 
 ```bash
-POSTGRES_PASSWORD='请替换为本地密码' docker compose up -d db
-export DATABASE_URL='postgresql+psycopg://demo_user:请替换为本地密码@127.0.0.1:5432/equity_radar'
+export POSTGRES_PASSWORD='请设置迁移账户本地密码'
+export APP_DATABASE_PASSWORD='请设置另一个应用账户本地密码'
+export DATABASE_ADMIN_URL="postgresql+psycopg://demo_user:${POSTGRES_PASSWORD}@127.0.0.1:5432/equity_radar"
+export DATABASE_URL="postgresql+psycopg://equity_app:${APP_DATABASE_PASSWORD}@127.0.0.1:5432/equity_radar"
+docker compose up -d db
 uv sync --all-groups
-uv run alembic upgrade head
-uv run python -m scripts.seed_demo
+DATABASE_URL="$DATABASE_ADMIN_URL" uv run alembic upgrade head
+DATABASE_URL="$DATABASE_ADMIN_URL" uv run python -m scripts.seed_demo
+uv run python -m scripts.bootstrap_local_database
 uv run uvicorn backend.app.main:app --reload
 ```
 
-上例为本地快速启动，`demo_user` 是迁移和导入账户。真实数据环境不得让日常应用使用表所有者账户；应用应改用单独的非表所有者、无 `BYPASSRLS` 权限账户。第 2 阶段已用该账户完成越权负向验证，结果见[安全合规](docs/07-security-compliance.md)与[实施记录](docs/IMPLEMENTATION_LOG.md)。
+`demo_user` 只执行迁移和虚构数据导入；API 默认使用 `equity_app`。初始化脚本可重复执行，会创建或更新该应用账户、撤销建库和绕过 RLS 等高权限，并授予当前及未来迁移表的必要权限。两个本地密码不得相同，也不得提交到 Git。
 
 如果本机暂时没有 PostgreSQL，可用 SQLite 完成无真实数据的离线烟测：
 
@@ -56,13 +60,14 @@ npm run dev
 ```bash
 uv run ruff check backend migrations scripts tests
 uv run pytest -q
+POSTGRES_RLS_DATABASE_URL="$DATABASE_URL" uv run pytest -q tests/integration/test_postgres_rls.py
 cd frontend
 npm audit
 npm run typecheck
 npm run build
 ```
 
-所有测试默认离线，且不会调用付费服务。
+默认测试不会调用付费服务；真实 PostgreSQL RLS 测试只有显式提供受限账户 URL 时才运行。
 
 ## 核心原则
 

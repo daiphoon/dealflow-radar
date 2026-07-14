@@ -21,7 +21,7 @@ class Settings:
         return cls(
             database_url=os.getenv(
                 "DATABASE_URL",
-                "postgresql+psycopg://demo_user:replace_me@localhost:5432/equity_radar",
+                "postgresql+psycopg://equity_app:replace_app_password@localhost:5432/equity_radar",
             ),
             app_mode=os.getenv("APP_MODE", "demo"),
             external_calls_enabled=_as_bool(os.getenv("EXTERNAL_CALLS_ENABLED", "false")),
