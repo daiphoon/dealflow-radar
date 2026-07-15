@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充按需缓存 V1：
+当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充按需缓存与 Mock Worker V1：
 
 - 10 家虚构公司及两个虚构租户/基金；
 - Mock 文档幂等导入、主体精确匹配、候选事件、证据和人工审核；
@@ -12,6 +12,7 @@
 - 公司列表、公司详情、证据、新鲜度和授权基金投资概览；
 - 刷新任务 `dry-run`、14 天动态新鲜度、24 小时冷却与重复任务合并；
 - 公司列表只展示状态，不批量触发任务；公司详情过期时仅在自动刷新开关启用后入队；
+- 单次 Mock Worker 可领取一个虚构数据任务，支持租约、过期重领、零费用用量记录和 `stale → fresh` 闭环；
 - 应用层基金授权过滤及 PostgreSQL RLS 策略迁移；
 - 外部搜索、模型、付费 API 和自动刷新默认全部关闭。
 
@@ -37,6 +38,15 @@ uv run uvicorn backend.app.main:app --reload
 `demo_user` 只执行迁移和虚构数据导入；API 默认使用 `equity_app`。初始化脚本可重复执行，会创建或更新该应用账户、撤销建库和绕过 RLS 等高权限，并授予当前及未来迁移表的必要权限。两个本地密码不得相同，也不得提交到 Git。
 
 缓存参数由 `REFRESH_POLICY_VERSION`、`RECENT_QUERY_TTL_DAYS` 和 `REFRESH_REQUEST_COOLDOWN_HOURS` 配置。Demo 默认分别为 `demo-v1`、14 天和 24 小时；`AUTO_REFRESH_ENABLED=false` 时仍会准确显示过期状态，但不会因页面访问创建任务。即使开启自动入队，同步请求也不会调用搜索、模型或付费 API。
+
+已有 `mock_refresh` 任务时，可在另一个终端运行一次虚构数据 Worker：
+
+```bash
+export WORKER_TENANT_ID="$(uv run python -c 'from backend.app.demo import ALPHA_TENANT_ID; print(ALPHA_TENANT_ID)')"
+APP_MODE=demo uv run python -m scripts.run_mock_worker
+```
+
+每次命令最多处理该租户的一个任务；无任务时返回 `idle`。命令要求显式设置 `APP_MODE=demo`，且只接受两个固定虚构租户。此 Worker 不加载 Provider、不访问网络，只用于验证队列闭环：有快照时更新检查时间但保留事实基准日，无快照时保持 `unknown`，不得用于真实公司检查。
 
 如果本机暂时没有 PostgreSQL，可用 SQLite 完成无真实数据的离线烟测：
 
@@ -71,6 +81,8 @@ npm run build
 ```
 
 默认测试不会调用付费服务；真实 PostgreSQL RLS 测试只有显式提供受限账户 URL 时才运行。
+
+GitHub CI 在 Pull Request 和 `main` 推送时使用临时 PostgreSQL 16，一次完成后端静态检查、SQLite 迁移、RLS 测试和前端生产构建。CI 只使用虚构数据与临时凭据，业务外部调用开关保持关闭。
 
 ## 核心原则
 

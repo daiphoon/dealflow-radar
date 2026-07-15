@@ -24,6 +24,7 @@ class RefreshPolicy:
     version: str = "demo-v1"
     recent_query_ttl_days: int = 14
     request_cooldown_hours: int = 24
+    mock_worker_lease_seconds: int = 60
 
     def __post_init__(self) -> None:
         if not self.version.strip():
@@ -32,6 +33,8 @@ class RefreshPolicy:
             raise ValueError("RECENT_QUERY_TTL_DAYS must be a positive integer")
         if self.request_cooldown_hours <= 0:
             raise ValueError("REFRESH_REQUEST_COOLDOWN_HOURS must be a positive integer")
+        if self.mock_worker_lease_seconds <= 0:
+            raise ValueError("MOCK_WORKER_LEASE_SECONDS must be a positive integer")
 
 
 @dataclass(frozen=True)
@@ -58,5 +61,6 @@ class Settings:
                 version=os.getenv("REFRESH_POLICY_VERSION", "demo-v1"),
                 recent_query_ttl_days=_as_positive_int("RECENT_QUERY_TTL_DAYS", 14),
                 request_cooldown_hours=_as_positive_int("REFRESH_REQUEST_COOLDOWN_HOURS", 24),
+                mock_worker_lease_seconds=_as_positive_int("MOCK_WORKER_LEASE_SECONDS", 60),
             ),
         )

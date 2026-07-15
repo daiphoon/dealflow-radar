@@ -19,12 +19,14 @@ def test_refresh_policy_is_configured_from_environment(monkeypatch: pytest.Monke
     monkeypatch.setenv("REFRESH_POLICY_VERSION", "validation-v2")
     monkeypatch.setenv("RECENT_QUERY_TTL_DAYS", "9")
     monkeypatch.setenv("REFRESH_REQUEST_COOLDOWN_HOURS", "6")
+    monkeypatch.setenv("MOCK_WORKER_LEASE_SECONDS", "45")
 
     policy = Settings.from_env().refresh_policy
 
     assert policy.version == "validation-v2"
     assert policy.recent_query_ttl_days == 9
     assert policy.request_cooldown_hours == 6
+    assert policy.mock_worker_lease_seconds == 45
 
 
 def test_refresh_policy_rejects_non_positive_intervals(monkeypatch: pytest.MonkeyPatch) -> None:

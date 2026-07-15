@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      APP_MODE: demo
+      EXTERNAL_CALLS_ENABLED: "false"
+      PAID_API_CALLS_ENABLED: "false"
+      AUTO_REFRESH_ENABLED: "false"
+      RUN_EXTERNAL_TESTS: "false"
+      DATABASE_ADMIN_URL: postgresql+psycopg://demo_user:ci_owner_password@127.0.0.1:5432/equity_radar_ci
+      DATABASE_URL: postgresql+psycopg://equity_app:ci_app_password@127.0.0.1:5432/equity_radar_ci
+      APP_DATABASE_USER: equity_app
+      APP_DATABASE_PASSWORD: ci_app_password
+      POSTGRES_RLS_DATABASE_URL: postgresql+psycopg://equity_app:ci_app_password@127.0.0.1:5432/equity_radar_ci
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: equity_radar_ci
+          POSTGRES_USER: demo_user
+          POSTGRES_PASSWORD: ci_owner_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U demo_user -d equity_radar_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+
+      - name: Install backend dependencies
+        run: uv sync --frozen --all-groups
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Check backend style
+        run: |
+          uv run --frozen ruff check backend migrations scripts tests
+          uv run --frozen ruff format --check backend migrations scripts tests
+
+      - name: Verify SQLite migrations
+        run: |
+          sqlite_path="${RUNNER_TEMP}/dealflow-radar-ci.db"
+          rm -f "${sqlite_path}"
+          DATABASE_URL="sqlite:///${sqlite_path}" uv run --frozen alembic upgrade head
+          DATABASE_URL="sqlite:///${sqlite_path}" uv run --frozen alembic check
+          DATABASE_URL="sqlite:///${sqlite_path}" uv run --frozen alembic downgrade base
+
+      - name: Prepare PostgreSQL RLS test database
+        run: |
+          DATABASE_URL="${DATABASE_ADMIN_URL}" uv run --frozen alembic upgrade head
+          DATABASE_URL="${DATABASE_ADMIN_URL}" uv run --frozen alembic check
+          DATABASE_URL="${DATABASE_ADMIN_URL}" uv run --frozen python -m scripts.seed_demo
+          uv run --frozen python -m scripts.bootstrap_local_database
+
+      - name: Run backend tests
+        run: uv run --frozen pytest -q
+
+      - name: Check and build frontend
+        working-directory: frontend
+        run: |
+          npm run typecheck
+          npm run build
