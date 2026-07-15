@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "batch_id": "manual-example-001",
+  "queried_at": "2026-07-15T08:00:00+08:00",
+  "research_tool": "manual",
+  "agent_name": "本地研究示例",
+  "original_query": "示例公司公开信息",
+  "target_company_hint": "示例星河科技一号有限公司",
+  "license_status": "public",
+  "records": [
+    {
+      "external_record_id": "manual-example-record-001",
+      "company_identity_evidence": {
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": null,
+        "registered_region": "虚构省甲市",
+        "official_website": null
+      },
+      "source_code": "manual_example_official",
+      "source_name": "示例官方来源",
+      "canonical_url": "https://example.invalid/manual-example-001",
+      "source_published_at": "2026-07-14T10:00:00+08:00",
+      "occurred_at": null,
+      "title": "示例公司签署公开测试合同",
+      "evidence_excerpt": "公开材料显示公司签署了一份测试合同，未披露金额。",
+      "event_type": "contract_commercial",
+      "event_subtype": "major_contract",
+      "direction": "positive",
+      "materiality_score": 70,
+      "risk_severity": "low",
+      "confidence_score": 0.95,
+      "source_quality": "A",
+      "facts": [
+        {
+          "name": "contract",
+          "value": "测试合同",
+          "unit": null
+        }
+      ],
+      "uncertainties": [
+        "未披露金额"
+      ],
+      "requires_human_review": true
+    },
+    {
+      "external_record_id": "manual-example-record-002",
+      "company_identity_evidence": {
+        "legal_name": "不存在的示例公司",
+        "credit_code": null,
+        "registered_region": "虚构省甲市",
+        "official_website": null
+      },
+      "source_code": "manual_example_official",
+      "source_name": "示例官方来源",
+      "canonical_url": "https://example.invalid/manual-example-002",
+      "source_published_at": "2026-07-15T10:00:00+08:00",
+      "occurred_at": null,
+      "title": "未匹配公司的公开示例线索",
+      "evidence_excerpt": "公开示例材料提到一个尚未录入公司主数据的主体。",
+      "event_type": "information_quality",
+      "event_subtype": "identity_unresolved",
+      "direction": "unknown",
+      "materiality_score": 20,
+      "risk_severity": "none",
+      "confidence_score": 0.5,
+      "source_quality": "A",
+      "facts": [
+        {
+          "name": "identity",
+          "value": "主体尚未解析",
+          "unit": null
+        }
+      ],
+      "uncertainties": [
+        "无法唯一匹配公司"
+      ],
+      "requires_human_review": true
+    }
+  ]
+}

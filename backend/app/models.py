@@ -160,6 +160,39 @@ class Investment(TimestampMixin, Base):
     visibility_scope: Mapped[str] = mapped_column(String(16), default="fund")
 
 
+class ResearchImport(TimestampMixin, Base):
+    __tablename__ = "research_imports"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "batch_id", name="uq_research_import_batch"),
+        UniqueConstraint(
+            "tenant_id",
+            "file_hash",
+            "parser_version",
+            name="uq_research_import_file_parser",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    imported_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    schema_version: Mapped[str] = mapped_column(String(16))
+    batch_id: Mapped[str] = mapped_column(String(120))
+    queried_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    research_tool: Mapped[str] = mapped_column(String(80))
+    agent_name: Mapped[str | None] = mapped_column(String(120))
+    original_query: Mapped[str] = mapped_column(Text)
+    target_company_hint: Mapped[str] = mapped_column(String(240))
+    source_filename: Mapped[str] = mapped_column(String(255))
+    file_format: Mapped[str] = mapped_column(String(16), default="json")
+    file_hash: Mapped[str] = mapped_column(String(64))
+    parser_version: Mapped[str] = mapped_column(String(16))
+    license_status: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    record_count: Mapped[int] = mapped_column(Integer)
+    resolved_count: Mapped[int] = mapped_column(Integer)
+    unresolved_count: Mapped[int] = mapped_column(Integer)
+
+
 class RawDocument(TimestampMixin, Base):
     __tablename__ = "raw_documents"
     __table_args__ = (
@@ -168,6 +201,9 @@ class RawDocument(TimestampMixin, Base):
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     source_id: Mapped[UUID] = mapped_column(ForeignKey("sources.id"))
+    research_import_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("research_imports.id", ondelete="SET NULL"), index=True
+    )
     external_record_id: Mapped[str] = mapped_column(String(160))
     canonical_url: Mapped[str] = mapped_column(String(1000))
     title: Mapped[str] = mapped_column(String(500))
@@ -308,10 +344,26 @@ class RefreshJob(TimestampMixin, Base):
 
 class ReviewQueue(TimestampMixin, Base):
     __tablename__ = "review_queue"
+    __table_args__ = (
+        UniqueConstraint(
+            "entity_mention_id",
+            name="uq_review_queue_entity_mention",
+        ),
+        CheckConstraint(
+            "(event_id IS NOT NULL AND entity_mention_id IS NULL) OR "
+            "(event_id IS NULL AND entity_mention_id IS NOT NULL)",
+            name="ck_review_queue_subject",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
-    event_id: Mapped[UUID] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), unique=True)
+    event_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("events.id", ondelete="CASCADE"), unique=True
+    )
+    entity_mention_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("entity_mentions.id", ondelete="CASCADE")
+    )
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     trigger_rules: Mapped[list[str]] = mapped_column(JSON, default=list)
     assigned_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))

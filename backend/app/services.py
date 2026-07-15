@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select, update
@@ -34,6 +35,7 @@ from backend.app.models import (
     Investment,
     RawDocument,
     RefreshJob,
+    ResearchImport,
     ReviewQueue,
     Role,
     Source,
@@ -43,7 +45,13 @@ from backend.app.models import (
     UserRoleAssignment,
     utc_now,
 )
-from backend.app.providers import MockResearchProvider, MockResearchRecord
+from backend.app.providers import (
+    LoadedResearchImport,
+    ManualResearchImportProvider,
+    ManualResearchRecord,
+    MockResearchProvider,
+    MockResearchRecord,
+)
 from backend.app.schemas import (
     CompanyDetail,
     CompanyListItem,
@@ -52,7 +60,10 @@ from backend.app.schemas import (
     IngestResult,
     InvestmentOut,
     RefreshResult,
+    ResearchImportResult,
 )
+
+MANUAL_EVENT_FINGERPRINT_VERSION = "manual-v1"
 
 
 class AccessDeniedError(Exception):
@@ -60,6 +71,10 @@ class AccessDeniedError(Exception):
 
 
 class NotFoundError(Exception):
+    pass
+
+
+class ImportConflictError(Exception):
     pass
 
 
@@ -393,6 +408,367 @@ def user_has_role(session: Session, user_id: UUID, role_code: str) -> bool:
     return bool(count)
 
 
+def _manual_source(session: Session, record: ManualResearchRecord) -> Source:
+    source = session.scalar(select(Source).where(Source.code == record.source_code))
+    parsed_url = urlsplit(record.canonical_url)
+    base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+    if source is None:
+        source = Source(
+            code=record.source_code,
+            name=record.source_name,
+            source_quality=record.source_quality.value,
+            license_status="public",
+            base_url=base_url,
+        )
+        session.add(source)
+        session.flush()
+        return source
+    if (
+        source.name != record.source_name
+        or source.source_quality != record.source_quality.value
+        or source.license_status != "public"
+        or source.base_url != base_url
+    ):
+        raise ImportConflictError(f"source_code conflict: {record.source_code}")
+    return source
+
+
+def _resolve_manual_company(
+    session: Session,
+    tenant_id: UUID,
+    record: ManualResearchRecord,
+) -> tuple[Company | None, str, Decimal, str]:
+    identity = record.company_identity_evidence
+    visible_company = or_(Company.tenant_id.is_(None), Company.tenant_id == tenant_id)
+    if identity.credit_code is not None:
+        candidates = list(
+            session.scalars(
+                select(Company).where(
+                    visible_company,
+                    Company.credit_code == identity.credit_code,
+                )
+            )
+        )
+        if len(candidates) != 1:
+            return None, "credit_code_unmatched", Decimal("0.000"), "unresolved"
+        company = candidates[0]
+        region_conflict = (
+            identity.registered_region is not None
+            and company.registered_region is not None
+            and identity.registered_region != company.registered_region
+        )
+        if (
+            company.legal_name != identity.legal_name
+            or region_conflict
+            or company.identity_status != "verified"
+        ):
+            return company, "credit_code_conflict", Decimal("0.500"), "unresolved"
+        return company, "credit_code_exact", Decimal("1.000"), "verified"
+
+    candidates = list(
+        session.scalars(
+            select(Company).where(
+                visible_company,
+                Company.legal_name == identity.legal_name,
+            )
+        )
+    )
+    if len(candidates) != 1:
+        return None, "legal_name_unmatched", Decimal("0.000"), "unresolved"
+    company = candidates[0]
+    region_conflict = (
+        identity.registered_region is not None
+        and company.registered_region is not None
+        and identity.registered_region != company.registered_region
+    )
+    if region_conflict or company.identity_status != "verified":
+        return company, "legal_name_conflict", Decimal("0.600"), "unresolved"
+    return company, "legal_name_exact", Decimal("0.950"), "verified"
+
+
+def _manual_event_fingerprint(company_id: UUID, record: ManualResearchRecord) -> str:
+    canonical_facts = sorted(
+        (fact.model_dump() for fact in record.facts),
+        key=lambda fact: (fact["name"], fact["value"], fact["unit"] or ""),
+    )
+    return _sha256(
+        "|".join(
+            [
+                str(company_id),
+                record.event_type.value,
+                record.event_subtype,
+                record.occurred_at.date().isoformat()
+                if record.occurred_at is not None
+                else "unknown",
+                json.dumps(
+                    canonical_facts,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            ]
+        )
+    )
+
+
+def _add_manual_event_evidence(
+    session: Session,
+    event_id: UUID,
+    document_id: UUID,
+    record: ManualResearchRecord,
+) -> None:
+    session.add(
+        EventEvidence(
+            event_id=event_id,
+            raw_document_id=document_id,
+            evidence_excerpt=record.evidence_excerpt,
+            span_hash=_sha256(record.evidence_excerpt),
+            support_type="supports",
+        )
+    )
+
+
+def _duplicate_import_result(existing: ResearchImport) -> ResearchImportResult:
+    return ResearchImportResult(
+        status="duplicate",
+        research_import_id=existing.id,
+        batch_id=existing.batch_id,
+        records_seen=existing.record_count,
+        documents_created=0,
+        events_created=0,
+        reviews_created=0,
+        resolved_records=existing.resolved_count,
+        unresolved_records=existing.unresolved_count,
+    )
+
+
+def _ingest_manual_batch(
+    session: Session,
+    user: User,
+    provider: ManualResearchImportProvider,
+    loaded: LoadedResearchImport,
+) -> ResearchImportResult:
+    batch_payload = loaded.batch
+    research_import = ResearchImport(
+        tenant_id=user.tenant_id,
+        imported_by=user.id,
+        schema_version=batch_payload.schema_version,
+        batch_id=batch_payload.batch_id,
+        queried_at=batch_payload.queried_at,
+        research_tool=batch_payload.research_tool,
+        agent_name=batch_payload.agent_name,
+        original_query=batch_payload.original_query,
+        target_company_hint=batch_payload.target_company_hint,
+        source_filename=loaded.source_filename,
+        file_format="json",
+        file_hash=loaded.file_hash,
+        parser_version=provider.parser_version,
+        license_status=batch_payload.license_status,
+        status="processing",
+        record_count=len(batch_payload.records),
+        resolved_count=0,
+        unresolved_count=0,
+    )
+    session.add(research_import)
+    session.flush()
+    documents_created = 0
+    events_created = 0
+    reviews_created = 0
+
+    for record in batch_payload.records:
+        company, match_rule, match_confidence, resolution_status = _resolve_manual_company(
+            session,
+            user.tenant_id,
+            record,
+        )
+        if resolution_status == "verified":
+            research_import.resolved_count += 1
+        else:
+            research_import.unresolved_count += 1
+
+        source = _manual_source(session, record)
+        document_payload = record.model_dump(mode="json")
+        content_hash = _sha256(json.dumps(document_payload, ensure_ascii=False, sort_keys=True))
+        dedupe_key = _sha256(f"{source.id}:{record.external_record_id}")
+        existing_document = session.scalar(
+            select(RawDocument).where(RawDocument.document_dedupe_key == dedupe_key)
+        )
+        if existing_document is not None:
+            if existing_document.content_hash != content_hash:
+                raise ImportConflictError(
+                    f"external_record_id content conflict: {record.external_record_id}"
+                )
+            continue
+
+        document = RawDocument(
+            source_id=source.id,
+            research_import_id=research_import.id,
+            external_record_id=record.external_record_id,
+            canonical_url=record.canonical_url,
+            title=record.title,
+            published_at=record.source_published_at,
+            observed_at=utc_now(),
+            content_hash=content_hash,
+            document_dedupe_key=dedupe_key,
+            license_status="public",
+            payload=document_payload,
+        )
+        session.add(document)
+        session.flush()
+        mention = EntityMention(
+            raw_document_id=document.id,
+            candidate_company_id=company.id if company is not None else None,
+            mention_text=record.company_identity_evidence.legal_name,
+            match_rule=match_rule,
+            match_confidence=match_confidence,
+            resolution_status=resolution_status,
+        )
+        session.add(mention)
+        session.flush()
+        documents_created += 1
+        if resolution_status != "verified" or company is None:
+            session.add(
+                ReviewQueue(
+                    tenant_id=user.tenant_id,
+                    entity_mention_id=mention.id,
+                    status="pending",
+                    trigger_rules=["manual_research_import", "identity_unresolved"],
+                )
+            )
+            reviews_created += 1
+            continue
+
+        event_fingerprint = _manual_event_fingerprint(company.id, record)
+        existing_event = session.scalar(
+            select(Event).where(
+                Event.company_id == company.id,
+                Event.fingerprint_version == MANUAL_EVENT_FINGERPRINT_VERSION,
+                Event.event_fingerprint == event_fingerprint,
+            )
+        )
+        if existing_event is not None:
+            if existing_event.status in {"candidate", "in_review"}:
+                _add_manual_event_evidence(session, existing_event.id, document.id, record)
+            else:
+                session.add(
+                    ReviewQueue(
+                        tenant_id=user.tenant_id,
+                        entity_mention_id=mention.id,
+                        status="pending",
+                        trigger_rules=[
+                            "manual_research_import",
+                            "existing_event_new_evidence",
+                        ],
+                    )
+                )
+                reviews_created += 1
+            continue
+        event = Event(
+            company_id=company.id,
+            event_type=record.event_type.value,
+            event_subtype=record.event_subtype,
+            status="in_review",
+            direction=record.direction.value,
+            materiality_score=record.materiality_score,
+            risk_severity=record.risk_severity.value,
+            confidence_score=Decimal(str(record.confidence_score)),
+            source_quality=record.source_quality.value,
+            title=record.title,
+            summary=record.evidence_excerpt,
+            facts=[fact.model_dump() for fact in record.facts],
+            uncertainties=record.uncertainties,
+            occurred_at=record.occurred_at,
+            published_at=record.source_published_at,
+            observed_at=utc_now(),
+            fingerprint_version=MANUAL_EVENT_FINGERPRINT_VERSION,
+            event_fingerprint=event_fingerprint,
+        )
+        session.add(event)
+        session.flush()
+        _add_manual_event_evidence(session, event.id, document.id, record)
+        session.add(
+            ReviewQueue(
+                tenant_id=user.tenant_id,
+                event_id=event.id,
+                status="pending",
+                trigger_rules=["manual_research_import", "human_review_required"],
+            )
+        )
+        events_created += 1
+        reviews_created += 1
+
+    research_import.status = (
+        "completed_with_unresolved" if research_import.unresolved_count else "completed"
+    )
+    session.add(
+        UsageLedger(
+            tenant_id=user.tenant_id,
+            provider=provider.code,
+            operation="manual_research_import",
+            external_calls=0,
+            input_tokens=0,
+            output_tokens=0,
+            estimated_cost=Decimal("0"),
+            metrics={
+                "research_import_id": str(research_import.id),
+                "records_seen": research_import.record_count,
+                "documents_created": documents_created,
+                "events_created": events_created,
+                "resolved_records": research_import.resolved_count,
+                "unresolved_records": research_import.unresolved_count,
+            },
+            idempotency_key=_sha256(f"manual-research-import:{research_import.id}"),
+        )
+    )
+    session.commit()
+    return ResearchImportResult(
+        status=research_import.status,
+        research_import_id=research_import.id,
+        batch_id=research_import.batch_id,
+        records_seen=research_import.record_count,
+        documents_created=documents_created,
+        events_created=events_created,
+        reviews_created=reviews_created,
+        resolved_records=research_import.resolved_count,
+        unresolved_records=research_import.unresolved_count,
+    )
+
+
+def import_manual_research(
+    session: Session,
+    user: User,
+    provider: ManualResearchImportProvider,
+) -> ResearchImportResult:
+    if not user_has_role(session, user.id, "institution_admin"):
+        session.rollback()
+        raise AccessDeniedError("institution_admin role required")
+    loaded = provider.load()
+    existing_file = session.scalar(
+        select(ResearchImport).where(
+            ResearchImport.tenant_id == user.tenant_id,
+            ResearchImport.file_hash == loaded.file_hash,
+            ResearchImport.parser_version == provider.parser_version,
+        )
+    )
+    if existing_file is not None:
+        result = _duplicate_import_result(existing_file)
+        session.commit()
+        return result
+    existing_batch = session.scalar(
+        select(ResearchImport).where(
+            ResearchImport.tenant_id == user.tenant_id,
+            ResearchImport.batch_id == loaded.batch.batch_id,
+        )
+    )
+    if existing_batch is not None:
+        session.rollback()
+        raise ImportConflictError(f"batch_id conflict: {loaded.batch.batch_id}")
+    try:
+        return _ingest_manual_batch(session, user, provider, loaded)
+    except Exception:
+        session.rollback()
+        raise
+
+
 def _authorized_investments(
     session: Session, user_id: UUID, company_id: UUID | None = None
 ) -> list[tuple[Investment, Fund]]:
@@ -617,6 +993,8 @@ def decide_review(
         raise NotFoundError("review not found")
     if review.status != "pending":
         raise AccessDeniedError("review already decided")
+    if review.event_id is None:
+        raise AccessDeniedError("entity mention review requires identity resolution workflow")
     event = session.get(Event, review.event_id)
     if event is None:
         raise NotFoundError("event not found")

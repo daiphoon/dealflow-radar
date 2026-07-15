@@ -26,7 +26,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | --- | --- | --- |
 | `sources` | 来源主体、等级、类型、许可、保留策略、基础 URL | 唯一来源代码；等级/许可索引 |
 | `source_connectors` | Provider 配置引用、能力、租户范围、启用状态；只存 Secret 引用 | 唯一 `(tenant_id, provider_code, connector_name)`；不存明文密钥 |
-| `raw_documents` | source、外部记录 ID、规范 URL、标题、时间、哈希、存储引用、许可 | `document_dedupe_key` 唯一；内容哈希和发布时间索引 |
+| `raw_documents` | source、可选导入批次、外部记录 ID、规范 URL、标题、时间、哈希、存储引用、许可 | `document_dedupe_key` 唯一；内容哈希、导入批次和发布时间索引 |
 | `entity_mentions` | 文档中的公司候选、命中依据、候选集合、置信度、解析状态 | 唯一 `(raw_document_id, mention_span_hash, candidate_company_id)`；待解析索引 |
 | `events` | 公司、类型/子类、状态、五项评价、事实、不确定性、事件指纹、版本关系 | 唯一 `(company_id, fingerprint_version, event_fingerprint)`；公司/状态/发生时间索引 |
 | `event_evidence` | 事件到文档或结构化记录的证据片段、位置、支撑类型 | 唯一 `(event_id, raw_document_id, span_hash)`；文档反查索引 |
@@ -44,8 +44,8 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `refresh_policies` | TTL、升降频、冷却、预算和 Provider 规则的版本化配置 | 唯一 `(tenant_id, code, version)`；仅一个活动版本 |
 | `refresh_jobs` | company、原因、优先级、状态、幂等键、租约、预计成本 | 幂等键唯一；同公司/类型活跃任务部分唯一；领取索引 |
 | `refresh_runs` | 每次尝试、检查点、Provider 结果、错误、变化计数、起止时间 | FK job；job/attempt 唯一；状态/开始时间索引 |
-| `research_imports` | 导入批次、格式、工具、原始文件哈希、许可、解析状态 | `(tenant_id, file_hash, parser_version)` 唯一；状态索引 |
-| `review_queue` | 对象类型/ID、触发规则、状态、分配人、决定和理由 | 对象活动审核项条件唯一；状态/优先级索引 |
+| `research_imports` | tenant、导入人、批次、格式、工具、原始文件哈希、许可、解析计数与状态 | `(tenant_id, batch_id)` 和 `(tenant_id, file_hash, parser_version)` 唯一；机构管理员 RLS；状态索引 |
+| `review_queue` | 事件或实体提及、触发规则、状态、分配人、决定和理由 | `event_id` 与 `entity_mention_id` 必须且只能存在一个；每个对象唯一；状态索引 |
 | `usage_ledger` | task/run/company/tenant/provider、调用量、Token、估算/实际费用、有效产出 | 用量幂等键唯一；tenant/company/provider/日期索引 |
 | `prompt_versions` | prompt code、版本、模板哈希、Schema 版本、状态 | 唯一 `(prompt_code, version)`；活动版本条件唯一 |
 | `audit_logs` | actor、tenant、action、object、结果、敏感字段类别、时间 | 追加写；tenant/object/time 索引；不保存 Secret 或全文 |
@@ -58,16 +58,21 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 erDiagram
   TENANTS ||--o{ USERS : contains
   TENANTS ||--o{ FUNDS : owns
+  TENANTS ||--o{ RESEARCH_IMPORTS : owns
+  USERS ||--o{ RESEARCH_IMPORTS : imports
   USERS ||--o{ FUND_ACCESS_GRANTS : receives
   FUNDS ||--o{ FUND_ACCESS_GRANTS : authorizes
   FUNDS ||--o{ INVESTMENTS : makes
   COMPANIES ||--o{ INVESTMENTS : receives
   COMPANIES ||--o{ COMPANY_ALIASES : has
   SOURCES ||--o{ RAW_DOCUMENTS : publishes
+  RESEARCH_IMPORTS ||--o{ RAW_DOCUMENTS : contains
   RAW_DOCUMENTS ||--o{ ENTITY_MENTIONS : contains
   COMPANIES ||--o{ ENTITY_MENTIONS : candidate
   COMPANIES ||--o{ EVENTS : concerns
   EVENTS ||--|{ EVENT_EVIDENCE : requires
+  EVENTS o|--o| REVIEW_QUEUE : reviews
+  ENTITY_MENTIONS o|--o| REVIEW_QUEUE : reviews
   RAW_DOCUMENTS ||--o{ EVENT_EVIDENCE : supports
   COMPANIES ||--o{ METRIC_OBSERVATIONS : observes
   METRIC_DEFINITIONS ||--o{ METRIC_OBSERVATIONS : defines

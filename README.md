@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充按需缓存与 Mock Worker V1：
+当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充按需缓存、Mock Worker V1 与人工研究导入 V1：
 
 - 10 家虚构公司及两个虚构租户/基金；
 - Mock 文档幂等导入、主体精确匹配、候选事件、证据和人工审核；
@@ -13,6 +13,7 @@
 - 刷新任务 `dry-run`、14 天动态新鲜度、24 小时冷却与重复任务合并；
 - 公司列表只展示状态，不批量触发任务；公司详情过期时仅在自动刷新开关启用后入队；
 - 单次 Mock Worker 可领取一个虚构数据任务，支持租约、过期重领、零费用用量记录和 `stale → fresh` 闭环；
+- 本机 JSON 人工研究导入支持文件/批次幂等、公司身份解析、证据血缘、未解析主体审核和零费用记录；
 - 应用层基金授权过滤及 PostgreSQL RLS 策略迁移；
 - 外部搜索、模型、付费 API 和自动刷新默认全部关闭。
 
@@ -47,6 +48,22 @@ APP_MODE=demo uv run python -m scripts.run_mock_worker
 ```
 
 每次命令最多处理该租户的一个任务；无任务时返回 `idle`。命令要求显式设置 `APP_MODE=demo`，且只接受两个固定虚构租户。此 Worker 不加载 Provider、不访问网络，只用于验证队列闭环：有快照时更新检查时间但保留事实基准日，无快照时保持 `unknown`，不得用于真实公司检查。
+
+### 人工研究导入 V1
+
+V1 只接受 `data/private/research_imports/` 下不超过 1 MiB 的 JSON，且每批最多 500 条、`license_status` 必须为 `public`、目标公司须预先存在。导入只创建原始证据、实体提及、`in_review` 候选事件和审核项；身份未解析时只创建提及审核项，不生成事件或快照。入口不访问网络、不调用模型，外部调用和估算费用恒为 0。
+
+可用仓库中的纯虚构示例验证：
+
+```bash
+mkdir -p data/private/research_imports
+cp data/sample/manual_research_import.json data/private/research_imports/manual-example.json
+export RESEARCH_IMPORT_FILE=manual-example.json
+export IMPORT_USER_ID="$(uv run python -c 'from backend.app.demo import ALPHA_USER_ID; print(ALPHA_USER_ID)')"
+uv run python -m scripts.import_research_json
+```
+
+重复执行同一文件返回 `duplicate`，不会新增文档、事件或费用记录。真实导入文件不得提交 Git；V1 不接受内部财务、投委会、投资协议等敏感材料，也没有开放上传 API，因为当前测试身份 Header 不适合真实资料入口。未解析主体可以进入审核队列，但“选择正确公司并重新生成候选”的专用处理流程尚未实现，通用事件审核接口会拒绝直接批准这类记录。
 
 如果本机暂时没有 PostgreSQL，可用 SQLite 完成无真实数据的离线烟测：
 

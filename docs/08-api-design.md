@@ -24,6 +24,8 @@
 | `GET /reports/portfolio-weekly` | 固定模板周报 | 按事实水位读取已生成结果 |
 | `GET /usage` | 成本仪表盘 | 聚合租户/公司/Provider/有效事件成本 |
 
+人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`，尚未实现 `POST /research-imports`。原因是当前 `X-Demo-User-Id` 只适用于虚构测试，不足以保护真实文件上传；网页/API 导入须等正式认证、上传隔离、文件审计和许可校验完成后再实现。`POST /reviews/{id}/decision` 当前只处理事件审核；实体提及审核会明确拒绝直接批准，后续需新增“选择公司并重建候选”的专用身份解析契约。
+
 `POST /refresh` 的响应明确区分 `fresh_noop`、`queued`、`merged`、`cooldown_deferred`、`budget_deferred`、`external_disabled`。`dry_run=true` 时只返回计划 Provider、搜索数、Token 上界和预计费用，不产生外部调用。
 
 按需缓存 V1 的 `freshness_status` 由当前快照 `last_checked_at` 与配置 TTL 动态计算。首次过期详情请求返回 `stale` 并完成入队；已有活动任务时返回 `refreshing`。`AUTO_REFRESH_ENABLED=false` 时只返回状态，不创建任务；无论开关如何，同步请求都不调用 Provider。

@@ -32,6 +32,22 @@ APP_MODE=demo uv run python -m scripts.run_mock_worker
 
 命令每次最多领取一个任务；无任务返回 `idle`。必须显式设置 `APP_MODE=demo`，并使用代码中固定的两个虚构租户之一；缺失模式、非 Demo 模式和其他租户均在连接数据库前拒绝。该入口不会加载 Provider 或访问网络：有当前快照时模拟无变化检查并保留 `data_as_of`，无快照时保持 `unknown`。运行后核对任务已完成、租约已释放、心跳存在，且 `usage_ledger.external_calls = 0`、`estimated_cost = 0`。它不能代替真实公司信息检查，也不是常驻 Worker 或 Cron。
 
+### 人工研究导入 V1（本机、公开来源）
+
+先确认数据库已迁移到 head、目标公司主数据已存在、操作者是 active 机构管理员。将 JSON 放在 Git 忽略目录后执行：
+
+```bash
+mkdir -p data/private/research_imports
+cp data/sample/manual_research_import.json data/private/research_imports/manual-example.json
+export RESEARCH_IMPORT_FILE=manual-example.json
+export IMPORT_USER_ID="$(uv run python -c 'from backend.app.demo import ALPHA_USER_ID; print(ALPHA_USER_ID)')"
+uv run python -m scripts.import_research_json
+```
+
+输出只包含批次 ID、状态和计数。完成后核对：解析成功记录只形成 `in_review` 事件及事件审核项；未解析记录只形成实体提及审核项；没有公司快照变化；`usage_ledger` 的外部调用、Token 和费用均为 0。重复同一文件应返回 `duplicate`。批次号复用但内容改变、来源代码元数据冲突或外部记录内容冲突时整批失败并回滚，不要绕过去重键手工改库。实体提及审核当前不能用通用事件审核接口直接批准，应保持 pending，等待专用身份解析流程。
+
+V1 只接收不超过 1 MiB、最多 500 条且许可为 `public` 的 JSON。不得放入内部财务、投资协议、投委会材料、API Key、Cookie 或商业数据库受限内容；原始文件由操作者在私有目录管理，不进入 Git，也不会被系统复制到存储。当前没有网页/API 上传入口。
+
 ## 4. 常见事件处置
 
 | 事件 | 立即动作 | 恢复条件 |
