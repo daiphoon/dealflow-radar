@@ -61,6 +61,7 @@ from backend.app.schemas import (
     InvestmentOut,
     RefreshResult,
     ResearchImportResult,
+    ReviewWorkbenchOut,
 )
 
 MANUAL_EVENT_FINGERPRINT_VERSION = "manual-v1"
@@ -816,6 +817,8 @@ def _event_out(session: Session, event: Event) -> EventOut:
         source_quality=event.source_quality,
         title=event.title,
         summary=event.summary,
+        facts=event.facts,
+        uncertainties=event.uncertainties,
         status=event.status,
         observed_at=event.observed_at,
         evidence=[
@@ -832,6 +835,61 @@ def _event_out(session: Session, event: Event) -> EventOut:
             for evidence, document, source in evidence_rows
         ],
     )
+
+
+def list_review_workbench(session: Session, user: User) -> list[ReviewWorkbenchOut]:
+    if not user_has_role(session, user.id, "reviewer"):
+        raise AccessDeniedError("reviewer role required")
+    reviews = list(
+        session.scalars(
+            select(ReviewQueue)
+            .where(ReviewQueue.tenant_id == user.tenant_id)
+            .order_by(ReviewQueue.created_at)
+        )
+    )
+    items: list[ReviewWorkbenchOut] = []
+    for review in reviews:
+        company: Company | None = None
+        event_out: EventOut | None = None
+        mention_text: str | None = None
+        match_rule: str | None = None
+        match_confidence: Decimal | None = None
+        resolution_status: str | None = None
+        if review.event_id is not None:
+            event = session.get(Event, review.event_id)
+            if event is not None:
+                company = session.get(Company, event.company_id)
+                event_out = _event_out(session, event)
+        elif review.entity_mention_id is not None:
+            mention = session.get(EntityMention, review.entity_mention_id)
+            if mention is not None:
+                mention_text = mention.mention_text
+                match_rule = mention.match_rule
+                match_confidence = mention.match_confidence
+                resolution_status = mention.resolution_status
+                if mention.candidate_company_id is not None:
+                    company = session.get(Company, mention.candidate_company_id)
+        items.append(
+            ReviewWorkbenchOut(
+                id=review.id,
+                event_id=review.event_id,
+                entity_mention_id=review.entity_mention_id,
+                status=review.status,
+                trigger_rules=review.trigger_rules,
+                decision=review.decision,
+                decision_reason=review.decision_reason,
+                created_at=review.created_at,
+                decided_at=review.decided_at,
+                company_id=company.id if company is not None else None,
+                company_legal_name=company.legal_name if company is not None else None,
+                event=event_out,
+                mention_text=mention_text,
+                match_rule=match_rule,
+                match_confidence=match_confidence,
+                resolution_status=resolution_status,
+            )
+        )
+    return items
 
 
 def _active_refresh_job(session: Session, tenant_id: UUID, company_id: UUID) -> RefreshJob | None:

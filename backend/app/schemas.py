@@ -31,6 +31,8 @@ class EventOut(BaseModel):
     source_quality: str
     title: str
     summary: str
+    facts: list[dict[str, str | None]]
+    uncertainties: list[str]
     status: str
     observed_at: datetime
     evidence: list[EvidenceOut]
@@ -86,6 +88,25 @@ class ReviewOut(BaseModel):
     trigger_rules: list[str]
     decision: str | None
     decision_reason: str | None
+
+
+class ReviewWorkbenchOut(BaseModel):
+    id: UUID
+    event_id: UUID | None
+    entity_mention_id: UUID | None
+    status: str
+    trigger_rules: list[str]
+    decision: str | None
+    decision_reason: str | None
+    created_at: datetime
+    decided_at: datetime | None
+    company_id: UUID | None
+    company_legal_name: str | None
+    event: EventOut | None
+    mention_text: str | None
+    match_rule: str | None
+    match_confidence: Decimal | None
+    resolution_status: str | None
 
 
 class IngestResult(BaseModel):

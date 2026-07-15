@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -133,6 +134,46 @@ def test_manual_import_is_idempotent_and_keeps_unresolved_out_of_events(
             for item in response.json()
         }
         assert review_subjects == {(False, True), (True, False)}
+
+        disabled = client.get(
+            "/api/v1/reviews/workbench",
+            headers={"X-Demo-User-Id": str(ALPHA_USER_ID)},
+        )
+        assert disabled.status_code == 404
+        assert disabled.json()["detail"] == "review_workbench_disabled"
+
+        migrated_app.state.settings = replace(
+            migrated_app.state.settings,
+            review_workbench_enabled=True,
+        )
+        workbench = client.get(
+            "/api/v1/reviews/workbench",
+            headers={"X-Demo-User-Id": str(ALPHA_USER_ID)},
+        )
+        assert workbench.status_code == 200
+        items = workbench.json()
+        event_item = next(item for item in items if item["event"] is not None)
+        mention_item = next(item for item in items if item["event"] is None)
+
+        assert event_item["company_legal_name"] == "示例星河科技一号有限公司"
+        assert event_item["event"]["title"] == "示例公司签署公开测试合同"
+        assert event_item["event"]["facts"] == [
+            {"name": "contract", "value": "测试合同", "unit": None}
+        ]
+        assert event_item["event"]["uncertainties"] == ["未披露金额"]
+        assert len(event_item["event"]["evidence"]) == 1
+        assert event_item["event"]["evidence"][0]["source_name"] == "示例官方来源"
+        assert event_item["mention_text"] is None
+        assert mention_item["event_id"] is None
+        assert mention_item["mention_text"] == "不存在的示例公司"
+        assert mention_item["resolution_status"] == "unresolved"
+        assert mention_item["company_legal_name"] is None
+
+        forbidden = client.get(
+            "/api/v1/reviews/workbench",
+            headers={"X-Demo-User-Id": str(BETA_USER_ID)},
+        )
+        assert forbidden.status_code == 403
 
 
 def test_manual_import_adds_independent_evidence_to_an_in_review_event(

@@ -44,6 +44,7 @@ class Settings:
     external_calls_enabled: bool
     paid_api_calls_enabled: bool
     auto_refresh_enabled: bool
+    review_workbench_enabled: bool = False
     refresh_policy: RefreshPolicy = field(default_factory=RefreshPolicy)
 
     @classmethod
@@ -57,6 +58,7 @@ class Settings:
             external_calls_enabled=_as_bool(os.getenv("EXTERNAL_CALLS_ENABLED", "false")),
             paid_api_calls_enabled=_as_bool(os.getenv("PAID_API_CALLS_ENABLED", "false")),
             auto_refresh_enabled=_as_bool(os.getenv("AUTO_REFRESH_ENABLED", "false")),
+            review_workbench_enabled=_as_bool(os.getenv("REVIEW_WORKBENCH_ENABLED", "false")),
             refresh_policy=RefreshPolicy(
                 version=os.getenv("REFRESH_POLICY_VERSION", "demo-v1"),
                 recent_query_ttl_days=_as_positive_int("RECENT_QUERY_TTL_DAYS", 14),

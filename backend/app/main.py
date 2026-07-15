@@ -18,6 +18,7 @@ from backend.app.schemas import (
     RefreshResult,
     ReviewDecisionIn,
     ReviewOut,
+    ReviewWorkbenchOut,
 )
 from backend.app.services import (
     AccessDeniedError,
@@ -26,6 +27,7 @@ from backend.app.services import (
     get_company_detail,
     ingest_mock_records,
     list_companies,
+    list_review_workbench,
     request_refresh,
     user_has_role,
 )
@@ -115,6 +117,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 .order_by(ReviewQueue.created_at)
             )
         )
+
+    @app.get("/api/v1/reviews/workbench", response_model=list[ReviewWorkbenchOut])
+    def review_workbench(
+        user: User = Depends(get_current_user), session: Session = Depends(get_session)
+    ) -> list[ReviewWorkbenchOut]:
+        if not app.state.settings.review_workbench_enabled:
+            raise HTTPException(status_code=404, detail="review_workbench_disabled")
+        try:
+            return list_review_workbench(session, user)
+        except AccessDeniedError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
 
     @app.post("/api/v1/reviews/{review_id}/decision", response_model=ReviewOut)
     def review_decision(

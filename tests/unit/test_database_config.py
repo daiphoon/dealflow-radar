@@ -36,6 +36,14 @@ def test_refresh_policy_rejects_non_positive_intervals(monkeypatch: pytest.Monke
         Settings.from_env()
 
 
+def test_review_workbench_requires_explicit_enable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REVIEW_WORKBENCH_ENABLED", raising=False)
+    assert Settings.from_env().review_workbench_enabled is False
+
+    monkeypatch.setenv("REVIEW_WORKBENCH_ENABLED", "true")
+    assert Settings.from_env().review_workbench_enabled is True
+
+
 def test_bootstrap_rejects_shared_database_password() -> None:
     with pytest.raises(RuntimeError, match="passwords must differ"):
         bootstrap_application_role(

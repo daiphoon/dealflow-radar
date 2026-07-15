@@ -1,3 +1,5 @@
+import "server-only";
+
 export type CompanyListItem = {
   id: string;
   legal_name: string;
@@ -33,9 +35,30 @@ export type Event = {
   source_quality: string;
   title: string;
   summary: string;
+  facts: Array<{ name: string; value: string; unit: string | null }>;
+  uncertainties: string[];
   status: string;
   observed_at: string;
   evidence: Evidence[];
+};
+
+export type ReviewWorkbenchItem = {
+  id: string;
+  event_id: string | null;
+  entity_mention_id: string | null;
+  status: string;
+  trigger_rules: string[];
+  decision: string | null;
+  decision_reason: string | null;
+  created_at: string;
+  decided_at: string | null;
+  company_id: string | null;
+  company_legal_name: string | null;
+  event: Event | null;
+  mention_text: string | null;
+  match_rule: string | null;
+  match_confidence: string | null;
+  resolution_status: string | null;
 };
 
 export type Investment = {
@@ -83,10 +106,41 @@ async function getJson<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Demo-User-Id": demoUserId,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status);
+  }
+  return (await response.json()) as T;
+}
+
 export function getCompanies(): Promise<CompanyListItem[]> {
   return getJson("/api/v1/companies");
 }
 
 export function getCompany(companyId: string): Promise<CompanyDetail> {
   return getJson(`/api/v1/companies/${encodeURIComponent(companyId)}`);
+}
+
+export function getReviewWorkbench(): Promise<ReviewWorkbenchItem[]> {
+  return getJson("/api/v1/reviews/workbench");
+}
+
+export function decideReview(
+  reviewId: string,
+  decision: "approve" | "reject",
+  reason: string,
+): Promise<unknown> {
+  return postJson(`/api/v1/reviews/${encodeURIComponent(reviewId)}/decision`, {
+    decision,
+    reason,
+  });
 }
