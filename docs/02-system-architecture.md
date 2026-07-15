@@ -97,6 +97,8 @@ sequenceDiagram
 
 Mock Worker V1 仅为虚构数据提供单任务命令入口：按租户使用 `FOR UPDATE SKIP LOCKED` 领取 `mock_refresh`，写入可配置的短租约与心跳，过期后允许重领，并用 `usage_ledger` 记录零次外部调用和零费用。有当前快照时只更新 `last_checked_at` 与新鲜度，保留 `data_as_of`；无快照时不生成事实，继续保持 `unknown`。完整 `refresh_policies` 表、`next_check_at`、Cron、常驻 Worker、真实 Provider 流水线和重试仍按后续阶段实施。
 
+人工研究导入 V1 是独立的本机异步前置入口，不进入用户同步查询路径：机构管理员从 Git 忽略的私有目录导入公开来源 JSON，系统按文件、批次、来源记录和事件指纹去重。主体未解析时形成实体提及审核项；主体已验证时形成 `in_review` 事件、证据和事件审核项。两条路径都不自动发布、不更新快照、不访问网络，批次元数据由 `research_imports` 的租户 RLS 隔离。
+
 ## 5. 后台流水线
 
 1. Scheduler 按 `next_check_at`、关注、近期事件、风险、预算选公司。

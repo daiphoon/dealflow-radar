@@ -19,10 +19,18 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     command.upgrade(config, "head")
     command.check(config)
     engine = create_engine(database_url)
-    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 18
+    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 19
     assert "heartbeat_at" in {
         column["name"] for column in inspect(engine).get_columns("refresh_jobs")
     }
+    assert "research_import_id" in {
+        column["name"] for column in inspect(engine).get_columns("raw_documents")
+    }
+    review_columns = {
+        column["name"]: column for column in inspect(engine).get_columns("review_queue")
+    }
+    assert review_columns["event_id"]["nullable"] is True
+    assert review_columns["entity_mention_id"]["nullable"] is True
 
     command.downgrade(config, "base")
     assert inspect(engine).get_table_names() == ["alembic_version"]
@@ -54,3 +62,7 @@ def test_postgresql_migration_compiles_without_connecting(
         "ON refresh_jobs (tenant_id, company_id, job_type)" in ddl
     )
     assert "ADD COLUMN heartbeat_at TIMESTAMP WITH TIME ZONE" in ddl
+    assert "CREATE TABLE research_imports" in ddl
+    assert "CREATE POLICY research_imports_admin" in ddl
+    assert "ADD COLUMN entity_mention_id UUID" in ddl
+    assert "ck_review_queue_subject" in ddl

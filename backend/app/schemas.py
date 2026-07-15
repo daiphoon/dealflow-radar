@@ -80,7 +80,8 @@ class ReviewOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    event_id: UUID
+    event_id: UUID | None
+    entity_mention_id: UUID | None
     status: str
     trigger_rules: list[str]
     decision: str | None
@@ -92,6 +93,20 @@ class IngestResult(BaseModel):
     documents_created: int
     events_created: int
     reviews_created: int
+    external_calls: int = 0
+    estimated_cost: Decimal = Decimal("0")
+
+
+class ResearchImportResult(BaseModel):
+    status: str
+    research_import_id: UUID
+    batch_id: str
+    records_seen: int
+    documents_created: int
+    events_created: int
+    reviews_created: int
+    resolved_records: int
+    unresolved_records: int
     external_calls: int = 0
     estimated_cost: Decimal = Decimal("0")
 

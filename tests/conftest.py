@@ -18,6 +18,48 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
+def manual_import_payload() -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "batch_id": "manual-batch-001",
+        "queried_at": "2026-07-15T08:00:00+08:00",
+        "research_tool": "manual",
+        "agent_name": "本地研究",
+        "original_query": "示例公司公开信息",
+        "target_company_hint": "示例星河科技一号有限公司",
+        "license_status": "public",
+        "records": [
+            {
+                "external_record_id": "manual-record-001",
+                "company_identity_evidence": {
+                    "legal_name": "示例星河科技一号有限公司",
+                    "credit_code": None,
+                    "registered_region": "虚构省甲市",
+                    "official_website": None,
+                },
+                "source_code": "manual_example_official",
+                "source_name": "示例官方来源",
+                "canonical_url": "https://example.invalid/manual-001",
+                "source_published_at": "2026-07-14T10:00:00+08:00",
+                "occurred_at": None,
+                "title": "示例公司签署公开测试合同",
+                "evidence_excerpt": "公开材料显示公司签署了一份测试合同，未披露金额。",
+                "event_type": "contract_commercial",
+                "event_subtype": "major_contract",
+                "direction": "positive",
+                "materiality_score": 70,
+                "risk_severity": "low",
+                "confidence_score": 0.95,
+                "source_quality": "A",
+                "facts": [{"name": "contract", "value": "测试合同", "unit": None}],
+                "uncertainties": ["未披露金额"],
+                "requires_human_review": True,
+            }
+        ],
+    }
+
+
+@pytest.fixture
 def migrated_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
     database_url = f"sqlite:///{tmp_path / 'test.db'}"
     monkeypatch.setenv("DATABASE_URL", database_url)
