@@ -37,8 +37,7 @@ export default async function CompanyListPage() {
           <p className="eyebrow">投后监测 · 最近一次已发布结果</p>
           <h1>公司组合</h1>
           <p>
-            页面只读取数据库，不会因访问而调用搜索或大模型。当前环境包含 10
-            家虚构公司。
+            页面只读取数据库，不会因访问而调用搜索或大模型。只展示当前测试身份已获基金授权的公司。
           </p>
         </section>
 

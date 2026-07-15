@@ -71,3 +71,12 @@
 - 实际命令：公开官网和政府页面人工核验；`ManualResearchImportProvider.load()` 离线 Schema 校验；应用会话降权为非所有者 `equity_app` 后运行 `python -m scripts.import_research_json` 首次与重复导入；PostgreSQL 血缘/计数查询、RLS 跨租户负向检查和只读 API 烟测。
 - 测试结果：2/2 记录均按统一社会信用代码精确命中，形成 2 份原始证据、2 个 `in_review` 候选事件和 2 个 `pending` 审核项，证据关系均完整；重复导入均返回 `duplicate` 且新增计数为 0；公司快照和投资关系仍为 0；导入入口外部调用、Token 与估算费用均为 0，项目未调用付费 Provider；试点租户可见 2 个批次/审核/用量记录，现有 Demo 租户对这些记录的 RLS 可见计数均为 0。
 - 未解决阻塞：未经用户确认不得创建真实基金/投资关系，因此试点公司暂不出现在公司列表；审核队列尚无前端页面；当前时间模型无法单独表达“仅日期精度”，已将不确定的时分保持为未知；2 个候选事件均保持待审，等待项目负责人决策。FastAPI TestClient 上游弃用警告仍存在，不影响当前结果。
+
+## 2026-07-15｜人工审核工作台 V1
+
+- 日期：2026-07-15
+- 任务：实现默认关闭的本机人工审核工作台，展示候选公司、事实、不确定性、三类时间、五项独立评价、证据和触发规则；事件可在必填理由与核对确认后批准或驳回，身份提及歧义保持只读；不接入正式认证或外部 Provider。
+- 关键文件：`backend/app/config.py`、`backend/app/main.py`、`backend/app/schemas.py`、`backend/app/services.py`、`frontend/app/reviews/`、`frontend/lib/api.ts`、`frontend/app/globals.css`、`.env.example`、`tests/`、`README.md`、`docs/`。
+- 实际命令：审核工作台针对性 Pytest；`uv run ruff check backend migrations scripts tests`；`uv run ruff format --check backend migrations scripts tests`；`uv run pytest -q`；`npm audit`；`npm run typecheck`；`npm run build`；`git diff --check`；真实 PostgreSQL 受限应用角色下启动本地 API 与前端，执行只读工作台 API 计数、桌面/手机 DOM、截图、页面尺寸和控制台检查。
+- 测试结果：针对性测试 13 项通过；默认 Pytest 52 项通过、1 项真实 PostgreSQL 测试按预期跳过；Ruff、格式、TypeScript、生产构建和差异检查通过，依赖审计 0 个已知漏洞；真实私有试点工作台正确读取 2 条候选及完整证据，两条均继续保持 `pending`，未提交批准或驳回；1280px 与 390px 视口均无横向溢出，浏览器控制台无警告或错误；业务外部调用、Token 和费用均为 0。
+- 未解决阻塞：正式认证、身份提及解析、纠正/撤回、筛选分页和公开部署均未实现；真实基金/投资关系仍等待授权资料；日期精度模型仍不能单独表达“仅日期”，2 条真实候选继续等待项目负责人决定。FastAPI TestClient 上游弃用警告仍存在，不影响当前结果。

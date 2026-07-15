@@ -171,7 +171,7 @@ export default async function CompanyDetailPage({
                       </div>
                       <blockquote>{evidence.excerpt}</blockquote>
                       <a href={evidence.canonical_url} rel="noreferrer" target="_blank">
-                        查看虚构来源链接 ↗
+                        查看公开来源链接 ↗
                       </a>
                     </div>
                   ))}

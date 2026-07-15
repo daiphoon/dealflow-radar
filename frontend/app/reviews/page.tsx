@@ -1,0 +1,308 @@
+import Link from "next/link";
+
+import { ApiError, getReviewWorkbench, type ReviewWorkbenchItem } from "@/lib/api";
+
+import { submitReviewDecision } from "./actions";
+
+export const dynamic = "force-dynamic";
+
+const eventTypeLabels: Record<string, string> = {
+  financial_operation: "财务与经营",
+  financing_cap_table: "融资与股权",
+  contract_commercial: "合同与商业化",
+  product_technology: "产品与技术",
+  governance_people: "治理与人员",
+  legal_compliance: "司法与合规",
+  capacity_assets: "产能与资产",
+  exit_liquidity: "退出与流动性",
+  information_quality: "信息质量",
+};
+
+const directionLabels: Record<string, string> = {
+  positive: "积极",
+  negative: "消极",
+  neutral: "中性",
+  mixed: "混合",
+  unknown: "未知",
+};
+
+const riskLabels: Record<string, string> = {
+  none: "无显著风险",
+  low: "低风险",
+  moderate: "中等风险",
+  high: "高风险",
+  critical: "严重风险",
+};
+
+const triggerLabels: Record<string, string> = {
+  manual_research_import: "人工研究导入",
+  human_review_required: "强制人工审核",
+  identity_unresolved: "主体待解析",
+  existing_event_new_evidence: "已有事件的新证据",
+};
+
+const resultMessages: Record<string, string> = {
+  approve: "已批准候选事件并更新发布状态。",
+  reject: "已驳回候选事件，审核理由已保留。",
+};
+
+const errorMessages: Record<string, string> = {
+  invalid_input: "请填写 3—1000 字的决定理由。",
+  forbidden: "该审核项不可决定、已被处理，或当前身份无权操作。",
+  request_failed: "决定提交失败，数据未变更，请检查后端状态。",
+};
+
+function formatDateTime(value: string | null): string {
+  if (!value) return "未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Shanghai",
+  }).format(new Date(value));
+}
+
+function statusLabel(status: string): string {
+  if (status === "pending") return "待审";
+  if (status === "approved") return "已批准";
+  if (status === "rejected") return "已驳回";
+  return status;
+}
+
+function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
+  const event = review.event;
+  return (
+    <article className="review-card">
+      <div className="review-card-heading">
+        <div>
+          <p className="eyebrow">
+            {review.company_legal_name ?? review.mention_text ?? "主体待确认"}
+          </p>
+          <h3>{event?.title ?? "主体身份待解析"}</h3>
+        </div>
+        <span className={`review-status review-status-${review.status}`}>
+          {statusLabel(review.status)}
+        </span>
+      </div>
+
+      <div className="trigger-list" aria-label="触发规则">
+        {review.trigger_rules.map((rule) => (
+          <span key={rule}>{triggerLabels[rule] ?? rule}</span>
+        ))}
+      </div>
+
+      {event ? (
+        <>
+          <p className="review-summary">{event.summary}</p>
+          <div className="event-meta review-time-grid">
+            <span>事件时间：{formatDateTime(event.occurred_at)}</span>
+            <span>来源发布：{formatDateTime(event.published_at)}</span>
+            <span>系统发现：{formatDateTime(event.observed_at)}</span>
+          </div>
+
+          <dl className="score-grid review-score-grid">
+            <div>
+              <dt>类别</dt>
+              <dd>{eventTypeLabels[event.event_type] ?? event.event_type}</dd>
+            </div>
+            <div>
+              <dt>方向</dt>
+              <dd>{directionLabels[event.direction] ?? event.direction}</dd>
+            </div>
+            <div>
+              <dt>重要性</dt>
+              <dd>{event.materiality_score}/100</dd>
+            </div>
+            <div>
+              <dt>风险</dt>
+              <dd>{riskLabels[event.risk_severity] ?? event.risk_severity}</dd>
+            </div>
+            <div>
+              <dt>可信度 / 来源</dt>
+              <dd>
+                {Math.round(Number(event.confidence_score) * 100)}% / {event.source_quality} 级
+              </dd>
+            </div>
+          </dl>
+
+          <div className="review-detail-grid">
+            <section>
+              <h4>结构化事实</h4>
+              <dl className="fact-list">
+                {event.facts.map((fact, index) => (
+                  <div key={`${fact.name}-${index}`}>
+                    <dt>{fact.name}</dt>
+                    <dd>
+                      {fact.value}
+                      {fact.unit ? ` ${fact.unit}` : ""}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+            <section>
+              <h4>不确定性</h4>
+              {event.uncertainties.length ? (
+                <ul>
+                  {event.uncertainties.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="muted">暂无额外不确定性记录。</p>
+              )}
+            </section>
+          </div>
+
+          <div className="review-evidence-list">
+            {event.evidence.map((evidence) => (
+              <div className="evidence" key={evidence.id}>
+                <div>
+                  <span className="eyebrow">
+                    证据 · {evidence.source_name} · {evidence.source_quality} 级
+                  </span>
+                  <strong>{evidence.title}</strong>
+                </div>
+                <blockquote>{evidence.excerpt}</blockquote>
+                <div className="evidence-footer">
+                  <span>系统发现：{formatDateTime(evidence.observed_at)}</span>
+                  <a href={evidence.canonical_url} rel="noreferrer" target="_blank">
+                    查看公开来源 ↗
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {review.status === "pending" ? (
+            <form action={submitReviewDecision} className="review-form">
+              <input name="review_id" type="hidden" value={review.id} />
+              <label htmlFor={`reason-${review.id}`}>
+                决定理由（必填）
+              </label>
+              <textarea
+                id={`reason-${review.id}`}
+                maxLength={1000}
+                minLength={3}
+                name="reason"
+                placeholder="说明主体、事实、证据与不确定性的核验结论"
+                required
+                rows={3}
+              />
+              <label className="review-confirmation">
+                <input name="confirmed" required type="checkbox" />
+                <span>我已核对主体、证据、时间和不确定性，并理解本次决定会写入数据库。</span>
+              </label>
+              <div className="review-actions">
+                <button className="button button-approve" name="decision" type="submit" value="approve">
+                  批准并发布
+                </button>
+                <button className="button button-reject" name="decision" type="submit" value="reject">
+                  驳回候选
+                </button>
+              </div>
+              <p>批准后将在事务中发布事件并重建快照；页面不会调用外部 Provider。</p>
+            </form>
+          ) : (
+            <div className="decision-note">
+              <strong>审核结果：{statusLabel(review.status)}</strong>
+              <span>{review.decision_reason ?? "未记录理由"}</span>
+              <span>{formatDateTime(review.decided_at)}</span>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="identity-review-note">
+          <p>
+            匹配规则：{review.match_rule ?? "未知"} · 匹配置信度：
+            {review.match_confidence ? `${Math.round(Number(review.match_confidence) * 100)}%` : "未知"}
+          </p>
+          <p>
+            当前状态：{review.resolution_status ?? "unresolved"}。该类审核项需先完成“选择公司并重建候选”流程，本工作台不提供直接批准按钮。
+          </p>
+        </div>
+      )}
+    </article>
+  );
+}
+
+export default async function ReviewsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ result?: string; error?: string }>;
+}) {
+  const query = await searchParams;
+  try {
+    const reviews = await getReviewWorkbench();
+    const sortedReviews = [...reviews].sort((left, right) => {
+      const statusDifference = Number(left.status !== "pending") - Number(right.status !== "pending");
+      return statusDifference || left.created_at.localeCompare(right.created_at);
+    });
+    const pendingCount = reviews.filter((review) => review.status === "pending").length;
+    return (
+      <main className="shell page-stack">
+        <section className="hero detail-hero">
+          <div>
+            <p className="eyebrow">本机受控验证</p>
+            <h1>人工审核工作台</h1>
+            <p>
+              只读取已入库候选、证据和评价。批准或驳回必须填写理由，打开页面不会产生外部调用。
+            </p>
+          </div>
+          <Link className="back-link" href="/">
+            返回公司列表 →
+          </Link>
+        </section>
+
+        {query.result && resultMessages[query.result] ? (
+          <div className="feedback feedback-success">{resultMessages[query.result]}</div>
+        ) : null}
+        {query.error && errorMessages[query.error] ? (
+          <div className="feedback feedback-error">{errorMessages[query.error]}</div>
+        ) : null}
+
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">待处理与历史</p>
+              <h2>{pendingCount} 个待审项</h2>
+            </div>
+            <span className="muted">共 {reviews.length} 条审核记录</span>
+          </div>
+
+          {sortedReviews.length ? (
+            <div className="review-list">
+              {sortedReviews.map((review) => (
+                <ReviewCard key={review.id} review={review} />
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">当前没有需要处理的审核项。</div>
+          )}
+        </section>
+
+        <section className="gap-panel review-security-note">
+          <p className="eyebrow">安全边界</p>
+          <p>
+            本页面默认关闭，仅可在本机私有验证环境显式开启。
+            <code>X-Demo-User-Id</code> 不是生产认证，不得将真实数据工作台暴露到公网。
+          </p>
+        </section>
+      </main>
+    );
+  } catch (error) {
+    const disabled = error instanceof ApiError && error.status === 404;
+    return (
+      <main className="shell page-stack">
+        <section className="hero">
+          <p className="eyebrow">{disabled ? "安全开关" : "读取失败"}</p>
+          <h1>{disabled ? "审核工作台未开启" : "暂时无法读取审核队列"}</h1>
+          <p>
+            {disabled
+              ? "仅在本机受控环境设置 REVIEW_WORKBENCH_ENABLED=true 后使用。"
+              : "请检查后端、数据库与审核员角色配置。"}
+          </p>
+        </section>
+      </main>
+    );
+  }
+}

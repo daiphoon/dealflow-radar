@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import Link from "next/link";
 
 import "./globals.css";
 
@@ -14,10 +15,16 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <header className="site-header">
           <div className="shell header-inner">
-            <a className="brand" href="/">
+            <Link className="brand" href="/">
               原始股雷达
-            </a>
-            <span className="demo-badge">虚构数据 Demo</span>
+            </Link>
+            <div className="header-actions">
+              <nav className="site-nav" aria-label="主导航">
+                <Link href="/">公司组合</Link>
+                <Link href="/reviews">人工审核</Link>
+              </nav>
+              <span className="demo-badge">Demo / Validation</span>
+            </div>
           </div>
         </header>
         {children}

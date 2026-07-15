@@ -20,11 +20,12 @@
 | `GET /refresh-jobs/{id}` | 查看后台状态 | 不暴露 Secret 或 Provider 原始敏感响应 |
 | `POST /research-imports` | 创建导入批次 | 文件哈希幂等；只生成候选 |
 | `GET /reviews` | 审核队列 | 按角色/范围和风险排序 |
-| `POST /reviews/{id}/decision` | 通过、纠正、驳回、撤回 | 幂等、理由必填、事务发布和审计 |
+| `GET /reviews/workbench` | 审核工作台详情 | V1 仅在显式开关开启后返回候选、证据、评价和不确定性 |
+| `POST /reviews/{id}/decision` | 审核决定 | V1 支持批准或驳回；理由必填，事务发布并保留决定记录 |
 | `GET /reports/portfolio-weekly` | 固定模板周报 | 按事实水位读取已生成结果 |
 | `GET /usage` | 成本仪表盘 | 聚合租户/公司/Provider/有效事件成本 |
 
-人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`，尚未实现 `POST /research-imports`。原因是当前 `X-Demo-User-Id` 只适用于虚构测试，不足以保护真实文件上传；网页/API 导入须等正式认证、上传隔离、文件审计和许可校验完成后再实现。`POST /reviews/{id}/decision` 当前只处理事件审核；实体提及审核会明确拒绝直接批准，后续需新增“选择公司并重建候选”的专用身份解析契约。
+人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`，尚未实现 `POST /research-imports`。原因是当前 `X-Demo-User-Id` 只适用于测试，不足以保护真实文件上传；网页/API 导入须等正式认证、上传隔离、文件审计和许可校验完成后再实现。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放给 `reviewer`；该开关不能替代认证。`POST /reviews/{id}/decision` 当前只处理事件审核；实体提及审核会明确拒绝直接批准，后续需新增“选择公司并重建候选”的专用身份解析契约。纠正、撤回和保持待审仍属于后续契约。
 
 `POST /refresh` 的响应明确区分 `fresh_noop`、`queued`、`merged`、`cooldown_deferred`、`budget_deferred`、`external_disabled`。`dry_run=true` 时只返回计划 Provider、搜索数、Token 上界和预计费用，不产生外部调用。
 
