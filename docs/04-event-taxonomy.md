@@ -38,8 +38,8 @@
 
 - `low`：局部、可逆、短期不影响核心经营。
 - `moderate`：可能影响重要业务、现金或合规，需要跟踪。
-- `high`：可能实质影响持续经营、控制权、估值或退出，必须人工审核。
-- `critical`：破产清算、核心停产、重大刑事/欺诈指控、控制权丧失等，必须优先审核且绝不自动发布。
+- `high`：可能实质影响持续经营、控制权、估值或退出，默认保留为未确认线索。
+- `critical`：破产清算、核心停产、重大刑事/欺诈指控、控制权丧失等，绝不自动升级为已确认事实。
 
 ### 2.3 可信度与来源等级
 
@@ -53,29 +53,24 @@
 
 `license_status` 单独记录获取、缓存、引用和再分发权限，不计入 `source_quality` 或 `confidence_score`。即使来源质量为 A，许可不允许保存或展示时也必须遵守许可；许可未知会阻塞相应保存/发布动作，但不能通过降低来源分数来掩盖。
 
-## 3. 自动发布与强制审核
+## 3. 自动发布、未确认线索与身份审核
 
-自动发布必须同时满足：Schema 校验通过；公司身份 `verified`；至少一条可定位证据；来源 A/B；`confidence_score >= configured_threshold`（Demo 建议 0.85）；无来源冲突；不属于高/极高风险；不命中强制审核子类；规则明确允许。
+自动发布必须同时满足：Schema 校验通过；公司身份 `verified`；至少一条可定位且已检查的证据；来源 A/B；`confidence_score >= configured_threshold`；无来源冲突；不属于高/极高风险；规则明确允许。策略阈值和版本通过配置管理，不写死在业务流程中。
 
-以下任一条件强制人工审核：身份歧义；来源冲突；只有 D/E 来源；高或极高风险；欺诈、刑事、失联、破产、停业、核心人员调查；可能实质影响估值、持续经营或退出；低于置信阈值；金额/单位异常；撤稿、纠错或后续裁判。非官方重大负面原则上还需两个独立来源。指控必须保留“被指控/尚未认定”等法律状态。
+身份歧义或组织关系无法解析时强制进入身份审核队列，且不生成事件。来源冲突、只有低质量来源、高或极高风险、严重指控、低于置信阈值、金额/单位异常、链接不可用、撤稿或后续裁判等情况保存为 `unconfirmed_lead`；线索可以展示，但不进入快照，只有用户需要正式判断时才按需复核。非官方重大负面原则上需要两个独立来源才能升级为事实，指控必须保留“被指控/尚未认定”等法律状态。
 
 ```mermaid
 sequenceDiagram
   participant X as Event Extractor
   participant G as Risk Gate
-  participant Q as Review Queue
-  actor H as 审核员
+  participant Q as 身份例外队列
   participant D as 事件库与快照
   X->>G: 候选事件、证据、主体匹配、五项评价
   G->>G: 检查严重负面、冲突、来源和异常值
-  alt 命中强制审核
-    G->>Q: 状态 in_review，冻结发布
-    Q->>H: 展示原始证据和不确定性
-    alt 通过或纠正
-      H->>D: 事务内发布版本并更新快照
-    else 驳回
-      H->>D: 保留 rejected 与理由
-    end
+  alt 命中未确认条件
+    G->>D: 保存 unconfirmed_lead，不更新快照
+  else 主体无法解析
+    G->>Q: 保留证据并等待身份确认
   else 满足自动发布白名单
     G->>D: 发布并记录规则版本
   end
@@ -83,6 +78,6 @@ sequenceDiagram
 
 ## 4. 状态与后续更新
 
-`candidate` 经风险闸门后进入 `in_review` 或允许 `published`；审核可转为 `rejected`。已发布事件若原文撤回或事实失效，保留记录并标记 `retracted`；事实纠正时创建新版本，旧版本标记 `corrected` 并互相关联。新的裁判、融资进展或合同后续作为独立后续事件，通过 `related_event_id` 建立时间线，不能静默改写历史。
+`candidate` 经风险闸门后标记 `publication_route = unconfirmed_lead`，或转为 `published`；只有按需人工复核才进入 `in_review`。已发布事件若原文撤回或事实失效，保留记录并标记 `retracted`；事实纠正时创建新版本，旧版本标记 `corrected` 并互相关联。新的裁判、融资进展或合同后续作为独立后续事件，通过 `related_event_id` 建立时间线，不能静默改写历史。
 
 详细字段校验见[API 设计](08-api-design.md)，事务和版本关系见[数据库设计](03-database-design.md)。

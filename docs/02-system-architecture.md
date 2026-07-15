@@ -53,7 +53,7 @@ sequenceDiagram
   participant W as Worker
   participant P as Provider/Fetched Data
   participant D as PostgreSQL
-  participant R as 审核队列
+  participant R as 身份例外队列
   S->>D: 选取 next_check_at 到期且预算允许的公司
   S->>J: 以 idempotency_key 插入或合并任务
   W->>J: SKIP LOCKED 领取租约
@@ -64,10 +64,12 @@ sequenceDiagram
     W->>D: 记录 no_change 并延后 next_check_at
   else 有新内容
     W->>D: 规则初筛、实体匹配、严格 Schema 抽取与事件去重
-    alt 触发风险闸门
-      W->>R: 创建审核项，不发布
+    alt 主体无法唯一解析
+      W->>R: 创建身份审核项，不生成事件
     else 可自动发布
       W->>D: 事务内发布事件并重建该公司快照
+    else 命中质量或风险条件
+      W->>D: 保存 unconfirmed_lead，不更新快照
     end
   end
   W->>D: 记录用量、费用、产出与下一次频率
@@ -97,7 +99,7 @@ sequenceDiagram
 
 Mock Worker V1 仅为虚构数据提供单任务命令入口：按租户使用 `FOR UPDATE SKIP LOCKED` 领取 `mock_refresh`，写入可配置的短租约与心跳，过期后允许重领，并用 `usage_ledger` 记录零次外部调用和零费用。有当前快照时只更新 `last_checked_at` 与新鲜度，保留 `data_as_of`；无快照时不生成事实，继续保持 `unknown`。完整 `refresh_policies` 表、`next_check_at`、Cron、常驻 Worker、真实 Provider 流水线和重试仍按后续阶段实施。
 
-人工研究导入 V1 是独立的本机异步前置入口，不进入用户同步查询路径：机构管理员从 Git 忽略的私有目录导入公开来源 JSON，系统按文件、批次、来源记录和事件指纹去重。主体未解析时形成实体提及审核项；主体已验证时形成 `in_review` 事件、证据和事件审核项。两条路径都不自动发布、不更新快照、不访问网络，批次元数据由 `research_imports` 的租户 RLS 隔离。
+人工研究导入 V1 是独立的本机前置入口，不进入用户同步查询路径：机构管理员从 Git 忽略的私有目录导入公开来源 JSON，系统按文件、批次、来源记录和事件指纹去重。主体未解析时只形成实体提及审核项；主体已验证时检查证据 URL、来源等级、官方域名、可信度和风险。安全记录自动发布并重建快照，其他记录以 `unconfirmed_lead` 路由保存且不创建逐条审核任务。URL 外部检查受总开关和每批上限控制；关闭时安全降级为未确认线索。批次元数据由 `research_imports` 的租户 RLS 隔离。
 
 ## 5. 后台流水线
 
@@ -107,10 +109,10 @@ Mock Worker V1 仅为虚构数据提供单任务命令入口：按租户使用 `
 4. Fetcher 保存原始响应元数据及许可允许的最小内容。
 5. Change Detector 用来源记录 ID、规范 URL、发布时间、ETag/Last-Modified 和内容哈希识别变化。
 6. Rule Filter 低成本排除明显无关或旧内容。
-7. Entity Matcher 确认目标主体；歧义进入审核。
+7. Entity Matcher 确认目标主体；只有身份或组织关系歧义进入人工队列。
 8. Event Extractor 只对新且相关内容调用低成本模型，输出严格版本化 JSON。
 9. Event Deduplicator 用事件指纹合并同一事件的多来源证据。
-10. Risk Gate 拦截严重负面、来源冲突、低置信度和异常金额单位。
+10. Risk Gate 将严重负面、来源冲突、低置信度和异常金额单位保留为未确认线索；安全白名单事实才自动发布。
 11. Snapshot Builder 仅对事实发生变化的公司重建派生快照。
 12. Report Builder 仅对变化公司用固定模板生成增量内容。
 13. Usage Ledger 按 Provider、任务、公司和租户记录用量、估价与有效产出。
@@ -123,7 +125,7 @@ Provider 协议、Kimi 导入和 DeepSeek 边界见[数据源策略](05-data-sou
 - 任务：数据库唯一幂等键，加“同公司+任务类型仅一个活跃任务”的部分唯一索引。
 - 文档：来源记录 ID、规范 URL 与内容哈希三级去重；重复文档不进入模型。
 - 事件：版本化事件指纹唯一；新来源只增加 `event_evidence`。
-- 事务：原始文档可先独立持久化；候选事件与证据同事务写入；审核发布、旧状态变更和快照切换在单事务完成。
+- 事务：原始文档可先独立持久化；事件、证据、发布路由和快照切换在单事务完成；历史人工决定、纠错和撤回同样保持事务性。
 - 租约：Worker 使用 `FOR UPDATE SKIP LOCKED` 原子领取，设置 `leased_until` 和 `heartbeat_at`。
 - 崩溃恢复：租约过期后可重新领取；每一步根据持久化检查点安全重放，不重复调用已有响应的 Provider。
 - 重试：确定性校验失败不重试；网络/限流按 Provider 策略最多有限次指数退避；LLM JSON 失败最多修复重试一次。

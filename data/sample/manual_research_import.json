@@ -39,8 +39,7 @@
       ],
       "uncertainties": [
         "未披露金额"
-      ],
-      "requires_human_review": true
+      ]
     },
     {
       "external_record_id": "manual-example-record-002",
@@ -73,8 +72,7 @@
       ],
       "uncertainties": [
         "无法唯一匹配公司"
-      ],
-      "requires_human_review": true
+      ]
     }
   ]
 }

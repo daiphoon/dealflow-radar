@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
+import socket
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -27,6 +31,135 @@ def _validate_public_http_url(value: str) -> str:
     if not has_host or parsed.username is not None or parsed.password is not None:
         raise ValueError("URL must include a host and must not include credentials")
     return value
+
+
+def _validate_public_network_url(value: str) -> str:
+    _validate_public_http_url(value)
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("source URL must use HTTP(S)")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        addresses = socket.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as error:
+        raise ValueError("source URL host could not be resolved") from error
+    if not addresses:
+        raise ValueError("source URL host could not be resolved")
+    for address in addresses:
+        host = str(address[4][0]).split("%", maxsplit=1)[0]
+        if not ipaddress.ip_address(host).is_global:
+            raise ValueError("source URL must not resolve to a private network")
+    return value
+
+
+class _PublicRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: Request,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> Request | None:
+        _validate_public_network_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class DocumentVerification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["healthy", "broken", "unavailable", "unchecked"]
+    checked_at: datetime | None = None
+    http_status: int | None = Field(default=None, ge=100, le=599)
+    final_url: str | None = None
+    reason: str
+    external_calls: int = Field(ge=0)
+
+
+class DocumentVerifier(Protocol):
+    def verify(self, url: str) -> DocumentVerification: ...
+
+
+class DisabledDocumentVerifier:
+    def verify(self, url: str) -> DocumentVerification:
+        return DocumentVerification(
+            status="unchecked",
+            reason="external_calls_disabled",
+            external_calls=0,
+        )
+
+
+class HttpDocumentVerifier:
+    def __init__(self, timeout_seconds: int = 10) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        self.timeout_seconds = timeout_seconds
+        self.opener = build_opener(_PublicRedirectHandler())
+
+    def verify(self, url: str) -> DocumentVerification:
+        checked_at = datetime.now(UTC)
+        try:
+            _validate_public_network_url(url)
+        except ValueError:
+            return DocumentVerification(
+                status="unavailable",
+                checked_at=checked_at,
+                reason="unsafe_or_unresolvable_url",
+                external_calls=0,
+            )
+
+        external_calls = 0
+        for method in ("HEAD", "GET"):
+            external_calls += 1
+            request = Request(
+                url,
+                method=method,
+                headers={
+                    "User-Agent": "DealflowRadar/0.1 source-verification",
+                    "Accept": "text/html,application/xhtml+xml",
+                    **({"Range": "bytes=0-0"} if method == "GET" else {}),
+                },
+            )
+            try:
+                with self.opener.open(request, timeout=self.timeout_seconds) as response:
+                    final_url = _validate_public_network_url(response.geturl())
+                    status = int(response.status)
+                    if method == "GET":
+                        response.read(1)
+                    return DocumentVerification(
+                        status="healthy" if 200 <= status < 400 else "broken",
+                        checked_at=checked_at,
+                        http_status=status,
+                        final_url=final_url,
+                        reason="http_success" if 200 <= status < 400 else "http_error",
+                        external_calls=external_calls,
+                    )
+            except HTTPError as error:
+                if method == "HEAD" and error.code in {403, 405, 501}:
+                    continue
+                return DocumentVerification(
+                    status="broken",
+                    checked_at=checked_at,
+                    http_status=error.code,
+                    final_url=error.geturl(),
+                    reason="http_error",
+                    external_calls=external_calls,
+                )
+            except (TimeoutError, URLError, ValueError):
+                return DocumentVerification(
+                    status="unavailable",
+                    checked_at=checked_at,
+                    reason="request_failed",
+                    external_calls=external_calls,
+                )
+
+        return DocumentVerification(
+            status="unavailable",
+            checked_at=checked_at,
+            reason="request_failed",
+            external_calls=external_calls,
+        )
 
 
 class MockFact(BaseModel):
@@ -100,6 +233,7 @@ class ManualResearchRecord(BaseModel):
     source_name: str = Field(min_length=1, max_length=200)
     canonical_url: str = Field(min_length=1, max_length=1000, pattern=r"^https?://")
     source_published_at: datetime | None = None
+    source_published_on: date | None = None
     occurred_at: datetime | None = None
     title: str = Field(min_length=1, max_length=200)
     evidence_excerpt: str = Field(min_length=1, max_length=1000)
@@ -112,7 +246,8 @@ class ManualResearchRecord(BaseModel):
     source_quality: SourceQuality
     facts: list[Fact] = Field(min_length=1, max_length=50)
     uncertainties: list[str] = Field(default_factory=list, max_length=20)
-    requires_human_review: Literal[True]
+    # Backward-compatible import hint. Publication is decided by the policy gate.
+    requires_human_review: bool | None = None
 
     @field_validator("canonical_url")
     @classmethod

@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -12,8 +12,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from backend.app.config import PublicationPolicy
 from backend.app.demo import ALPHA_USER_ID, BETA_USER_ID
 from backend.app.models import (
+    Company,
     CompanySnapshot,
     EntityMention,
     Event,
@@ -25,7 +27,7 @@ from backend.app.models import (
     UsageLedger,
     User,
 )
-from backend.app.providers import ManualResearchImportProvider
+from backend.app.providers import DocumentVerification, ManualResearchImportProvider
 from backend.app.services import (
     AccessDeniedError,
     ImportConflictError,
@@ -46,6 +48,24 @@ def _provider(
     return ManualResearchImportProvider(filename, allowed_root=tmp_path)
 
 
+class StubDocumentVerifier:
+    def __init__(self, status: str = "healthy", http_status: int | None = 200) -> None:
+        self.status = status
+        self.http_status = http_status
+        self.calls = 0
+
+    def verify(self, url: str) -> DocumentVerification:
+        self.calls += 1
+        return DocumentVerification(
+            status=self.status,
+            checked_at=datetime(2026, 7, 15, 8, 0, tzinfo=UTC),
+            http_status=self.http_status,
+            final_url=url,
+            reason="test_verification",
+            external_calls=0,
+        )
+
+
 def test_manual_import_is_idempotent_and_keeps_unresolved_out_of_events(
     tmp_path: Path,
     manual_import_payload: dict[str, object],
@@ -56,26 +76,45 @@ def test_manual_import_is_idempotent_and_keeps_unresolved_out_of_events(
     unresolved = copy.deepcopy(records[0])
     unresolved["external_record_id"] = "manual-record-002"
     unresolved["canonical_url"] = "https://example.invalid/manual-002"
+    unresolved["source_code"] = "manual_unresolved_source"
+    unresolved["source_name"] = "未解析示例来源"
     unresolved["title"] = "未匹配公司的公开线索"
     unresolved["company_identity_evidence"]["legal_name"] = "不存在的示例公司"
     records.append(unresolved)
+    record = records[0]
+    record["canonical_url"] = "https://official.example/manual-001"
+    record["source_quality"] = "B"
+    record["company_identity_evidence"]["credit_code"] = "91310000TEST000001"
+    record["company_identity_evidence"]["official_website"] = "https://official.example"
     provider = _provider(tmp_path, manual_import_payload)
+    verifier = StubDocumentVerifier()
 
     with migrated_app.state.session_factory() as session:
         user = session.get(User, ALPHA_USER_ID)
         assert user is not None
-        first = import_manual_research(session, user, provider)
-        second = import_manual_research(session, user, provider)
+        company = session.scalar(
+            select(Company).where(Company.legal_name == "示例星河科技一号有限公司")
+        )
+        assert company is not None
+        company.credit_code = "91310000TEST000001"
+        company.official_website = "https://official.example"
+        session.commit()
+        first = import_manual_research(session, user, provider, document_verifier=verifier)
+        second = import_manual_research(session, user, provider, document_verifier=verifier)
 
         assert first.status == "completed_with_unresolved"
         assert first.records_seen == 2
         assert first.documents_created == 2
         assert first.events_created == 1
-        assert first.reviews_created == 2
+        assert first.reviews_created == 1
         assert first.resolved_records == 1
         assert first.unresolved_records == 1
         assert first.external_calls == 0
         assert first.estimated_cost == Decimal("0")
+        assert first.auto_published_records == 1
+        assert first.unconfirmed_records == 0
+        assert first.identity_review_records == 1
+        assert verifier.calls == 1
         assert second.status == "duplicate"
         assert second.documents_created == 0
         assert second.events_created == 0
@@ -95,7 +134,9 @@ def test_manual_import_is_idempotent_and_keeps_unresolved_out_of_events(
         assert batch.record_count == 2
         assert batch.resolved_count == 1
         assert batch.unresolved_count == 1
-        assert event is not None and event.status == "in_review"
+        assert event is not None and event.status == "published"
+        assert event.publication_route == "auto_published"
+        assert event.publication_policy_version == "identity-first-v1"
         assert event.fingerprint_version == "manual-v1"
         assert event.occurred_at is None
         assert event.published_at == datetime(2026, 7, 14, 10, 0)
@@ -104,13 +145,10 @@ def test_manual_import_is_idempotent_and_keeps_unresolved_out_of_events(
         assert len(documents) == 2
         assert all(document.research_import_id == batch.id for document in documents)
         assert all("original_query" not in document.payload for document in documents)
-        assert len(reviews) == 2
-        assert any(review.event_id == event.id for review in reviews)
-        assert any(
-            review.entity_mention_id == unresolved_mention.id and review.event_id is None
-            for review in reviews
-        )
-        entity_review = next(review for review in reviews if review.entity_mention_id is not None)
+        assert len(reviews) == 1
+        entity_review = reviews[0]
+        assert entity_review.entity_mention_id == unresolved_mention.id
+        assert entity_review.event_id is None
         with pytest.raises(AccessDeniedError, match="identity resolution"):
             decide_review(session, entity_review.id, user, "approve", "不能跳过主体解析")
         assert entity_review.status == "pending"
@@ -118,8 +156,8 @@ def test_manual_import_is_idempotent_and_keeps_unresolved_out_of_events(
         assert ledger.external_calls == 0
         assert ledger.estimated_cost == Decimal("0")
         assert session.scalar(select(func.count()).select_from(EventEvidence)) == 1
-        assert session.scalar(select(func.count()).select_from(ReviewQueue)) == 2
-        assert session.scalar(select(func.count()).select_from(CompanySnapshot)) == 0
+        assert session.scalar(select(func.count()).select_from(ReviewQueue)) == 1
+        assert session.scalar(select(func.count()).select_from(CompanySnapshot)) == 1
         assert session.scalar(select(func.count()).select_from(ResearchImport)) == 1
         assert session.scalar(select(func.count()).select_from(UsageLedger)) == 1
 
@@ -133,7 +171,15 @@ def test_manual_import_is_idempotent_and_keeps_unresolved_out_of_events(
             (item["event_id"] is None, item["entity_mention_id"] is None)
             for item in response.json()
         }
-        assert review_subjects == {(False, True), (True, False)}
+        assert review_subjects == {(True, False)}
+
+        detail = client.get(
+            f"/api/v1/companies/{event.company_id}",
+            headers={"X-Demo-User-Id": str(ALPHA_USER_ID)},
+        )
+        assert detail.status_code == 200
+        assert detail.json()["events"][0]["publication_route"] == "auto_published"
+        assert detail.json()["unconfirmed_leads"] == []
 
         disabled = client.get(
             "/api/v1/reviews/workbench",
@@ -152,18 +198,8 @@ def test_manual_import_is_idempotent_and_keeps_unresolved_out_of_events(
         )
         assert workbench.status_code == 200
         items = workbench.json()
-        event_item = next(item for item in items if item["event"] is not None)
-        mention_item = next(item for item in items if item["event"] is None)
-
-        assert event_item["company_legal_name"] == "示例星河科技一号有限公司"
-        assert event_item["event"]["title"] == "示例公司签署公开测试合同"
-        assert event_item["event"]["facts"] == [
-            {"name": "contract", "value": "测试合同", "unit": None}
-        ]
-        assert event_item["event"]["uncertainties"] == ["未披露金额"]
-        assert len(event_item["event"]["evidence"]) == 1
-        assert event_item["event"]["evidence"][0]["source_name"] == "示例官方来源"
-        assert event_item["mention_text"] is None
+        assert len(items) == 1
+        mention_item = items[0]
         assert mention_item["event_id"] is None
         assert mention_item["mention_text"] == "不存在的示例公司"
         assert mention_item["resolution_status"] == "unresolved"
@@ -176,7 +212,7 @@ def test_manual_import_is_idempotent_and_keeps_unresolved_out_of_events(
         assert forbidden.status_code == 403
 
 
-def test_manual_import_adds_independent_evidence_to_an_in_review_event(
+def test_manual_import_adds_independent_evidence_to_an_unconfirmed_lead(
     tmp_path: Path,
     manual_import_payload: dict[str, object],
     migrated_app: FastAPI,
@@ -206,13 +242,158 @@ def test_manual_import_adds_independent_evidence_to_an_in_review_event(
 
         assert result.documents_created == 2
         assert result.events_created == 1
-        assert result.reviews_created == 1
+        assert result.reviews_created == 0
+        assert result.auto_published_records == 0
+        assert result.unconfirmed_records == 2
         assert session.scalar(select(func.count()).select_from(Event)) == 1
         assert session.scalar(select(func.count()).select_from(EventEvidence)) == 2
-        assert session.scalar(select(func.count()).select_from(ReviewQueue)) == 1
+        assert session.scalar(select(func.count()).select_from(ReviewQueue)) == 0
+        event = session.scalar(select(Event))
+        assert event is not None and event.status == "candidate"
+        assert event.publication_route == "unconfirmed_lead"
+        assert "source_url_unchecked" in event.publication_reasons
 
 
-def test_manual_import_does_not_attach_unreviewed_evidence_to_published_event(
+def test_broken_source_becomes_visible_unconfirmed_lead_without_review(
+    tmp_path: Path,
+    manual_import_payload: dict[str, object],
+    migrated_app: FastAPI,
+) -> None:
+    records = manual_import_payload["records"]
+    assert isinstance(records, list)
+    record = records[0]
+    record["source_published_at"] = None
+    facts = record["facts"]
+    assert isinstance(facts, list)
+    facts.append({"name": "source_displayed_date", "value": "2026-07-14", "unit": None})
+    provider = _provider(tmp_path, manual_import_payload)
+
+    with migrated_app.state.session_factory() as session:
+        user = session.get(User, ALPHA_USER_ID)
+        assert user is not None
+        result = import_manual_research(
+            session,
+            user,
+            provider,
+            document_verifier=StubDocumentVerifier("broken", 404),
+        )
+
+        event = session.scalar(select(Event))
+        assert result.unconfirmed_records == 1
+        assert result.reviews_created == 0
+        assert event is not None and event.status == "candidate"
+        assert event.published_at is None
+        assert event.published_on.isoformat() == "2026-07-14"
+        assert event.publication_route == "unconfirmed_lead"
+        assert "source_url_broken" in event.publication_reasons
+        assert session.scalar(select(func.count()).select_from(CompanySnapshot)) == 0
+        company_id = event.company_id
+
+    with TestClient(migrated_app) as client:
+        response = client.get(
+            f"/api/v1/companies/{company_id}",
+            headers={"X-Demo-User-Id": str(ALPHA_USER_ID)},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["events"] == []
+        assert payload["unconfirmed_leads"][0]["published_on"] == "2026-07-14"
+        evidence = payload["unconfirmed_leads"][0]["evidence"][0]
+        assert evidence["url_health_status"] == "broken"
+        assert evidence["url_http_status"] == 404
+
+
+def test_auto_published_event_without_source_date_keeps_snapshot_date_unknown(
+    tmp_path: Path,
+    manual_import_payload: dict[str, object],
+    migrated_app: FastAPI,
+) -> None:
+    records = manual_import_payload["records"]
+    assert isinstance(records, list)
+    records[0]["source_published_at"] = None
+    provider = _provider(tmp_path, manual_import_payload)
+
+    with migrated_app.state.session_factory() as session:
+        user = session.get(User, ALPHA_USER_ID)
+        assert user is not None
+        result = import_manual_research(
+            session,
+            user,
+            provider,
+            document_verifier=StubDocumentVerifier(),
+        )
+
+        event = session.scalar(select(Event))
+        snapshot = session.scalar(select(CompanySnapshot))
+        assert result.auto_published_records == 1
+        assert event is not None and event.published_on is None
+        assert snapshot is not None and snapshot.data_as_of is None
+        assert any("缺少发生或来源日期" in gap for gap in snapshot.information_gaps)
+
+
+def test_high_risk_record_stays_unconfirmed_even_with_healthy_source(
+    tmp_path: Path,
+    manual_import_payload: dict[str, object],
+    migrated_app: FastAPI,
+) -> None:
+    records = manual_import_payload["records"]
+    assert isinstance(records, list)
+    records[0]["risk_severity"] = "high"
+    provider = _provider(tmp_path, manual_import_payload)
+
+    with migrated_app.state.session_factory() as session:
+        user = session.get(User, ALPHA_USER_ID)
+        assert user is not None
+        result = import_manual_research(
+            session,
+            user,
+            provider,
+            document_verifier=StubDocumentVerifier(),
+        )
+
+        event = session.scalar(select(Event))
+        assert result.unconfirmed_records == 1
+        assert result.reviews_created == 0
+        assert event is not None and event.status == "candidate"
+        assert "high_risk_unconfirmed" in event.publication_reasons
+
+
+def test_source_url_check_budget_defers_remaining_records(
+    tmp_path: Path,
+    manual_import_payload: dict[str, object],
+    migrated_app: FastAPI,
+) -> None:
+    records = manual_import_payload["records"]
+    assert isinstance(records, list)
+    second = copy.deepcopy(records[0])
+    second["external_record_id"] = "manual-record-002"
+    second["event_subtype"] = "second_contract"
+    second["title"] = "第二条公开测试合同"
+    records.append(second)
+    provider = _provider(tmp_path, manual_import_payload)
+    verifier = StubDocumentVerifier()
+
+    with migrated_app.state.session_factory() as session:
+        user = session.get(User, ALPHA_USER_ID)
+        assert user is not None
+        result = import_manual_research(
+            session,
+            user,
+            provider,
+            PublicationPolicy(max_source_url_checks_per_import=1),
+            verifier,
+        )
+
+        events = list(session.scalars(select(Event).order_by(Event.title)))
+        assert result.auto_published_records == 1
+        assert result.unconfirmed_records == 1
+        assert verifier.calls == 1
+        assert {event.status for event in events} == {"candidate", "published"}
+        deferred = next(event for event in events if event.status == "candidate")
+        assert "source_url_unchecked" in deferred.publication_reasons
+
+
+def test_manual_import_auto_attaches_verified_evidence_to_published_event(
     tmp_path: Path,
     manual_import_payload: dict[str, object],
     migrated_app: FastAPI,
@@ -228,28 +409,34 @@ def test_manual_import_does_not_attach_unreviewed_evidence_to_published_event(
     second_records[0]["canonical_url"] = "https://later.example.invalid/confirmation"
     second_records[0]["source_published_at"] = "2026-07-16T11:00:00+08:00"
     second_provider = _provider(tmp_path, second_payload, "second.json")
+    verifier = StubDocumentVerifier()
 
     with migrated_app.state.session_factory() as session:
         user = session.get(User, ALPHA_USER_ID)
         assert user is not None
-        import_manual_research(session, user, first_provider)
-        event_review = session.scalar(select(ReviewQueue).where(ReviewQueue.event_id.is_not(None)))
-        assert event_review is not None
-        decide_review(session, event_review.id, user, "approve", "验证发布后证据隔离")
+        first = import_manual_research(
+            session,
+            user,
+            first_provider,
+            document_verifier=verifier,
+        )
+        assert first.auto_published_records == 1
 
-        result = import_manual_research(session, user, second_provider)
+        result = import_manual_research(
+            session,
+            user,
+            second_provider,
+            document_verifier=verifier,
+        )
 
         event = session.scalar(select(Event))
-        evidence_review = session.scalar(
-            select(ReviewQueue).where(ReviewQueue.entity_mention_id.is_not(None))
-        )
         assert result.events_created == 0
-        assert result.reviews_created == 1
+        assert result.reviews_created == 0
+        assert result.auto_published_records == 1
         assert event is not None and event.status == "published"
-        assert evidence_review is not None
-        assert "existing_event_new_evidence" in evidence_review.trigger_rules
         assert session.scalar(select(func.count()).select_from(Event)) == 1
-        assert session.scalar(select(func.count()).select_from(EventEvidence)) == 1
+        assert session.scalar(select(func.count()).select_from(EventEvidence)) == 2
+        assert session.scalar(select(func.count()).select_from(ReviewQueue)) == 0
         assert session.scalar(select(func.count()).select_from(CompanySnapshot)) == 1
 
 

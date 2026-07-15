@@ -14,8 +14,13 @@ class EvidenceOut(BaseModel):
     title: str
     canonical_url: str
     published_at: datetime | None
+    published_on: date | None
     observed_at: datetime
     excerpt: str
+    url_health_status: str
+    url_http_status: int | None
+    url_checked_at: datetime | None
+    final_url: str | None
 
 
 class EventOut(BaseModel):
@@ -24,6 +29,7 @@ class EventOut(BaseModel):
     event_subtype: str
     occurred_at: datetime | None
     published_at: datetime | None
+    published_on: date | None
     direction: str
     materiality_score: int
     risk_severity: str
@@ -34,6 +40,9 @@ class EventOut(BaseModel):
     facts: list[dict[str, str | None]]
     uncertainties: list[str]
     status: str
+    publication_route: str
+    publication_policy_version: str
+    publication_reasons: list[str]
     observed_at: datetime
     evidence: list[EvidenceOut]
 
@@ -64,6 +73,7 @@ class CompanyDetail(BaseModel):
     id: UUID
     legal_name: str
     registered_region: str | None
+    official_website: str | None
     identity_status: str
     data_as_of: date | None
     last_checked_at: datetime | None
@@ -71,6 +81,7 @@ class CompanyDetail(BaseModel):
     information_gaps: list[str]
     investments: list[InvestmentOut]
     events: list[EventOut]
+    unconfirmed_leads: list[EventOut]
 
 
 class ReviewDecisionIn(BaseModel):
@@ -128,6 +139,9 @@ class ResearchImportResult(BaseModel):
     reviews_created: int
     resolved_records: int
     unresolved_records: int
+    auto_published_records: int = 0
+    unconfirmed_records: int = 0
+    identity_review_records: int = 0
     external_calls: int = 0
     estimated_cost: Decimal = Decimal("0")
 

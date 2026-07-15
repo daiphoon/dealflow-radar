@@ -18,8 +18,13 @@ export type Evidence = {
   title: string;
   canonical_url: string;
   published_at: string | null;
+  published_on: string | null;
   observed_at: string;
   excerpt: string;
+  url_health_status: string;
+  url_http_status: number | null;
+  url_checked_at: string | null;
+  final_url: string | null;
 };
 
 export type Event = {
@@ -28,6 +33,7 @@ export type Event = {
   event_subtype: string;
   occurred_at: string | null;
   published_at: string | null;
+  published_on: string | null;
   direction: string;
   materiality_score: number;
   risk_severity: string;
@@ -38,6 +44,9 @@ export type Event = {
   facts: Array<{ name: string; value: string; unit: string | null }>;
   uncertainties: string[];
   status: string;
+  publication_route: string;
+  publication_policy_version: string;
+  publication_reasons: string[];
   observed_at: string;
   evidence: Evidence[];
 };
@@ -76,6 +85,7 @@ export type CompanyDetail = {
   id: string;
   legal_name: string;
   registered_region: string | null;
+  official_website: string | null;
   identity_status: string;
   data_as_of: string | null;
   last_checked_at: string | null;
@@ -83,6 +93,7 @@ export type CompanyDetail = {
   information_gaps: string[];
   investments: Investment[];
   events: Event[];
+  unconfirmed_leads: Event[];
 };
 
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://127.0.0.1:8000";

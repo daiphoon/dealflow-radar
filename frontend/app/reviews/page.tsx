@@ -61,11 +61,27 @@ function formatDateTime(value: string | null): string {
   }).format(new Date(value));
 }
 
+function formatSourceDate(publishedAt: string | null, publishedOn: string | null): string {
+  if (publishedAt) return formatDateTime(publishedAt);
+  if (!publishedOn) return "未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    dateStyle: "medium",
+    timeZone: "Asia/Shanghai",
+  }).format(new Date(publishedOn));
+}
+
 function statusLabel(status: string): string {
   if (status === "pending") return "待审";
   if (status === "approved") return "已批准";
   if (status === "rejected") return "已驳回";
   return status;
+}
+
+function publicationRouteLabel(route: string): string {
+  if (route === "auto_published") return "规则自动发布";
+  if (route === "unconfirmed_lead") return "未确认线索";
+  if (route === "human_confirmed" || route === "legacy_reviewed") return "人工或历史确认";
+  return route;
 }
 
 function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
@@ -93,9 +109,15 @@ function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
       {event ? (
         <>
           <p className="review-summary">{event.summary}</p>
+          <p className="privacy-note">
+            当前发布路由：{publicationRouteLabel(event.publication_route)}。
+            {review.status === "approved" && event.publication_route === "unconfirmed_lead"
+              ? " 历史批准记录仍保留，但该事件因当前质量规则已降级，不进入公司快照。"
+              : ""}
+          </p>
           <div className="event-meta review-time-grid">
             <span>事件时间：{formatDateTime(event.occurred_at)}</span>
-            <span>来源发布：{formatDateTime(event.published_at)}</span>
+            <span>来源发布：{formatSourceDate(event.published_at, event.published_on)}</span>
             <span>系统发现：{formatDateTime(event.observed_at)}</span>
           </div>
 
@@ -154,23 +176,38 @@ function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
           </div>
 
           <div className="review-evidence-list">
-            {event.evidence.map((evidence) => (
-              <div className="evidence" key={evidence.id}>
-                <div>
-                  <span className="eyebrow">
-                    证据 · {evidence.source_name} · {evidence.source_quality} 级
-                  </span>
-                  <strong>{evidence.title}</strong>
+            {event.evidence.map((evidence) => {
+              const sourceAvailable = evidence.url_health_status === "healthy";
+              return (
+                <div className="evidence" key={evidence.id}>
+                  <div>
+                    <span className="eyebrow">
+                      证据 · {evidence.source_name} · {evidence.source_quality} 级
+                    </span>
+                    <strong>{evidence.title}</strong>
+                  </div>
+                  <blockquote>{evidence.excerpt}</blockquote>
+                  <div className="evidence-footer">
+                    <span>系统发现：{formatDateTime(evidence.observed_at)}</span>
+                    {sourceAvailable ? (
+                      <a
+                        href={evidence.final_url ?? evidence.canonical_url}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        查看公开来源 ↗
+                      </a>
+                    ) : (
+                      <span className="muted">
+                        来源链接
+                        {evidence.url_health_status === "unchecked" ? "尚未检查" : "当前不可用"}
+                        {evidence.url_http_status ? `（HTTP ${evidence.url_http_status}）` : ""}
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <blockquote>{evidence.excerpt}</blockquote>
-                <div className="evidence-footer">
-                  <span>系统发现：{formatDateTime(evidence.observed_at)}</span>
-                  <a href={evidence.canonical_url} rel="noreferrer" target="_blank">
-                    查看公开来源 ↗
-                  </a>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {review.status === "pending" ? (
@@ -243,9 +280,9 @@ export default async function ReviewsPage({
         <section className="hero detail-hero">
           <div>
             <p className="eyebrow">本机受控验证</p>
-            <h1>人工审核工作台</h1>
+            <h1>身份例外与历史审核</h1>
             <p>
-              只读取已入库候选、证据和评价。批准或驳回必须填写理由，打开页面不会产生外部调用。
+              新导入只把身份歧义放到这里；既有事件审核记录继续保留。打开页面不会产生外部调用。
             </p>
           </div>
           <Link className="back-link" href="/">
@@ -264,7 +301,7 @@ export default async function ReviewsPage({
           <div className="panel-heading">
             <div>
               <p className="eyebrow">待处理与历史</p>
-              <h2>{pendingCount} 个待审项</h2>
+              <h2>{pendingCount} 个待处理项</h2>
             </div>
             <span className="muted">共 {reviews.length} 条审核记录</span>
           </div>

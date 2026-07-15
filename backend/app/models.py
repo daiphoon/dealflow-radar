@@ -112,6 +112,7 @@ class Company(TimestampMixin, Base):
     credit_code: Mapped[str | None] = mapped_column(String(32), unique=True)
     legal_name: Mapped[str] = mapped_column(String(240), index=True)
     registered_region: Mapped[str | None] = mapped_column(String(120))
+    official_website: Mapped[str | None] = mapped_column(String(500))
     identity_status: Mapped[str] = mapped_column(String(32), default="unresolved")
     visibility_scope: Mapped[str] = mapped_column(String(16), default="public")
 
@@ -191,6 +192,9 @@ class ResearchImport(TimestampMixin, Base):
     record_count: Mapped[int] = mapped_column(Integer)
     resolved_count: Mapped[int] = mapped_column(Integer)
     unresolved_count: Mapped[int] = mapped_column(Integer)
+    auto_published_count: Mapped[int] = mapped_column(Integer, default=0)
+    unconfirmed_count: Mapped[int] = mapped_column(Integer, default=0)
+    identity_review_count: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class RawDocument(TimestampMixin, Base):
@@ -208,6 +212,7 @@ class RawDocument(TimestampMixin, Base):
     canonical_url: Mapped[str] = mapped_column(String(1000))
     title: Mapped[str] = mapped_column(String(500))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    published_on: Mapped[date | None] = mapped_column(Date)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
     document_dedupe_key: Mapped[str] = mapped_column(String(64), unique=True)
@@ -269,9 +274,13 @@ class Event(TimestampMixin, Base):
     uncertainties: Mapped[list[str]] = mapped_column(JSON, default=list)
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    published_on: Mapped[date | None] = mapped_column(Date)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     fingerprint_version: Mapped[str] = mapped_column(String(16), default="1")
     event_fingerprint: Mapped[str] = mapped_column(String(64))
+    publication_route: Mapped[str] = mapped_column(String(32), default="unconfirmed_lead")
+    publication_policy_version: Mapped[str] = mapped_column(String(32), default="legacy-v1")
+    publication_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
 
 
 class EventEvidence(TimestampMixin, Base):
@@ -307,7 +316,7 @@ class CompanySnapshot(TimestampMixin, Base):
     company_id: Mapped[UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
     snapshot_version: Mapped[int] = mapped_column(Integer)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
-    data_as_of: Mapped[date] = mapped_column(Date)
+    data_as_of: Mapped[date | None] = mapped_column(Date)
     last_checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     freshness_status: Mapped[str] = mapped_column(String(32))
     summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

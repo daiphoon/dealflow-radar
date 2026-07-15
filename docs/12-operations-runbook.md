@@ -5,7 +5,7 @@
 ## 1. 部署前检查
 
 1. 使用云服务器或合作者服务器；不使用家庭 Ubuntu 服务器，不依赖 Tailscale。
-2. 从 `.env.example` 创建部署 Secret，确认外部调用、付费调用、自动刷新和审核工作台等安全开关仍为关闭，禁止提交 `.env`。
+2. 从 `.env.example` 创建部署 Secret，确认外部调用、付费调用、自动刷新和审核工作台等安全开关仍为关闭，禁止提交 `.env`；自动发布策略虽默认启用，但 URL 未检查时会降级为未确认线索。
 3. 检查镜像版本、PostgreSQL 持久卷、TLS、允许来源、备份目标和磁盘余量。
 4. 先执行迁移备份与 `alembic upgrade` 演练，再部署 API/Worker/Cron。
 5. 用两个租户/基金的虚构数据运行权限冒烟测试。
@@ -15,7 +15,7 @@ Docker Compose 文件只依赖标准容器、环境变量和卷，可迁移到�
 
 ## 2. 日常健康指标
 
-监控 API 错误/延迟、数据库连接和存储余量、任务队列年龄、租约过期、Provider 失败率、无变化任务占比、缓存命中率、LLM Schema 成功率、待审核高风险数量、预算消耗和备份结果。同步查询外部调用数应恒为 0。
+监控 API 错误/延迟、数据库连接和存储余量、任务队列年龄、租约过期、Provider 失败率、无变化任务占比、缓存命中率、LLM Schema 成功率、身份例外量、未确认高风险线索量、预算消耗和备份结果。同步查询外部调用数应恒为 0。
 
 ## 3. 安全的更新操作
 
@@ -41,16 +41,17 @@ mkdir -p data/private/research_imports
 cp data/sample/manual_research_import.json data/private/research_imports/manual-example.json
 export RESEARCH_IMPORT_FILE=manual-example.json
 export IMPORT_USER_ID="$(uv run python -c 'from backend.app.demo import ALPHA_USER_ID; print(ALPHA_USER_ID)')"
+RESEARCH_IMPORT_DRY_RUN=true uv run python -m scripts.import_research_json
 uv run python -m scripts.import_research_json
 ```
 
-输出只包含批次 ID、状态和计数。完成后核对：解析成功记录只形成 `in_review` 事件及事件审核项；未解析记录只形成实体提及审核项；没有公司快照变化；`usage_ledger` 的外部调用、Token 和费用均为 0。重复同一文件应返回 `duplicate`。批次号复用但内容改变、来源代码元数据冲突或外部记录内容冲突时整批失败并回滚，不要绕过去重键手工改库。实体提及审核当前不能用通用事件审核接口直接批准，应保持 pending，等待专用身份解析流程。
+先核对 `dry-run` 输出的目标公司、策略版本、URL 检查上界、验证尝试上界、零 Token/费用和零数据库写入；因为不读取公司主数据，该数量是身份解析前的保守上界，且该步骤不连接数据库、不访问网络。正式输出只包含批次 ID、状态和路由计数。完成后核对：未解析记录只形成实体提及审核项且不生成事件；安全记录为 `auto_published` 并进入快照；其他记录为 `unconfirmed_lead` 且不创建逐条事件审核项。默认 `EXTERNAL_CALLS_ENABLED=false` 时 URL 未检查，因此所有已解析记录安全降级为未确认，`usage_ledger` 的外部调用、Token 和费用均为 0。只在受控小批次显式开启 URL 检查，并核对已解析记录的 URL 检查数不超过 `SOURCE_URL_MAX_CHECKS_PER_IMPORT`；该检查仍不调用模型或付费 API。重复同一文件应返回 `duplicate`。批次号复用但内容改变、来源代码元数据冲突或外部记录内容冲突时整批失败并回滚，不要绕过去重键手工改库。实体提及审核当前不能用通用事件审核接口直接批准，应保持 pending，等待专用身份解析流程。
 
 V1 只接收不超过 1 MiB、最多 500 条且许可为 `public` 的 JSON。不得放入内部财务、投资协议、投委会材料、API Key、Cookie 或商业数据库受限内容；原始文件由操作者在私有目录管理，不进入 Git，也不会被系统复制到存储。当前没有网页/API 上传入口。
 
-### 人工审核工作台 V1（仅本机受控环境）
+### 身份例外与历史审核工作台 V1（仅本机受控环境）
 
-确认 API 只绑定 `127.0.0.1`、外部调用相关开关关闭，并设置 `REVIEW_WORKBENCH_ENABLED=true`；前端 `DEMO_USER_ID` 必须是当前租户内具有 `reviewer` 角色的本地用户。访问 `/reviews` 后先核对主体、事件/来源/系统三类时间、五项独立评价、事实、不确定性和每条证据，再填写理由并确认。批准会发布事件并重建快照，驳回会保留审核历史；两者均不触发外部 Provider。实体提及歧义不得直接批准。
+确认 API 只绑定 `127.0.0.1` 并设置 `REVIEW_WORKBENCH_ENABLED=true`；前端 `DEMO_USER_ID` 必须是当前租户内具有 `reviewer` 角色的本地用户。访问 `/reviews` 后，新导入通常只出现身份歧义；既有事件审核项和决定历史仍可查看与处理，且不会触发外部 Provider。实体提及歧义目前只读，不得用通用事件按钮直接批准。
 
 完成私有验收后关闭前后端并取消该开关。当前 Header 身份可被伪造，禁止将工作台暴露到公网、局域网共享地址或多人环境；生产部署必须先实现正式认证和会话保护。
 
@@ -61,7 +62,7 @@ V1 只接收不超过 1 MiB、最多 500 条且许可为 `public` 的 JSON。不
 | 预算超限 | 停止新外部调用，任务标记 `budget_deferred`，保留查询 | 管理员调整预算或进入新周期；不得自动换贵源 |
 | Provider 故障/限流 | 记录错误与 `retry_after`，有限重试；必要时使用已批准低成本替代 | 健康检查恢复，积压在预算内消化 |
 | Worker 崩溃 | 不手工重复创建任务；等待租约过期后重领 | 检查点、幂等键和用量记录一致 |
-| 严重负面误报 | 从当前快照撤下，标记待审/撤回，保留证据与审计 | 审核员完成纠错或驳回，生成新快照 |
+| 严重负面误报 | 若误入已确认层，立即从快照撤下并标记撤回；保留证据、策略原因与审计 | 完成纠错或驳回，回归测试证明同类记录只进入未确认线索 |
 | Secret 疑似泄漏 | 关闭 Provider、吊销并轮换、检索日志和提交历史 | 新 Secret 通过最小权限验证，完成事件复盘 |
 | 跨基金越权 | 立即禁用相关账户/服务身份，保全审计，关闭受影响入口 | 修复 RLS/授权并通过负向回归，通知义务已评估 |
 | 许可到期/撤稿 | 停止抓取和展示受限正文，标记来源与相关事件 | 获得新授权或完成撤回/替代证据审核 |
