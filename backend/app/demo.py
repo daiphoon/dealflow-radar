@@ -9,6 +9,7 @@ def demo_uuid(name: str) -> UUID:
 
 ALPHA_TENANT_ID = demo_uuid("tenant-alpha")
 BETA_TENANT_ID = demo_uuid("tenant-beta")
+DEMO_TENANT_IDS: frozenset[UUID] = frozenset({ALPHA_TENANT_ID, BETA_TENANT_ID})
 ALPHA_USER_ID = demo_uuid("user-alpha-admin")
 BETA_USER_ID = demo_uuid("user-beta-investor")
 NO_ACCESS_USER_ID = demo_uuid("user-alpha-no-access")

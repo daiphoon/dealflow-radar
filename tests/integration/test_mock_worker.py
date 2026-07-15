@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -229,3 +230,13 @@ def test_mock_worker_recovers_expired_lease_without_crossing_tenants(
             )
             == 1
         )
+
+
+def test_mock_worker_core_rejects_non_demo_tenant(migrated_app: FastAPI) -> None:
+    with migrated_app.state.session_factory() as session:
+        with pytest.raises(RuntimeError, match="fixed fictional Demo tenant"):
+            run_mock_worker_once(
+                session,
+                uuid4(),
+                migrated_app.state.settings.refresh_policy,
+            )

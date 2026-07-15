@@ -46,7 +46,7 @@ export WORKER_TENANT_ID="$(uv run python -c 'from backend.app.demo import ALPHA_
 APP_MODE=demo uv run python -m scripts.run_mock_worker
 ```
 
-每次命令最多处理该租户的一个任务；无任务时返回 `idle`。此 Worker 不加载 Provider、不访问网络，只用于验证队列闭环：有快照时更新检查时间但保留事实基准日，无快照时保持 `unknown`，不得用于真实公司检查。
+每次命令最多处理该租户的一个任务；无任务时返回 `idle`。命令要求显式设置 `APP_MODE=demo`，且只接受两个固定虚构租户。此 Worker 不加载 Provider、不访问网络，只用于验证队列闭环：有快照时更新检查时间但保留事实基准日，无快照时保持 `unknown`，不得用于真实公司检查。
 
 如果本机暂时没有 PostgreSQL，可用 SQLite 完成无真实数据的离线烟测：
 
@@ -81,6 +81,8 @@ npm run build
 ```
 
 默认测试不会调用付费服务；真实 PostgreSQL RLS 测试只有显式提供受限账户 URL 时才运行。
+
+GitHub CI 在 Pull Request 和 `main` 推送时使用临时 PostgreSQL 16，一次完成后端静态检查、SQLite 迁移、RLS 测试和前端生产构建。CI 只使用虚构数据与临时凭据，业务外部调用开关保持关闭。
 
 ## 核心原则
 

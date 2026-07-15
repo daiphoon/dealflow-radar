@@ -56,3 +56,5 @@ npm run build
 ```
 
 当前自动测试覆盖严格事件 Schema、Mock 合约、空库迁移往返、PostgreSQL DDL/RLS 编译、文档/事件幂等、人工审核发布、证据与快照、基金隔离、同步查询零 Provider 调用、配置化 TTL/冷却、新鲜数据不入队、列表不扇出、关闭自动刷新不入队、过期详情入队以及活动任务合并。Mock Worker 测试额外覆盖 `stale → refreshing → fresh`、事实基准日不变、无快照保持未知、零 Provider 调用、零费用台账、每次只处理一个任务、过期租约恢复和租户隔离。真实 PostgreSQL RLS 测试默认跳过，显式提供受限账户 URL 后验证账户非所有者/非超级用户/无 `BYPASSRLS`、6 张表启用 RLS，以及无上下文、跨租户、跨基金和无授权查询隔离。2026-07-14 已完成该测试及 API/服务端渲染页面的人工端到端验收；2026-07-15 已完成公司列表、详情页以及按需缓存 `fresh`、`stale`、`refreshing` 三种状态的桌面浏览器视觉验收，并在临时 PostgreSQL 受限账户下完成 Mock Worker 命令行闭环验证。
+
+GitHub CI 使用单个、10 分钟上限的 Ubuntu Job 和临时 PostgreSQL 16 服务，在 Pull Request 与 `main` 推送时运行 Ruff、格式检查、SQLite 迁移升级/漂移/降级、完整 Pytest（含受限账户 RLS）、TypeScript 和前端生产构建。CI 使用固定虚构数据和临时数据库凭据，不读取仓库 Secret，业务外部调用开关全部关闭。

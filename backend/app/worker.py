@@ -10,6 +10,7 @@ from sqlalchemy import and_, or_, select, text
 from sqlalchemy.orm import Session
 
 from backend.app.config import RefreshPolicy
+from backend.app.demo import DEMO_TENANT_IDS
 from backend.app.models import CompanySnapshot, RefreshJob, UsageLedger, utc_now
 
 
@@ -178,6 +179,8 @@ def run_mock_worker_once(
     *,
     now: datetime | None = None,
 ) -> MockWorkerResult:
+    if tenant_id not in DEMO_TENANT_IDS:
+        raise RuntimeError("Mock Worker requires a fixed fictional Demo tenant")
     checked_at = _as_utc(now or utc_now())
     lease = _lease_next_job(session, tenant_id, policy, checked_at)
     if lease is None:
