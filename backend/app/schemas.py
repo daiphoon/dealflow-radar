@@ -89,6 +89,33 @@ class ReviewDecisionIn(BaseModel):
     reason: str = Field(min_length=3, max_length=1000)
 
 
+class IdentityResolutionIn(BaseModel):
+    verification_id: UUID
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class IdentityCandidateOut(BaseModel):
+    verification_id: UUID
+    company_id: UUID
+    legal_name: str
+    credit_code: str
+    registered_region: str | None
+    registration_status: str
+    verification_status: str
+    match_rule: str
+    checked_at: datetime
+    source_name: str
+    canonical_url: str
+
+
+class IdentityResolutionOut(BaseModel):
+    review_id: UUID
+    company_id: UUID
+    event_id: UUID
+    publication_route: str
+    review_status: str
+
+
 class ReviewOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -118,6 +145,7 @@ class ReviewWorkbenchOut(BaseModel):
     match_rule: str | None
     match_confidence: Decimal | None
     resolution_status: str | None
+    identity_candidates: list[IdentityCandidateOut] = Field(default_factory=list)
 
 
 class IngestResult(BaseModel):
@@ -142,6 +170,19 @@ class ResearchImportResult(BaseModel):
     auto_published_records: int = 0
     unconfirmed_records: int = 0
     identity_review_records: int = 0
+    external_calls: int = 0
+    estimated_cost: Decimal = Decimal("0")
+
+
+class OfficialIdentityImportResult(BaseModel):
+    status: str
+    research_import_id: UUID | None = None
+    batch_id: str
+    records_seen: int
+    verifications_created: int
+    verified_records: int
+    conflict_records: int
+    unmatched_records: int
     external_calls: int = 0
     estimated_cost: Decimal = Decimal("0")
 

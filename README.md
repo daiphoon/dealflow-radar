@@ -67,7 +67,22 @@ RESEARCH_IMPORT_DRY_RUN=true uv run python -m scripts.import_research_json
 uv run python -m scripts.import_research_json
 ```
 
-`dry-run` 只校验文件并展示目标公司、发布策略、URL 检查上界、验证尝试上界和预计费用，不连接数据库、不访问网络；因为不读取公司主数据，该数量是身份解析前的保守上界。确认后再执行正式命令。重复执行同一文件返回 `duplicate`，不会新增文档、事件或费用记录。真实导入文件不得提交 Git；当前入口不接受内部财务、投委会、投资协议等敏感材料，也没有开放上传 API，因为测试身份 Header 不适合真实资料入口。未解析主体会进入身份队列；“选择正确公司并重新生成候选”的专用处理流程尚未实现，通用事件审核接口仍会拒绝直接批准这类记录。
+`dry-run` 只校验文件并展示目标公司、发布策略、URL 检查上界、验证尝试上界和预计费用，不连接数据库、不访问网络；因为不读取公司主数据，该数量是身份解析前的保守上界。确认后再执行正式命令。重复执行同一文件返回 `duplicate`，不会新增文档、事件或费用记录。真实导入文件不得提交 Git；当前入口不接受内部财务、投委会、投资协议等敏感材料，也没有开放上传 API，因为测试身份 Header 不适合真实资料入口。
+
+### 官方工商身份核验导入
+
+当前未获得官方后台 API 授权，因此 V1 通过 `OfficialIdentityProvider` 边界导入已从官方系统核对的结构化 JSON，不抓取验证码、登录页或未公开接口。文件只能来自 Git 忽略的 `data/private/identity_imports/`，官方证据地址必须使用 `*.gsxt.gov.cn` 或 `*.gov.cn` HTTPS 域名，信用代码会校验字符集和校验位。
+
+```bash
+mkdir -p data/private/identity_imports
+cp data/sample/official_identity_import.json data/private/identity_imports/official-example.json
+export IDENTITY_IMPORT_FILE=official-example.json
+export IMPORT_USER_ID="$(uv run python -c 'from backend.app.demo import ALPHA_USER_ID; print(ALPHA_USER_ID)')"
+IDENTITY_IMPORT_DRY_RUN=true uv run python -m scripts.import_official_identity_json
+uv run python -m scripts.import_official_identity_json
+```
+
+程序会优先按统一社会信用代码匹配，再使用工商全称和注册地；冲突不会静默改主数据。核验记录默认 30 天有效，由 `IDENTITY_VERIFICATION_TTL_DAYS` 配置。
 
 如果本机暂时没有 PostgreSQL，可用 SQLite 完成无真实数据的离线烟测：
 
@@ -102,7 +117,7 @@ export DEMO_USER_ID='replace_with_local_reviewer_uuid'
 npm run dev
 ```
 
-访问 `http://127.0.0.1:3000/reviews`。新导入默认只有身份歧义进入该队列；既有事件审核记录仍展示证据和决定历史。实体提及歧义目前只读展示，不能用通用事件按钮直接批准，等待专用身份解析流程。
+访问 `http://127.0.0.1:3000/reviews`。新导入默认只有身份歧义进入该队列；既有事件审核记录仍展示证据和决定历史。当 30 天内的关联官方工商候选已入库时，同时具有 `reviewer` 和 `institution_admin` 角色的本地用户可选择主体并填写理由。系统会在一个事务内更新身份、保留曾用名、重建事件/证据并按当前发布策略重路由。该决定不会在页面请求中访问外部网站；原来源链接尚未检查时，记录会安全转为 `unconfirmed_lead`。
 
 `X-Demo-User-Id` 仍只是本地测试身份，不是登录系统。真实数据工作台不得绑定公网地址或部署到共享环境；正式认证完成前，本开关必须保持关闭。
 

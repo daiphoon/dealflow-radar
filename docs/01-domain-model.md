@@ -42,7 +42,7 @@ flowchart TB
 
 ## 4. 原始事实与派生数据
 
-- 原始层：`raw_documents` 保存来源元数据、许可、哈希和可选存储引用；内容按许可最小化保存。
+- 原始层：`raw_documents` 保存来源元数据、许可、哈希和可选存储引用；内容按许可最小化保存。`official_identity_verifications` 引用官方工商原文档并保留匹配结论和核验时间。
 - 事实层：`events`、`event_evidence`、`metric_observations` 追加记录，纠错不原地抹除历史。
 - 派生层：`company_snapshots`、`generated_reports` 可从已发布事实重建，带构建版本和基准时间。
 - 审计层：`refresh_runs`、`review_queue`、`usage_ledger`、`audit_logs` 解释数据如何产生、花费多少、谁批准。
@@ -61,7 +61,7 @@ flowchart TB
 6. 简称、英文名、品牌名或产品名只生成候选；同名和跨主体歧义进入审核。
 7. 模型仅对候选排序并给出依据，不得越过确定性冲突或直接发布。
 
-`company_aliases` 保存名称类型、有效期、来源和验证状态；`company_relationships` 保存母子公司、集团成员、品牌运营、产品归属等带方向和有效期的关系。每次实体匹配保留候选集合、命中规则和置信度。
+`company_aliases` 保存名称类型、有效期、来源和验证状态；`company_relationships` 保存母子公司、集团成员、品牌运营、产品归属等带方向和有效期的关系。每次实体匹配保留候选集合、命中规则和置信度。官方记录冲突时不静默覆盖公司；人只选有关联的官方候选，事件重建与发布路由由程序完成。
 
 ## 6. 同一公司被多个基金投资
 

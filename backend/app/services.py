@@ -11,7 +11,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.app.config import PublicationPolicy, RefreshPolicy
+from backend.app.config import IdentityPolicy, PublicationPolicy, RefreshPolicy
 from backend.app.demo import (
     ALPHA_FUND_ID,
     ALPHA_TENANT_ID,
@@ -33,6 +33,7 @@ from backend.app.models import (
     Fund,
     FundAccessGrant,
     Investment,
+    OfficialIdentityVerification,
     RawDocument,
     RefreshJob,
     ResearchImport,
@@ -49,19 +50,25 @@ from backend.app.providers import (
     DisabledDocumentVerifier,
     DocumentVerification,
     DocumentVerifier,
+    LoadedOfficialIdentityImport,
     LoadedResearchImport,
     ManualResearchImportProvider,
     ManualResearchRecord,
     MockResearchProvider,
     MockResearchRecord,
+    OfficialIdentityProvider,
+    OfficialIdentityRecord,
 )
 from backend.app.schemas import (
     CompanyDetail,
     CompanyListItem,
     EventOut,
     EvidenceOut,
+    IdentityCandidateOut,
+    IdentityResolutionOut,
     IngestResult,
     InvestmentOut,
+    OfficialIdentityImportResult,
     RefreshResult,
     ResearchImportResult,
     ReviewWorkbenchOut,
@@ -412,6 +419,298 @@ def user_has_role(session: Session, user_id: UUID, role_code: str) -> bool:
     return bool(count)
 
 
+def _normalized_identity_text(value: str) -> str:
+    return "".join(value.split()).casefold()
+
+
+def _regions_compatible(left: str | None, right: str | None) -> bool:
+    if left is None or right is None:
+        return True
+    normalized_left = _normalized_identity_text(left)
+    normalized_right = _normalized_identity_text(right)
+    return (
+        normalized_left == normalized_right
+        or normalized_left.startswith(normalized_right)
+        or normalized_right.startswith(normalized_left)
+    )
+
+
+def _record_identity_check(company: Company, checked_at: datetime) -> None:
+    current = company.last_identity_checked_at
+    if current is None:
+        company.last_identity_checked_at = checked_at
+        return
+    comparable_current = current if current.tzinfo is not None else current.replace(tzinfo=UTC)
+    comparable_checked = (
+        checked_at if checked_at.tzinfo is not None else checked_at.replace(tzinfo=UTC)
+    )
+    if comparable_checked > comparable_current:
+        company.last_identity_checked_at = checked_at
+
+
+def _official_identity_source(
+    session: Session,
+    loaded: LoadedOfficialIdentityImport,
+) -> Source:
+    source_payload = loaded.batch.source
+    base_url = source_payload.base_url.rstrip("/")
+    source = session.scalar(select(Source).where(Source.code == source_payload.code))
+    if source is None:
+        source = Source(
+            code=source_payload.code,
+            name=source_payload.name,
+            source_quality="A",
+            license_status="public",
+            base_url=base_url,
+        )
+        session.add(source)
+        session.flush()
+        return source
+    if (
+        source.name != source_payload.name
+        or source.source_quality != "A"
+        or source.license_status != "public"
+        or (source.base_url or "").rstrip("/") != base_url
+    ):
+        raise ImportConflictError(f"source_code conflict: {source_payload.code}")
+    return source
+
+
+def _resolve_official_identity_company(
+    session: Session,
+    tenant_id: UUID,
+    record: OfficialIdentityRecord,
+) -> tuple[Company | None, str, str]:
+    visible_company = or_(Company.tenant_id.is_(None), Company.tenant_id == tenant_id)
+    company = session.scalar(
+        select(Company).where(visible_company, Company.credit_code == record.credit_code)
+    )
+    if company is not None:
+        _record_identity_check(company, record.checked_at)
+        name_matches = company.legal_name == record.legal_name
+        region_matches = _regions_compatible(company.registered_region, record.registered_region)
+        if name_matches and region_matches:
+            company.identity_status = "verified"
+            if company.registered_region is None:
+                company.registered_region = record.registered_region
+            return company, "official_credit_code_exact", "verified"
+        reasons = []
+        if not name_matches:
+            reasons.append("legal_name")
+        if not region_matches:
+            reasons.append("registered_region")
+        return company, f"official_credit_code_{'_'.join(reasons)}_conflict", "conflict"
+
+    name_candidates = list(
+        session.scalars(
+            select(Company).where(visible_company, Company.legal_name == record.legal_name)
+        )
+    )
+    if len(name_candidates) != 1:
+        return None, "official_record_unmatched", "unmatched"
+    company = name_candidates[0]
+    _record_identity_check(company, record.checked_at)
+    if company.credit_code is not None and company.credit_code != record.credit_code:
+        return company, "official_legal_name_credit_code_conflict", "conflict"
+    if not _regions_compatible(company.registered_region, record.registered_region):
+        return company, "official_legal_name_registered_region_conflict", "conflict"
+    company.credit_code = record.credit_code
+    company.identity_status = "verified"
+    if company.registered_region is None:
+        company.registered_region = record.registered_region
+    return company, "official_legal_name_exact_credit_code_enriched", "verified"
+
+
+def _official_identity_counts(
+    session: Session,
+    research_import_id: UUID,
+) -> tuple[int, int, int]:
+    rows = session.execute(
+        select(OfficialIdentityVerification.verification_status, func.count())
+        .join(RawDocument, RawDocument.id == OfficialIdentityVerification.raw_document_id)
+        .where(RawDocument.research_import_id == research_import_id)
+        .group_by(OfficialIdentityVerification.verification_status)
+    ).all()
+    counts = {status: count for status, count in rows}
+    return (
+        counts.get("verified", 0),
+        counts.get("conflict", 0),
+        counts.get("unmatched", 0),
+    )
+
+
+def _existing_official_identity_result(
+    session: Session,
+    existing: ResearchImport,
+) -> OfficialIdentityImportResult:
+    verified, conflicts, unmatched = _official_identity_counts(session, existing.id)
+    return OfficialIdentityImportResult(
+        status="duplicate",
+        research_import_id=existing.id,
+        batch_id=existing.batch_id,
+        records_seen=existing.record_count,
+        verifications_created=0,
+        verified_records=verified,
+        conflict_records=conflicts,
+        unmatched_records=unmatched,
+    )
+
+
+def import_official_identities(
+    session: Session,
+    user: User,
+    provider: OfficialIdentityProvider,
+) -> OfficialIdentityImportResult:
+    if not user_has_role(session, user.id, "institution_admin"):
+        session.rollback()
+        raise AccessDeniedError("institution_admin role required")
+    loaded = provider.load()
+    existing_file = session.scalar(
+        select(ResearchImport).where(
+            ResearchImport.tenant_id == user.tenant_id,
+            ResearchImport.file_hash == loaded.file_hash,
+            ResearchImport.parser_version == provider.parser_version,
+        )
+    )
+    if existing_file is not None:
+        result = _existing_official_identity_result(session, existing_file)
+        session.commit()
+        return result
+    existing_batch = session.scalar(
+        select(ResearchImport).where(
+            ResearchImport.tenant_id == user.tenant_id,
+            ResearchImport.batch_id == loaded.batch.batch_id,
+        )
+    )
+    if existing_batch is not None:
+        session.rollback()
+        raise ImportConflictError(f"batch_id conflict: {loaded.batch.batch_id}")
+
+    try:
+        batch = loaded.batch
+        research_import = ResearchImport(
+            tenant_id=user.tenant_id,
+            imported_by=user.id,
+            schema_version=batch.schema_version,
+            batch_id=batch.batch_id,
+            queried_at=batch.queried_at,
+            research_tool=provider.code,
+            agent_name=None,
+            original_query=batch.original_query,
+            target_company_hint=batch.target_company_hint,
+            source_filename=loaded.source_filename,
+            file_format="json",
+            file_hash=loaded.file_hash,
+            parser_version=provider.parser_version,
+            license_status=batch.license_status,
+            status="processing",
+            record_count=len(batch.records),
+            resolved_count=0,
+            unresolved_count=0,
+            auto_published_count=0,
+            unconfirmed_count=0,
+            identity_review_count=0,
+        )
+        session.add(research_import)
+        session.flush()
+        source = _official_identity_source(session, loaded)
+        verified_count = 0
+        conflict_count = 0
+        unmatched_count = 0
+
+        for record in batch.records:
+            company, match_rule, verification_status = _resolve_official_identity_company(
+                session,
+                user.tenant_id,
+                record,
+            )
+            if verification_status == "verified":
+                verified_count += 1
+                research_import.resolved_count += 1
+            else:
+                research_import.unresolved_count += 1
+                if verification_status == "conflict":
+                    conflict_count += 1
+                else:
+                    unmatched_count += 1
+
+            record_payload = record.model_dump(mode="json")
+            content_hash = _sha256(json.dumps(record_payload, ensure_ascii=False, sort_keys=True))
+            source_record_key = _sha256(
+                f"{user.tenant_id}:{batch.batch_id}:{record.external_record_id}"
+            )
+            document = RawDocument(
+                source_id=source.id,
+                research_import_id=research_import.id,
+                external_record_id=f"official-identity:{source_record_key[:40]}",
+                canonical_url=record.canonical_url,
+                title=f"工商身份核验：{record.legal_name}",
+                published_at=None,
+                published_on=None,
+                observed_at=record.checked_at,
+                content_hash=content_hash,
+                document_dedupe_key=_sha256(f"{source.id}:{source_record_key}"),
+                license_status="public",
+                payload=record_payload,
+            )
+            session.add(document)
+            session.flush()
+            session.add(
+                OfficialIdentityVerification(
+                    tenant_id=user.tenant_id,
+                    company_id=company.id if company is not None else None,
+                    raw_document_id=document.id,
+                    query_text=record.query_text,
+                    legal_name=record.legal_name,
+                    credit_code=record.credit_code,
+                    registered_region=record.registered_region,
+                    registration_status=record.registration_status,
+                    verification_status=verification_status,
+                    match_rule=match_rule,
+                    checked_at=record.checked_at,
+                )
+            )
+
+        research_import.status = (
+            "completed_with_unresolved" if research_import.unresolved_count else "completed"
+        )
+        session.add(
+            UsageLedger(
+                tenant_id=user.tenant_id,
+                provider=provider.code,
+                operation="official_identity_import",
+                external_calls=provider.external_calls,
+                input_tokens=0,
+                output_tokens=0,
+                estimated_cost=Decimal(str(provider.estimated_cost)),
+                metrics={
+                    "research_import_id": str(research_import.id),
+                    "records_seen": research_import.record_count,
+                    "verified_records": verified_count,
+                    "conflict_records": conflict_count,
+                    "unmatched_records": unmatched_count,
+                },
+                idempotency_key=_sha256(f"official-identity-import:{research_import.id}"),
+            )
+        )
+        session.commit()
+        return OfficialIdentityImportResult(
+            status=research_import.status,
+            research_import_id=research_import.id,
+            batch_id=research_import.batch_id,
+            records_seen=research_import.record_count,
+            verifications_created=research_import.record_count,
+            verified_records=verified_count,
+            conflict_records=conflict_count,
+            unmatched_records=unmatched_count,
+            external_calls=provider.external_calls,
+            estimated_cost=Decimal(str(provider.estimated_cost)),
+        )
+    except Exception:
+        session.rollback()
+        raise
+
+
 def _manual_source(session: Session, record: ManualResearchRecord) -> Source:
     source = session.scalar(select(Source).where(Source.code == record.source_code))
     parsed_url = urlsplit(record.canonical_url)
@@ -664,6 +963,90 @@ def _refresh_company_snapshot(session: Session, company: Company) -> None:
     )
 
 
+def _stored_document_verification(document: RawDocument) -> DocumentVerification:
+    payload = document.payload.get("_source_verification")
+    if not isinstance(payload, dict):
+        return DisabledDocumentVerifier().verify(document.canonical_url)
+    try:
+        return DocumentVerification.model_validate(payload)
+    except ValueError:
+        return DisabledDocumentVerifier().verify(document.canonical_url)
+
+
+def _route_manual_record(
+    session: Session,
+    company: Company,
+    record: ManualResearchRecord,
+    document: RawDocument,
+    verification: DocumentVerification,
+    publication_policy: PublicationPolicy,
+) -> tuple[Event, bool, str, bool]:
+    publication_route, publication_reasons = _evaluate_publication_route(
+        company,
+        record,
+        verification,
+        publication_policy,
+    )
+    event_fingerprint = _manual_event_fingerprint(company.id, record)
+    existing_event = session.scalar(
+        select(Event).where(
+            Event.company_id == company.id,
+            Event.fingerprint_version == MANUAL_EVENT_FINGERPRINT_VERSION,
+            Event.event_fingerprint == event_fingerprint,
+        )
+    )
+    if existing_event is not None:
+        snapshot_required = False
+        if existing_event.status == "candidate":
+            _add_manual_event_evidence(session, existing_event.id, document.id, record)
+            existing_event.publication_route = publication_route
+            existing_event.publication_policy_version = publication_policy.version
+            existing_event.publication_reasons = publication_reasons
+            if publication_route == "auto_published":
+                _mark_event_published(session, existing_event, company)
+                snapshot_required = True
+        elif existing_event.status == "published" and publication_route == "auto_published":
+            _add_manual_event_evidence(session, existing_event.id, document.id, record)
+            existing_event.publication_reasons = sorted(
+                {*existing_event.publication_reasons, "additional_evidence_auto_attached"}
+            )
+        elif existing_event.status == "in_review":
+            _add_manual_event_evidence(session, existing_event.id, document.id, record)
+        return existing_event, False, publication_route, snapshot_required
+
+    event = Event(
+        company_id=company.id,
+        event_type=record.event_type.value,
+        event_subtype=record.event_subtype,
+        status="candidate",
+        direction=record.direction.value,
+        materiality_score=record.materiality_score,
+        risk_severity=record.risk_severity.value,
+        confidence_score=Decimal(str(record.confidence_score)),
+        source_quality=record.source_quality.value,
+        title=record.title,
+        summary=record.evidence_excerpt,
+        facts=[fact.model_dump() for fact in record.facts],
+        uncertainties=record.uncertainties,
+        occurred_at=record.occurred_at,
+        published_at=record.source_published_at,
+        published_on=_record_published_on(record),
+        observed_at=utc_now(),
+        fingerprint_version=MANUAL_EVENT_FINGERPRINT_VERSION,
+        event_fingerprint=event_fingerprint,
+        publication_route=publication_route,
+        publication_policy_version=publication_policy.version,
+        publication_reasons=publication_reasons,
+    )
+    session.add(event)
+    session.flush()
+    _add_manual_event_evidence(session, event.id, document.id, record)
+    snapshot_required = publication_route == "auto_published"
+    if snapshot_required:
+        _mark_event_published(session, event, company)
+    return event, True, publication_route, snapshot_required
+
+
 def _duplicate_import_result(existing: ResearchImport) -> ResearchImportResult:
     return ResearchImportResult(
         status="duplicate",
@@ -804,9 +1187,11 @@ def _ingest_manual_batch(
             research_import.identity_review_count += 1
             continue
 
-        publication_route, publication_reasons = _evaluate_publication_route(
+        _, event_created, publication_route, snapshot_required = _route_manual_record(
+            session,
             company,
             record,
+            document,
             verification,
             publication_policy,
         )
@@ -815,62 +1200,10 @@ def _ingest_manual_batch(
         else:
             research_import.unconfirmed_count += 1
 
-        event_fingerprint = _manual_event_fingerprint(company.id, record)
-        existing_event = session.scalar(
-            select(Event).where(
-                Event.company_id == company.id,
-                Event.fingerprint_version == MANUAL_EVENT_FINGERPRINT_VERSION,
-                Event.event_fingerprint == event_fingerprint,
-            )
-        )
-        if existing_event is not None:
-            if existing_event.status == "candidate":
-                _add_manual_event_evidence(session, existing_event.id, document.id, record)
-                existing_event.publication_route = publication_route
-                existing_event.publication_policy_version = publication_policy.version
-                existing_event.publication_reasons = publication_reasons
-                if publication_route == "auto_published":
-                    _mark_event_published(session, existing_event, company)
-                    published_company_ids.add(company.id)
-            elif existing_event.status == "published" and publication_route == "auto_published":
-                _add_manual_event_evidence(session, existing_event.id, document.id, record)
-                existing_event.publication_reasons = sorted(
-                    {*existing_event.publication_reasons, "additional_evidence_auto_attached"}
-                )
-            elif existing_event.status == "in_review":
-                _add_manual_event_evidence(session, existing_event.id, document.id, record)
-            continue
-        event = Event(
-            company_id=company.id,
-            event_type=record.event_type.value,
-            event_subtype=record.event_subtype,
-            status="candidate",
-            direction=record.direction.value,
-            materiality_score=record.materiality_score,
-            risk_severity=record.risk_severity.value,
-            confidence_score=Decimal(str(record.confidence_score)),
-            source_quality=record.source_quality.value,
-            title=record.title,
-            summary=record.evidence_excerpt,
-            facts=[fact.model_dump() for fact in record.facts],
-            uncertainties=record.uncertainties,
-            occurred_at=record.occurred_at,
-            published_at=record.source_published_at,
-            published_on=_record_published_on(record),
-            observed_at=utc_now(),
-            fingerprint_version=MANUAL_EVENT_FINGERPRINT_VERSION,
-            event_fingerprint=event_fingerprint,
-            publication_route=publication_route,
-            publication_policy_version=publication_policy.version,
-            publication_reasons=publication_reasons,
-        )
-        session.add(event)
-        session.flush()
-        _add_manual_event_evidence(session, event.id, document.id, record)
-        if publication_route == "auto_published":
-            _mark_event_published(session, event, company)
+        if snapshot_required:
             published_company_ids.add(company.id)
-        events_created += 1
+        if event_created:
+            events_created += 1
 
     for company_id in sorted(published_company_ids, key=str):
         company = session.get(Company, company_id)
@@ -1049,9 +1382,81 @@ def _event_out(session: Session, event: Event) -> EventOut:
     )
 
 
-def list_review_workbench(session: Session, user: User) -> list[ReviewWorkbenchOut]:
+def _identity_candidates_for_mention(
+    session: Session,
+    tenant_id: UUID,
+    mention: EntityMention,
+    identity_policy: IdentityPolicy,
+) -> list[IdentityCandidateOut]:
+    document = session.get(RawDocument, mention.raw_document_id)
+    if document is None:
+        return []
+    identity_payload = document.payload.get("company_identity_evidence", {})
+    if not isinstance(identity_payload, dict):
+        identity_payload = {}
+    evidence_credit_code = identity_payload.get("credit_code")
+    evidence_legal_name = identity_payload.get("legal_name")
+    cutoff = utc_now() - timedelta(days=identity_policy.verification_ttl_days)
+    rows = session.execute(
+        select(OfficialIdentityVerification, Company, RawDocument, Source)
+        .join(Company, Company.id == OfficialIdentityVerification.company_id)
+        .join(RawDocument, RawDocument.id == OfficialIdentityVerification.raw_document_id)
+        .join(Source, Source.id == RawDocument.source_id)
+        .where(
+            OfficialIdentityVerification.tenant_id == tenant_id,
+            OfficialIdentityVerification.company_id.is_not(None),
+            OfficialIdentityVerification.verification_status.in_(["verified", "conflict"]),
+        )
+        .order_by(OfficialIdentityVerification.checked_at.desc())
+    ).all()
+    candidates: list[IdentityCandidateOut] = []
+    seen_company_ids: set[UUID] = set()
+    normalized_mention = _normalized_identity_text(mention.mention_text)
+    for verification, company, evidence_document, source in rows:
+        checked_at = verification.checked_at
+        if checked_at.tzinfo is None:
+            checked_at = checked_at.replace(tzinfo=UTC)
+        if checked_at < cutoff:
+            continue
+        if company.credit_code is not None and company.credit_code != verification.credit_code:
+            continue
+        associated = any(
+            [
+                mention.candidate_company_id == company.id,
+                _normalized_identity_text(verification.query_text) == normalized_mention,
+                evidence_credit_code == verification.credit_code,
+                evidence_legal_name == verification.legal_name,
+            ]
+        )
+        if not associated or company.id in seen_company_ids:
+            continue
+        seen_company_ids.add(company.id)
+        candidates.append(
+            IdentityCandidateOut(
+                verification_id=verification.id,
+                company_id=company.id,
+                legal_name=verification.legal_name,
+                credit_code=verification.credit_code,
+                registered_region=verification.registered_region,
+                registration_status=verification.registration_status,
+                verification_status=verification.verification_status,
+                match_rule=verification.match_rule,
+                checked_at=checked_at,
+                source_name=source.name,
+                canonical_url=evidence_document.canonical_url,
+            )
+        )
+    return candidates
+
+
+def list_review_workbench(
+    session: Session,
+    user: User,
+    identity_policy: IdentityPolicy | None = None,
+) -> list[ReviewWorkbenchOut]:
     if not user_has_role(session, user.id, "reviewer"):
         raise AccessDeniedError("reviewer role required")
+    resolved_identity_policy = identity_policy or IdentityPolicy()
     reviews = list(
         session.scalars(
             select(ReviewQueue)
@@ -1067,6 +1472,7 @@ def list_review_workbench(session: Session, user: User) -> list[ReviewWorkbenchO
         match_rule: str | None = None
         match_confidence: Decimal | None = None
         resolution_status: str | None = None
+        identity_candidates: list[IdentityCandidateOut] = []
         if review.event_id is not None:
             event = session.get(Event, review.event_id)
             if event is not None:
@@ -1081,6 +1487,13 @@ def list_review_workbench(session: Session, user: User) -> list[ReviewWorkbenchO
                 resolution_status = mention.resolution_status
                 if mention.candidate_company_id is not None:
                     company = session.get(Company, mention.candidate_company_id)
+                if review.status == "pending":
+                    identity_candidates = _identity_candidates_for_mention(
+                        session,
+                        user.tenant_id,
+                        mention,
+                        resolved_identity_policy,
+                    )
         items.append(
             ReviewWorkbenchOut(
                 id=review.id,
@@ -1099,6 +1512,7 @@ def list_review_workbench(session: Session, user: User) -> list[ReviewWorkbenchO
                 match_rule=match_rule,
                 match_confidence=match_confidence,
                 resolution_status=resolution_status,
+                identity_candidates=identity_candidates,
             )
         )
     return items
@@ -1264,6 +1678,174 @@ def get_company_detail(
             now=now,
         )
     return detail
+
+
+def _record_former_legal_name(
+    session: Session,
+    company: Company,
+    source_id: UUID,
+    former_name: str,
+) -> None:
+    normalized_alias = _normalized_identity_text(former_name)
+    existing = session.scalar(
+        select(CompanyAlias).where(
+            CompanyAlias.company_id == company.id,
+            CompanyAlias.normalized_alias == normalized_alias,
+            CompanyAlias.alias_type == "former_legal_name",
+        )
+    )
+    if existing is None:
+        session.add(
+            CompanyAlias(
+                company_id=company.id,
+                source_id=source_id,
+                alias=former_name,
+                normalized_alias=normalized_alias,
+                alias_type="former_legal_name",
+                verification_status="verified",
+            )
+        )
+
+
+def resolve_identity_review(
+    session: Session,
+    review_id: UUID,
+    user: User,
+    verification_id: UUID,
+    reason: str,
+    identity_policy: IdentityPolicy | None = None,
+    publication_policy: PublicationPolicy | None = None,
+) -> IdentityResolutionOut:
+    if not user_has_role(session, user.id, "reviewer") or not user_has_role(
+        session, user.id, "institution_admin"
+    ):
+        session.rollback()
+        raise AccessDeniedError("reviewer and institution_admin roles required")
+    resolved_identity_policy = identity_policy or IdentityPolicy()
+    resolved_publication_policy = publication_policy or PublicationPolicy()
+    try:
+        review = session.get(ReviewQueue, review_id)
+        if review is None or review.tenant_id != user.tenant_id:
+            raise NotFoundError("review not found")
+        if review.status != "pending":
+            raise AccessDeniedError("review already decided")
+        if review.entity_mention_id is None or review.event_id is not None:
+            raise AccessDeniedError("review is not an identity resolution item")
+        mention = session.get(EntityMention, review.entity_mention_id)
+        if mention is None:
+            raise NotFoundError("entity mention not found")
+        candidates = _identity_candidates_for_mention(
+            session,
+            user.tenant_id,
+            mention,
+            resolved_identity_policy,
+        )
+        selected = next(
+            (candidate for candidate in candidates if candidate.verification_id == verification_id),
+            None,
+        )
+        if selected is None:
+            raise AccessDeniedError("official identity candidate is missing, stale, or unrelated")
+        verification = session.get(OfficialIdentityVerification, verification_id)
+        if verification is None or verification.company_id is None:
+            raise AccessDeniedError("official identity candidate is unavailable")
+        company = session.get(Company, verification.company_id)
+        identity_document = session.get(RawDocument, verification.raw_document_id)
+        source_document = session.get(RawDocument, mention.raw_document_id)
+        if company is None or identity_document is None or source_document is None:
+            raise NotFoundError("identity resolution evidence not found")
+        if company.credit_code is not None and company.credit_code != verification.credit_code:
+            raise AccessDeniedError("selected company credit code conflicts with official evidence")
+
+        former_name = company.legal_name
+        if former_name != verification.legal_name:
+            _record_former_legal_name(
+                session,
+                company,
+                identity_document.source_id,
+                former_name,
+            )
+        company.legal_name = verification.legal_name
+        company.credit_code = verification.credit_code
+        if verification.registered_region is not None:
+            company.registered_region = verification.registered_region
+        company.identity_status = "verified"
+        _record_identity_check(company, verification.checked_at)
+
+        mention.candidate_company_id = company.id
+        mention.match_rule = f"official_identity_selected:{resolved_identity_policy.version}"
+        mention.match_confidence = Decimal("1.000")
+        mention.resolution_status = "verified"
+        review.status = "approved"
+        review.decision = "resolve_identity"
+        review.decision_reason = reason
+        review.assigned_user_id = user.id
+        review.decided_at = utc_now()
+
+        record_payload = {
+            key: value for key, value in source_document.payload.items() if not key.startswith("_")
+        }
+        record = ManualResearchRecord.model_validate(record_payload)
+        event, _, publication_route, snapshot_required = _route_manual_record(
+            session,
+            company,
+            record,
+            source_document,
+            _stored_document_verification(source_document),
+            resolved_publication_policy,
+        )
+        if snapshot_required:
+            _refresh_company_snapshot(session, company)
+
+        if source_document.research_import_id is not None:
+            research_import = session.get(ResearchImport, source_document.research_import_id)
+            if research_import is not None and research_import.tenant_id == user.tenant_id:
+                research_import.resolved_count += 1
+                research_import.unresolved_count = max(0, research_import.unresolved_count - 1)
+                research_import.identity_review_count = max(
+                    0, research_import.identity_review_count - 1
+                )
+                if publication_route == "auto_published":
+                    research_import.auto_published_count += 1
+                else:
+                    research_import.unconfirmed_count += 1
+                research_import.status = (
+                    "completed_with_unresolved" if research_import.unresolved_count else "completed"
+                )
+
+        session.add(
+            UsageLedger(
+                tenant_id=user.tenant_id,
+                company_id=company.id,
+                provider="official_identity_resolution",
+                operation="identity_review_resolution",
+                external_calls=0,
+                input_tokens=0,
+                output_tokens=0,
+                estimated_cost=Decimal("0"),
+                metrics={
+                    "review_id": str(review.id),
+                    "entity_mention_id": str(mention.id),
+                    "verification_id": str(verification.id),
+                    "event_id": str(event.id),
+                    "publication_route": publication_route,
+                    "identity_policy_version": resolved_identity_policy.version,
+                    "publication_policy_version": resolved_publication_policy.version,
+                },
+                idempotency_key=_sha256(f"identity-review-resolution:{review.id}"),
+            )
+        )
+        session.commit()
+        return IdentityResolutionOut(
+            review_id=review.id,
+            company_id=company.id,
+            event_id=event.id,
+            publication_route=publication_route,
+            review_status=review.status,
+        )
+    except Exception:
+        session.rollback()
+        raise
 
 
 def decide_review(

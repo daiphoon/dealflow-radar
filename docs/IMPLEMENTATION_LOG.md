@@ -89,3 +89,12 @@
 - 实际命令：`uv run ruff check backend migrations scripts tests`；`uv run ruff format --check backend migrations scripts tests`；`uv run pytest -q`；`npm run typecheck`、`npm run build`、`npm audit`；本机 PostgreSQL `alembic upgrade head` 和 `alembic check`；三个公开 URL 的状态/页面内容检查；两家公司单事务数据纠正、关系查询、事件输出序列化与审核页服务端渲染烟测；`git diff --check`。一次在仓库根目录运行 npm 因无 `package.json` 失败，改在 `frontend/` 后通过；首次数据事务因 PostgreSQL 不支持 `min(uuid)` 自动回滚，改为显式类型转换后完整提交；首次无状态序列化诊断遗漏数据库参数，补齐后通过。
 - 测试结果：Ruff 与格式检查通过；Pytest 62 项通过、1 项 PostgreSQL RLS 测试按预期跳过，只有 FastAPI TestClient 上游弃用警告；SQLite 迁移往返及 PostgreSQL DDL/实际迁移和 Schema 漂移检查通过；TypeScript、Next.js 生产构建通过，依赖审计 0 个已知漏洞。`dry-run` 测试确认不连接数据库、不访问网络且输出保守检查上界。两条私有真实试点记录中，一条官网事件返回 HTTP 200、来源日期得到纠正并按 `identity-first-v1` 自动发布；另一条原深链接返回 HTTP 404，事件降级为 `unconfirmed_lead`，公司官网仍作为独立身份入口展示；两家公司官网已补入私有身份主数据，快照不再用系统发现日冒充事实基准日。审核页烟测返回 `200`，失效深链接不再可点击并显示 HTTP 404，日期精度字段不再伪造时分。公开网页检查共 6 次请求，Token 与估算费用均为 0，并已写入 `usage_ledger`。
 - 未解决阻塞：专用“选择公司并重新路由”的身份解析流程、官方工商接口核验、自动采集/Cron、真实认证和真实基金/投资关系仍未实现；因此两家试点公司按现有授权规则仍不进入公司列表。Codex 执行环境把外部域名解析到保留测试网段，内置 SSRF 防护会保守标为不可用；未为方便测试而放宽私网防护。正式运行环境需用公开 DNS 做小批次验证。FastAPI TestClient 上游弃用警告仍存在，不影响当前结果。
+
+## 2026-07-16｜官方工商身份核验与歧义重路由 V1
+
+- 日期：2026-07-16
+- 任务：实现官方工商身份结构化导入、统一社会信用代码校验、有效期内身份候选、管理员与审核员联合授权的歧义选择，以及基于原始记录重建事件并重新执行发布路由；不抓取验证码、登录页面或未公开接口，不在页面请求中访问外网。
+- 关键文件：`backend/app/providers.py`、`backend/app/services.py`、`backend/app/models.py`、`backend/app/main.py`、`migrations/versions/0007_add_official_identity_verifications.py`、`scripts/import_official_identity_json.py`、`frontend/app/reviews/`、`tests/`、`docs/DECISIONS/ADR-0008-official-identity-verification-and-rerouting.md`、`.env.example`、`README.md` 和受影响文档。
+- 实际命令：`git diff --check`；`uv run ruff check backend migrations scripts tests`；`uv run ruff format --check backend migrations scripts tests`；`uv run pytest -q`；`npm audit --audit-level=high`；`npm run typecheck`；`npm run build`；临时 PostgreSQL 16 空库迁移、`alembic check`、虚构数据导入、受限应用角色初始化、RLS 测试及官方身份冲突选择到事件重路由的真实事务闭环；本地虚构 SQLite 夹具下的审核页桌面浏览器交互、页面尺寸和控制台检查。
+- 测试结果：默认 Pytest 73 项通过、1 项 PostgreSQL 测试按预期跳过；真实 PostgreSQL 受限角色 RLS 测试 1 项通过，迁移应用与 Schema 漂移检查通过；事务闭环确认官方冲突记录不会静默改写主数据，人工选择后更新法定全称和代码、保留曾用名、完成审核并将来源未核验的事件安全路由为 `unconfirmed_lead`，所有业务外部调用、Token 与估算费用均为 0。Ruff、格式、TypeScript、Next.js 生产构建通过，依赖审计 0 个已知漏洞；浏览器确认候选选择、必填理由、二次确认、提交成功和审核计数更新，1280px 视口无横向溢出，控制台无警告或错误。真实 PostgreSQL 验收发现并修复解析器版本超出字段长度的问题，并增加回归断言；临时数据库容器和浏览器夹具均已清理。
+- 未解决阻塞：尚未获得官方工商数据接口或批量资源的授权，因此 V1 采用私有目录中的结构化官方查询结果导入，通过 Provider 边界预留未来授权 API；不会为自动化而绕过验证码、登录或调用未公开接口。正式认证、自动采集/Cron 和真实基金/投资关系仍不在本阶段；FastAPI TestClient 上游弃用警告仍存在，不影响当前结果。

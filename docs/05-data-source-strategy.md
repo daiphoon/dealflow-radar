@@ -39,7 +39,8 @@
 | `KimiScheduledResearchImportProvider` | 预留 | Kimi Work/Claw 等官方导出能力、授权和稳定格式已确认 |
 | `KimiOpenPlatformProvider` | 预留 | 正式 API 文档、账号授权、价格和数据条款确认 |
 | `LicensedBusinessDataProvider` | 预留 | 单独合同允许 API 调用、缓存和目标用途 |
-| `OfficialPublicDataProvider` | 预留 | 官方接口或合法下载路径、频率和保留边界确认 |
+| `OfficialIdentityProvider` | 已实现 V1 边界与本机导入 | 当前只导入已核对的政府/GSXT JSON；自动查询要求正式 API 授权 |
+| `OfficialPublicDataProvider` | 预留 | 非工商身份的官方接口或合法下载路径、频率和保留边界确认 |
 | `DeepSeekLLMProvider` | 第 3 阶段候选 | API 能力、模型名、Schema 支持、价格和预算确认 |
 
 ## 5. Kimi 能力边界
@@ -69,7 +70,9 @@ Kimi 消费端会员/Agent、Kimi Work 或 Kimi Claw、Kimi Code、开放平台 
 
 来源发布日期与事件实际发生时间必须分开；仅知道日期时使用 `source_published_on`，不得虚构时刻。未知保持 `null`，不得用查询时间或观察时间替代来源/事件时间。所有非空时间戳必须带时区。
 
-V1 不复制保存原始文件字节，只保存受 RLS 保护的批次元数据、文件哈希，以及许可允许的公开来源定位、最小证据片段和结构化记录。CSV、Excel、Markdown、网页上传、内部财务和投资协议等敏感材料均未实现，启用前需另行设计格式、恶意内容隔离、正式认证与存储许可。实体提及审核目前只用于安全排队，通用事件审核接口不会批准它；选择目标公司、重跑解析和生成候选需要后续专用工作流。
+V1 不复制保存原始文件字节，只保存受 RLS 保护的批次元数据、文件哈希，以及许可允许的公开来源定位、最小证据片段和结构化记录。CSV、Excel、Markdown、网页上传、内部财务和投资协议等敏感材料均未实现，启用前需另行设计格式、恶意内容隔离、正式认证与存储许可。实体提及不能由通用事件审核接口批准；只能在专用流程中选择有效关联的官方候选，由程序重跑解析、事件生成和发布路由。
+
+官方工商导入另使用 `data/private/identity_imports/`。它只接受 HTTPS 政府/GSXT 域名、`license_status=public`、带时区核验时间和通过校验位的统一社会信用代码。官方全称/地区冲突记为 `conflict`，无现有公司记为 `unmatched`，两者都不自动改主数据或创建公司。详见 ADR-0008。
 
 ```mermaid
 sequenceDiagram

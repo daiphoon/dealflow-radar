@@ -20,6 +20,11 @@ MAX_IMPORT_FILE_BYTES = 1024 * 1024
 DEFAULT_PRIVATE_IMPORT_ROOT = (
     Path(__file__).resolve().parents[2] / "data" / "private" / "research_imports"
 )
+DEFAULT_PRIVATE_IDENTITY_IMPORT_ROOT = (
+    Path(__file__).resolve().parents[2] / "data" / "private" / "identity_imports"
+)
+UNIFIED_CREDIT_CODE_CHARSET = "0123456789ABCDEFGHJKLMNPQRTUWXY"
+UNIFIED_CREDIT_CODE_WEIGHTS = (1, 3, 9, 27, 19, 26, 16, 17, 20, 29, 25, 13, 8, 24, 10, 30, 28)
 
 
 def _validate_public_http_url(value: str) -> str:
@@ -30,6 +35,35 @@ def _validate_public_http_url(value: str) -> str:
         raise ValueError("URL must be a valid public HTTP(S) URL") from error
     if not has_host or parsed.username is not None or parsed.password is not None:
         raise ValueError("URL must include a host and must not include credentials")
+    return value
+
+
+def _validate_official_identity_url(value: str) -> str:
+    _validate_public_http_url(value)
+    parsed = urlsplit(value)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme != "https":
+        raise ValueError("official identity URL must use HTTPS")
+    if not (
+        host == "gsxt.gov.cn"
+        or host.endswith(".gsxt.gov.cn")
+        or host == "gov.cn"
+        or host.endswith(".gov.cn")
+    ):
+        raise ValueError("official identity URL must use a government or GSXT domain")
+    return value
+
+
+def _validate_unified_credit_code(value: str) -> str:
+    if len(value) != 18 or any(character not in UNIFIED_CREDIT_CODE_CHARSET for character in value):
+        raise ValueError("credit_code must use the unified social credit code character set")
+    total = sum(
+        UNIFIED_CREDIT_CODE_CHARSET.index(character) * weight
+        for character, weight in zip(value[:17], UNIFIED_CREDIT_CODE_WEIGHTS, strict=True)
+    )
+    expected = UNIFIED_CREDIT_CODE_CHARSET[(31 - total % 31) % 31]
+    if value[-1] != expected:
+        raise ValueError("credit_code checksum is invalid")
     return value
 
 
@@ -208,6 +242,124 @@ class MockResearchProvider:
         self.load_count += 1
         payload = json.loads(self.fixture_path.read_text(encoding="utf-8"))
         return [MockResearchRecord.model_validate(item) for item in payload]
+
+
+class OfficialIdentitySource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    name: str = Field(min_length=1, max_length=200)
+    base_url: str = Field(min_length=1, max_length=500)
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        return _validate_official_identity_url(value)
+
+
+class OfficialIdentityRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    external_record_id: str = Field(min_length=1, max_length=160)
+    query_text: str = Field(min_length=1, max_length=240)
+    legal_name: str = Field(min_length=1, max_length=240)
+    credit_code: str = Field(pattern=r"^[0-9A-Z]{18}$")
+    registered_region: str | None = Field(default=None, max_length=120)
+    registration_status: str = Field(min_length=1, max_length=64)
+    canonical_url: str = Field(min_length=1, max_length=1000)
+    checked_at: datetime
+
+    @field_validator("credit_code")
+    @classmethod
+    def validate_credit_code(cls, value: str) -> str:
+        return _validate_unified_credit_code(value)
+
+    @field_validator("canonical_url")
+    @classmethod
+    def validate_canonical_url(cls, value: str) -> str:
+        return _validate_official_identity_url(value)
+
+    @field_validator("checked_at")
+    @classmethod
+    def require_checked_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("checked_at must include a timezone")
+        return value
+
+
+class OfficialIdentityImportBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1.0"]
+    batch_id: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9._-]+$")
+    queried_at: datetime
+    source: OfficialIdentitySource
+    original_query: str = Field(min_length=1, max_length=1000)
+    target_company_hint: str = Field(min_length=1, max_length=240)
+    license_status: Literal["public"]
+    records: list[OfficialIdentityRecord] = Field(min_length=1, max_length=500)
+
+    @field_validator("queried_at")
+    @classmethod
+    def require_queried_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("queried_at must include a timezone")
+        return value
+
+
+@dataclass(frozen=True)
+class LoadedOfficialIdentityImport:
+    batch: OfficialIdentityImportBatch
+    file_hash: str
+    source_filename: str
+
+
+class OfficialIdentityProvider(Protocol):
+    code: str
+    parser_version: str
+    external_calls: int
+    estimated_cost: int
+
+    def load(self) -> LoadedOfficialIdentityImport: ...
+
+
+class ManualOfficialIdentityImportProvider:
+    code = "manual_official_identity_import"
+    parser_version = "identity-v1"
+    external_calls = 0
+    estimated_cost = 0
+
+    def __init__(
+        self,
+        file_path: str | Path,
+        *,
+        allowed_root: Path | None = None,
+    ) -> None:
+        self.file_path = Path(file_path)
+        self.allowed_root = (allowed_root or DEFAULT_PRIVATE_IDENTITY_IMPORT_ROOT).resolve()
+
+    def load(self) -> LoadedOfficialIdentityImport:
+        path = self.file_path
+        if not path.is_absolute():
+            path = self.allowed_root / path
+        path = path.resolve()
+        try:
+            path.relative_to(self.allowed_root)
+        except ValueError as error:
+            raise ValueError(
+                "official identity import file must be inside the private identity directory"
+            ) from error
+        if path.suffix.lower() != ".json":
+            raise ValueError("ManualOfficialIdentityImportProvider accepts JSON files only")
+        if path.stat().st_size > MAX_IMPORT_FILE_BYTES:
+            raise ValueError("official identity import file exceeds the 1 MiB limit")
+        content = path.read_bytes()
+        payload = json.loads(content.decode("utf-8"))
+        return LoadedOfficialIdentityImport(
+            batch=OfficialIdentityImportBatch.model_validate(payload),
+            file_hash=hashlib.sha256(content).hexdigest(),
+            source_filename=path.name,
+        )
 
 
 class CompanyIdentityEvidence(BaseModel):

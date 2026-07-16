@@ -71,6 +71,27 @@ def test_publication_policy_rejects_invalid_confidence(
         Settings.from_env()
 
 
+def test_identity_policy_is_configured_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IDENTITY_POLICY_VERSION", "official-identity-v2")
+    monkeypatch.setenv("IDENTITY_VERIFICATION_TTL_DAYS", "21")
+
+    policy = Settings.from_env().identity_policy
+
+    assert policy.version == "official-identity-v2"
+    assert policy.verification_ttl_days == 21
+
+
+def test_identity_policy_rejects_non_positive_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IDENTITY_VERIFICATION_TTL_DAYS", "0")
+
+    with pytest.raises(ValueError, match="IDENTITY_VERIFICATION_TTL_DAYS"):
+        Settings.from_env()
+
+
 def test_bootstrap_rejects_shared_database_password() -> None:
     with pytest.raises(RuntimeError, match="passwords must differ"):
         bootstrap_application_role(
