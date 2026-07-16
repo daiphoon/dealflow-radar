@@ -2,7 +2,7 @@
 
 ## 1. API 原则
 
-版本前缀 `/api/v1`；JSON 字段使用英文；写操作要求认证、授权、审计和幂等键。列表使用游标分页。同步读取不得调用搜索或模型。所有公司响应包含 `data_as_of`、`last_checked_at`、`freshness_status`、`information_gaps`；私密投资数据放入独立授权字段，不能混入公共快照。
+版本前缀 `/api/v1`；JSON 字段使用英文；写操作要求认证、授权、审计和幂等键。列表使用游标分页。同步读取不得调用外部搜索或模型。所有公司响应包含 `data_as_of`、`last_checked_at`、`freshness_status`、`information_gaps`；平台共享基础层与个人/机构私有叠加层分别授权，私密数据不能混入共享快照或共享缓存。
 
 第 2 阶段仅使用 `X-Demo-User-Id` 注入固定虚构测试身份，用于验证 RBAC 与基金隔离；缺失或无效身份返回 `401`。该 Header 不是生产认证方案，真实数据验证前必须替换为正式身份系统。
 
@@ -10,11 +10,12 @@
 
 | 方法与路径 | 用途 | 关键行为 |
 | --- | --- | --- |
-| `GET /companies` | 公司列表 | 按权限展示新鲜度和风险；不因列表访问批量入队 |
-| `GET /companies/{id}` | 公司详情 | 读快照/事件/指标；过期且自动刷新开启时创建或合并后台任务 |
+| `GET /companies` | 当前授权公司列表 | 当前仍按基金权限；后续个人列表与 watchlist 单独设计 |
+| `GET /companies/search?query=`（目标） | 搜索平台共享公司 | 信用代码精确、工商全称或已核实别名；只查数据库，不自动建公司 |
+| `GET /companies/{id}` | 公司详情 | 目标先读共享基础层，再按个人或机构授权叠加私有层 |
 | `GET /companies/{id}/changes?since=` | 上次查看后变化 | 只返回版本化事实变化和纠正撤回 |
-| `GET /companies/{id}/events` | 事件时间线 | 按权限返回已发布事实；公司详情另列未确认线索 |
-| `GET /events/{id}/evidence` | 证据 | 按许可返回最小片段或受控存储引用 |
+| `GET /companies/{id}/events` | 事件时间线 | 按有效权益和记录作用域返回事件；业务状态不代替授权 |
+| `GET /events/{id}/evidence` | 证据 | 对证据引用和原始文档分别授权，只返回许可允许的最小内容 |
 | `GET /companies/{id}/metrics` | 指标历史 | 返回来源性质、期间、单位和审核状态 |
 | `POST /companies/{id}/refresh` | 请求更新或 `dry-run` | 检查开关/预算/冷却，返回已有或新任务 ID |
 | `GET /refresh-jobs/{id}` | 查看后台状态 | 不暴露 Secret 或 Provider 原始敏感响应 |
@@ -26,13 +27,41 @@
 | `GET /reports/portfolio-weekly` | 固定模板周报 | 按事实水位读取已生成结果 |
 | `GET /usage` | 成本仪表盘 | 聚合租户/公司/Provider/有效事件成本 |
 
-人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`，官方身份核验通过 `python -m scripts.import_official_identity_json` 导入，两者均未开放文件上传 API。原因是当前 `X-Demo-User-Id` 只适用于测试，不足以保护真实文件上传；网页/API 导入须等正式认证、上传隔离、文件审计和许可校验完成后再实现。公司详情响应包含 `events` 与 `unconfirmed_leads` 两个列表；事件和证据返回日期精度、发布路由/策略原因及 URL 检查状态。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放给 `reviewer`；该开关不能替代认证。实体提及不能用通用事件接口直接批准；专用身份接口只接受工作台返回的有效关联候选，页面决定过程不访问外部网站。纠正、撤回和保持待审仍属于后续契约。
+人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`，官方身份核验通过 `python -m scripts.import_official_identity_json` 导入，两者均未开放文件上传 API。原因是当前 `X-Demo-User-Id` 只适用于测试，不足以保护真实文件上传；网页/API 导入须等正式认证、上传隔离、文件审计和许可校验完成后再实现。当前公司列表和详情仍以基金投资关系为访问前置，`GET /companies/search` 尚未实现；ADR-0009 描述的是后续 PR 2、3、4 的目标契约，不是现有 API 能力。
+
+当前详情响应包含 `events` 与 `unconfirmed_leads` 两个列表；后续必须先为线索、证据引用和原始文档补齐所有者及作用域，再开放无基金搜索。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放给 `reviewer`；该开关不能替代认证。实体提及不能用通用事件接口直接批准；专用身份接口只接受工作台返回的有效关联候选，页面决定过程不访问外部网站。纠正、撤回和保持待审仍属于后续契约。
 
 `POST /refresh` 的响应明确区分 `fresh_noop`、`queued`、`merged`、`cooldown_deferred`、`budget_deferred`、`external_disabled`。`dry_run=true` 时只返回计划 Provider、搜索数、Token 上界和预计费用，不产生外部调用。
 
 按需缓存 V1 的 `freshness_status` 由当前快照 `last_checked_at` 与配置 TTL 动态计算。首次过期详情请求返回 `stale` 并完成入队；已有活动任务时返回 `refreshing`。`AUTO_REFRESH_ENABLED=false` 时只返回状态，不创建任务；无论开关如何，同步请求都不调用 Provider。
 
-## 3. Pydantic v2 事件候选 Schema
+## 3. 双通道搜索与详情契约
+
+### 搜索
+
+- 第一版只支持统一社会信用代码精确搜索、工商全称和已核实别名搜索；模糊名称不自动绑定或创建公司。
+- 搜索只返回当前用户具备有效访问资格的平台共享目录，不返回个人或机构私有主体、线索或计数。
+- 搜索无结果时未来可返回“请求收录”入口，但同步请求不访问外部数据源。
+- 公司是否在个人 watchlist 或某基金中，不影响其共享目录读取资格。
+
+### 详情组合
+
+目标响应逻辑分为：
+
+- `shared_profile`：已核验身份、共享事件、允许展示的证据引用、新鲜度和来源状态；
+- `personal_overlay`：仅当前用户的关注、备注、查看水位和个人线索；
+- `organization_overlays`：仅当前用户有机构及资源授权的基金投资、机构线索和私有资料。
+
+字段名称和是否拆分端点由 PR 3 在兼容现有响应后确定，但授权顺序固定为“共享基础层独立判断，私有层逐层叠加”。无基金授权不再导致共享公司详情整体不可访问。
+
+### 防枚举
+
+- 无权访问与不存在的私有对象采用不可区分的响应；
+- 搜索总数、字段是否存在和错误详情不得暴露其他客户的关注、投资、线索或资料；
+- 用户缺少通用共享权益时返回一致的权益错误，不返回资源特定的私有信息；
+- 私有字段在服务端授权后拼装，不允许依靠前端隐藏。
+
+## 4. Pydantic v2 事件候选 Schema
 
 以下是设计契约，不是本阶段应用代码。`event_subtype` 还需按 taxonomy 版本校验；时间必须带时区。证据支持性和重大负面规则由风险闸门做语义校验。
 
