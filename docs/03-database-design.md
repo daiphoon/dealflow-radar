@@ -2,23 +2,31 @@
 
 ## 1. 设计原则
 
-PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；不修改已应用迁移。UUID 主键、UTC `timestamptz`、显式外键和状态约束为默认。原始事实追加保存，派生快照可重建。租户与基金级行必须通过应用授权和 PostgreSQL 行级安全（RLS）双重限制。
+PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；不修改已应用迁移。UUID 主键、UTC `timestamptz`、显式外键和状态约束为默认。原始事实追加保存，派生快照可重建。个人、机构与基金私有行必须通过应用授权和 PostgreSQL 行级安全（RLS）双重限制。
+
+本文件同时描述当前 `0007` Schema 和 ADR-0009 的目标边界。标记为“目标”的对象尚未实现；当前 `tenant` 继续作为技术隔离边界，当前用户仍是 tenant 绑定的 Demo 身份，不得把目标模型描述成现有能力。
 
 ## 2. 表目录：身份、投资与权限
 
 | 表 | 职责与关键字段 | 约束与关键索引 |
 | --- | --- | --- |
-| `tenants` | `id`, `name`, `status`, `budget_policy_id`, timestamps | PK `id`; 唯一规范化名称；索引 `status` |
-| `users` | `id`, `tenant_id`, `email`, `status`, `last_login_at` | FK tenant；唯一 `(tenant_id, lower(email))`; 索引 tenant/status |
+| `tenants` | 当前技术隔离和 RLS 上下文；短期承载机构作用域 | PK `id`；本阶段不物理改名，不为个人查询创建虚假基金 |
+| `users` | 当前为 tenant 绑定 Demo 身份；目标为一个自然人的全局账户 | 当前唯一 `(tenant_id, email)`；未来迁移前先处理重复身份 |
+| `organizations`（目标） | 机构客户和机构私有数据的业务所有者；短期由 tenant 承载 | 不在本阶段建表；未来与 tenant 的映射另行迁移 |
+| `organization_memberships`（目标） | 用户加入机构的成员关系、角色、状态和有效期 | 唯一 `(organization_id, user_id)`；用户可加入多个机构 |
 | `roles` | `id`, `code`, `permissions`, `scope_type` | 唯一 `code`; 检查 scope |
 | `user_role_assignments` | `user_id`, `role_id`, `scope_id`, validity | 复合唯一；FK user/role；索引有效授权 |
 | `funds` | `id`, `tenant_id`, `name`, `code`, `status`, `visibility_scope` | 唯一 `(tenant_id, code)`；索引 tenant/status |
-| `fund_access_grants` | `user_id`, `fund_id`, `permission`, validity | 复合唯一；FK user/fund；索引 fund/user |
-| `companies` | `id`, `credit_code`, `legal_name`, `registered_region`, `official_website`, `identity_status`, `last_identity_checked_at`, `tenant_id?`, `visibility_scope` | 信用代码条件唯一；规范名称/地区索引；已核验官网作为身份锚点；私有主体含 tenant |
+| `fund_access_grants` | `user_id`, `fund_id`, `permission`, validity；只授权基金私有层 | 复合唯一；FK user/fund；不授予平台共享档案读取权限 |
+| `companies` | 全局工商主体 ID、信用代码、工商全称、地区、官网、身份状态和目录资格 | 信用代码全局唯一；只有已核实且通过目录审核的主体进入共享搜索 |
 | `company_aliases` | `id`, `company_id`, `alias`, `alias_type`, validity, `verification_status`, `source_id` | 唯一 `(company_id, normalized_alias, alias_type, valid_from)`；别名检索索引 |
 | `company_relationships` | `from_company_id`, `to_company_id`, `relationship_type`, validity, evidence | 禁止自关联；版本化唯一；双向查询索引 |
 | `investments` | `id`, `tenant_id`, `fund_id`, `company_id`, amount, currency, ownership, internal_valuation, `visibility_scope` | FK tenant/fund/company；同一轮次条件唯一；RLS；fund/company 索引 |
-| `subscriptions` | 用户或基金关注公司、频率覆盖和通知偏好 | 唯一 `(tenant_id, owner_type, owner_id, company_id)`；`next_check_at` 索引 |
+| `watchlists`（目标） | 个人清单名称、所有者和状态 | 必须有 `owner_user_id`；不产生公司读取权限 |
+| `watchlist_companies`（目标） | 关注列表与全局公司的多对多关系 | 唯一 `(watchlist_id, company_id)`；取消关注不删除公司 |
+| `plans`（目标） | 套餐能力和限额的版本化配置 | 唯一套餐版本；不保存资源授权 |
+| `subscriptions`（目标） | 个人或机构获得 plan 的有效关系 | 个人和机构订阅主体二选一；不替代 access grant |
+| `plan_entitlements`（目标） | 查询、关注、报告、刷新和席位等能力或额度 | 唯一 `(plan_version, entitlement_code)` |
 
 ## 3. 表目录：证据、事实与报告
 
@@ -26,10 +34,10 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | --- | --- | --- |
 | `sources` | 来源主体、等级、类型、许可、保留策略、基础 URL | 唯一来源代码；等级/许可索引 |
 | `source_connectors` | Provider 配置引用、能力、租户范围、启用状态；只存 Secret 引用 | 唯一 `(tenant_id, provider_code, connector_name)`；不存明文密钥 |
-| `raw_documents` | source、可选导入批次、外部记录 ID、规范 URL、标题、时间/日期精度、URL 检查元数据、哈希、存储引用、许可 | `document_dedupe_key` 唯一；内容哈希、导入批次和发布时间索引 |
+| `raw_documents` | source、可选导入批次、外部记录 ID、规范 URL、标题、时间、哈希、存储引用、许可、独立作用域和所有者 | 文档共享资格不继承事件；内容哈希、导入批次和发布时间索引 |
 | `entity_mentions` | 文档中的公司候选、命中依据、候选集合、置信度、解析状态 | 唯一 `(raw_document_id, mention_span_hash, candidate_company_id)`；待解析索引 |
-| `events` | 公司、类型/子类、状态、发布路由/策略版本/原因、五项评价、事实、不确定性、时间/日期精度、事件指纹、版本关系 | 唯一 `(company_id, fingerprint_version, event_fingerprint)`；公司/状态/发生时间索引 |
-| `event_evidence` | 事件到文档或结构化记录的证据片段、位置、支撑类型 | 唯一 `(event_id, raw_document_id, span_hash)`；文档反查索引 |
+| `events` | 公司、类型/子类、业务状态、发布路由、作用域、所有者、审核/证据状态、五项评价、事实、时间和事件指纹 | 共享事件全局去重；私有候选在所有者范围内去重；业务状态不推断权限 |
+| `event_evidence` | 事件到文档或结构化记录的证据引用、最小片段、支撑类型、作用域和许可 | 证据引用独立授权；不得因事件共享而暴露受限原文 |
 | `metric_definitions` | 指标编码、类型、单位集合、周期和行业命名空间 | 唯一 `metric_code`; 行业索引 |
 | `metric_observations` | 公司指标历史值、单位、期间、`as_of_date`、来源性质、审核状态 | 观测幂等键唯一；公司/指标/基准日降序索引 |
 | `company_snapshots` | 派生状态、信息缺口、新鲜度、构建版本、可空的事实水位 | 唯一 `(company_id, snapshot_version)`；当前快照条件唯一；没有可靠事件/来源日期时 `data_as_of` 保持空 |
@@ -48,12 +56,13 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `official_identity_verifications` | tenant、公司候选、官方原文档、查询词、工商全称、信用代码、注册地、登记状态、核验结果/规则/时间 | 每份原文档唯一核验记录；tenant/状态/时间及信用代码索引；管理员写、审核员读 RLS |
 | `review_queue` | 事件或实体提及、触发规则、状态、分配人、决定和理由 | `event_id` 与 `entity_mention_id` 必须且只能存在一个；每个对象唯一；状态索引 |
 | `usage_ledger` | task/run/company/tenant/provider、调用量、Token、估算/实际费用、有效产出 | 用量幂等键唯一；tenant/company/provider/日期索引 |
+| `usage_records`（目标） | 查询、报告、刷新和席位等产品权益消耗 | 订阅主体、用户、动作、时间窗和幂等键；与成本 ledger 分离 |
 | `prompt_versions` | prompt code、版本、模板哈希、Schema 版本、状态 | 唯一 `(prompt_code, version)`；活动版本条件唯一 |
 | `audit_logs` | actor、tenant、action、object、结果、敏感字段类别、时间 | 追加写；tenant/object/time 索引；不保存 Secret 或全文 |
 
 ## 5. 简化 ER 图
 
-字段细节以表目录为准，图只展示关键关系。
+字段细节以表目录为准，图展示当前已实现的关键关系；个人 watchlist、organization 成员关系和商业权益仍是目标模型，关系图见 [ADR-0009](DECISIONS/ADR-0009-dual-channel-access-and-data-scope.md)。
 
 ```mermaid
 erDiagram
@@ -96,7 +105,7 @@ erDiagram
 ## 7. 去重与幂等键
 
 - 文档：`sha256(source_id + external_record_id)` 优先；无外部 ID 时用 `sha256(source_id + canonical_url + published_at + content_hash)`。相同 URL 内容变更保留新版本，并以 `supersedes_document_id` 关联。
-- 事件：`sha256(company_id + taxonomy_version + event_type + subtype + normalized_core_facts + occurred_date_bucket + counterparty + amount + currency)`；规范化规则版本进入 `fingerprint_version`。多来源命中同指纹时只增加证据。
+- 事件：共享事实使用 `sha256(company_id + taxonomy_version + event_type + subtype + normalized_core_facts + occurred_date_bucket + counterparty + amount + currency)` 全局去重；私有候选必须把作用域和所有者加入去重边界。只有正式晋升后的共享事实才跨客户合并证据。
 - 指标：`sha256(company_id + metric_code + period_start + period_end + as_of_date + source_id + source_record_id)`；来源修订新增观测并关联被替代行。
 - 更新任务：`sha256(scope + company_id + job_type + policy_version + schedule_bucket + refresh_reason)`；同时限制一个公司/任务类型只有一个 `queued` 或 `running` 任务。
 - 报告：模板版本、事实水位、受众范围和基准日组成幂等键；无事实变化不重建。
@@ -107,7 +116,9 @@ erDiagram
 
 ## 9. 租户、基金与可见范围
 
-`visibility_scope` 取 `public`、`tenant`、`fund`、`user`、`system`。这里的 `public` 表示可在私有平台的授权用户间复用，不表示对互联网匿名公开。访问条件同时校验 tenant、fund grant、角色权限和记录范围；`fund` 记录必须有 `fund_id`，`user` 记录必须有 owner。共享公开事件不含任何基金私密字段，投资表不被快照构建器复制到公共快照。详细规则见[安全合规](07-security-compliance.md)。
+目标领域术语为 `platform_shared`、`personal_private`、`organization_private` 和 `system_restricted`。现有数据库中的 `public`、`tenant`、`fund`、`user`、`system` 暂时保留为兼容值，物理迁移由后续数据作用域 PR 决定。
+
+平台共享记录不得有个人或机构访问所有者；个人私有记录必须有 `owner_user_id`；机构私有记录必须有 `owner_organization_id`，过渡期使用 `owner_tenant_id`；同一记录不能同时归个人和机构。来源用户、来源租户和导入批次属于数据血缘，不等同于访问 owner。事件、证据引用和原始文档分别判断作用域、许可和展示范围。访问条件同时校验登录状态、有效权益、记录作用域、owner、机构关系、资源授权和动作权限。详细规则见[安全合规](07-security-compliance.md)和 [ADR-0009](DECISIONS/ADR-0009-dual-channel-access-and-data-scope.md)。
 
 ## 10. 数据血缘图
 
