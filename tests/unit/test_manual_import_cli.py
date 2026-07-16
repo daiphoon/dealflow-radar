@@ -53,11 +53,12 @@ def test_manual_import_cli_dry_run_plans_checks_without_database(
         external_calls_enabled=True,
         paid_api_calls_enabled=False,
         auto_refresh_enabled=False,
-        publication_policy=PublicationPolicy(max_source_url_checks_per_import=1),
+        publication_policy=PublicationPolicy(enabled=True, max_source_url_checks_per_import=1),
     )
     monkeypatch.setenv("RESEARCH_IMPORT_DRY_RUN", "true")
     monkeypatch.setenv("RESEARCH_IMPORT_FILE", "batch.json")
     monkeypatch.setenv("EXTERNAL_CALLS_ENABLED", "true")
+    monkeypatch.setenv("AUTO_PUBLISH_ENABLED", "true")
     monkeypatch.setenv("SOURCE_URL_MAX_CHECKS_PER_IMPORT", "1")
     monkeypatch.delenv("IMPORT_USER_ID", raising=False)
     monkeypatch.setattr(import_cli, "ManualResearchImportProvider", lambda _: provider)

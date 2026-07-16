@@ -91,11 +91,21 @@ function InvestmentCard({ investment }: { investment: Investment }) {
   );
 }
 
-function EventCard({ event, unconfirmed = false }: { event: Event; unconfirmed?: boolean }) {
+function EventCard({
+  event,
+  unconfirmed = false,
+  privateRecord = false,
+}: {
+  event: Event;
+  unconfirmed?: boolean;
+  privateRecord?: boolean;
+}) {
   const eventDate = event.occurred_at ?? event.published_at ?? event.published_on;
   const publicationLabel = unconfirmed
     ? "未确认线索"
-    : event.publication_route === "auto_published"
+    : privateRecord
+      ? "机构私有已确认"
+      : event.publication_route === "auto_published"
       ? "规则自动发布"
       : "人工或历史确认";
   return (
@@ -175,7 +185,7 @@ export default async function CompanyDetailPage({
     return (
       <main className="shell page-stack">
         <Link className="back-link" href="/">
-          ← 返回公司列表
+          ← 返回公司查询
         </Link>
 
         <section className="hero detail-hero">
@@ -186,6 +196,7 @@ export default async function CompanyDetailPage({
               身份{company.identity_status === "verified" ? "已核验" : "待核验"} · 数据基准日
               {formatDate(company.data_as_of)} · 最后检查 {formatDate(company.last_checked_at)}
             </p>
+            <p>统一社会信用代码：{company.credit_code ?? "Demo 未设置"}</p>
             {company.official_website ? (
               <a href={company.official_website} rel="noreferrer" target="_blank">
                 官方网站 ↗
@@ -197,25 +208,27 @@ export default async function CompanyDetailPage({
           </span>
         </section>
 
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">权限隔离</p>
-              <h2>投资关系</h2>
+        {company.investments.length > 0 ? (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">机构私有叠加层</p>
+                <h2>投资关系</h2>
+              </div>
             </div>
-          </div>
-          <div className="investment-grid">
-            {company.investments.map((investment) => (
-              <InvestmentCard investment={investment} key={investment.fund_id} />
-            ))}
-          </div>
-        </section>
+            <div className="investment-grid">
+              {company.investments.map((investment) => (
+                <InvestmentCard investment={investment} key={investment.fund_id} />
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">已发布事实</p>
-              <h2>事件与证据</h2>
+              <p className="eyebrow">平台共享基础层</p>
+              <h2>已审核事件与可见证据</h2>
             </div>
             <span className="muted">{company.events.length} 条事件</span>
           </div>
@@ -231,24 +244,39 @@ export default async function CompanyDetailPage({
           )}
         </section>
 
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">程序自动保留</p>
-              <h2>未确认线索</h2>
+        {company.private_events.length > 0 ? (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">机构私有叠加层</p>
+                <h2>机构私有已确认信息</h2>
+              </div>
+              <span className="muted">{company.private_events.length} 条事件</span>
             </div>
-            <span className="muted">{company.unconfirmed_leads.length} 条线索</span>
-          </div>
-          {company.unconfirmed_leads.length === 0 ? (
-            <div className="empty-state">暂无未确认线索。</div>
-          ) : (
+            <div className="timeline">
+              {company.private_events.map((event) => (
+                <EventCard event={event} key={event.id} privateRecord />
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {company.unconfirmed_leads.length > 0 ? (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">当前用户或机构私有</p>
+                <h2>未确认线索</h2>
+              </div>
+              <span className="muted">{company.unconfirmed_leads.length} 条线索</span>
+            </div>
             <div className="timeline">
               {company.unconfirmed_leads.map((event) => (
                 <EventCard event={event} key={event.id} unconfirmed />
               ))}
             </div>
-          )}
-        </section>
+          </section>
+        ) : null}
 
         <section className="gap-panel">
           <p className="eyebrow">信息缺口</p>
@@ -264,12 +292,12 @@ export default async function CompanyDetailPage({
     return (
       <main className="shell page-stack">
         <Link className="back-link" href="/">
-          ← 返回公司列表
+          ← 返回公司查询
         </Link>
         <section className="hero">
           <p className="eyebrow">读取失败</p>
           <h1>无法访问该公司</h1>
-          <p>公司不存在、当前测试身份没有基金权限，或后端服务尚未启动。</p>
+          <p>公司不存在、未进入共享目录、当前身份没有私有访问权限，或后端尚未启动。</p>
         </section>
       </main>
     );

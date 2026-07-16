@@ -187,6 +187,60 @@ a {
   gap: 14px;
 }
 
+.search-form {
+  display: grid;
+  gap: 10px;
+}
+
+.search-form label {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.search-form > div {
+  display: flex;
+  gap: 10px;
+}
+
+.search-form input {
+  min-width: 0;
+  flex: 1;
+  padding: 13px 14px;
+  border: 1px solid #bdc9c4;
+  border-radius: 12px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+}
+
+.search-form input:focus {
+  border-color: var(--accent);
+  outline: 3px solid rgb(20 92 71 / 12%);
+}
+
+.button-search {
+  background: var(--accent);
+}
+
+.search-results {
+  display: grid;
+  gap: 16px;
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+
+.search-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.search-result-card {
+  min-height: 190px;
+}
+
 .company-card {
   display: grid;
   min-height: 210px;
@@ -704,5 +758,10 @@ dd {
   .header-actions {
     width: 100%;
     justify-content: space-between;
+  }
+
+  .search-form > div {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

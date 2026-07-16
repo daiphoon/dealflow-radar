@@ -21,6 +21,7 @@ class EvidenceOut(BaseModel):
     url_http_status: int | None
     url_checked_at: datetime | None
     final_url: str | None
+    visibility_scope: str
 
 
 class EventOut(BaseModel):
@@ -45,6 +46,7 @@ class EventOut(BaseModel):
     publication_reasons: list[str]
     observed_at: datetime
     evidence: list[EvidenceOut]
+    visibility_scope: str
 
 
 class InvestmentOut(BaseModel):
@@ -69,9 +71,20 @@ class CompanyListItem(BaseModel):
     information_gaps: list[str]
 
 
+class CompanySearchResult(BaseModel):
+    id: UUID
+    legal_name: str
+    credit_code: str | None
+    registered_region: str | None
+    identity_status: str
+    freshness_status: str
+    last_checked_at: datetime | None
+
+
 class CompanyDetail(BaseModel):
     id: UUID
     legal_name: str
+    credit_code: str | None
     registered_region: str | None
     official_website: str | None
     identity_status: str
@@ -81,6 +94,7 @@ class CompanyDetail(BaseModel):
     information_gaps: list[str]
     investments: list[InvestmentOut]
     events: list[EventOut]
+    private_events: list[EventOut]
     unconfirmed_leads: list[EventOut]
 
 

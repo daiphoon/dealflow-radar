@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.engine import make_url
 
-from backend.app.config import Settings
+from backend.app.config import PublicationPolicy, Settings
 from scripts.bootstrap_local_database import bootstrap_application_role
 
 
@@ -60,6 +60,13 @@ def test_publication_policy_is_configured_from_environment(
     assert str(policy.min_confidence) == "0.91"
     assert policy.source_url_timeout_seconds == 7
     assert policy.max_source_url_checks_per_import == 12
+
+
+def test_auto_publish_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AUTO_PUBLISH_ENABLED", raising=False)
+
+    assert Settings.from_env().publication_policy.enabled is False
+    assert PublicationPolicy().enabled is False
 
 
 def test_publication_policy_rejects_invalid_confidence(

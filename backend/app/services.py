@@ -19,11 +19,15 @@ from backend.app.demo import (
     BETA_FUND_ID,
     BETA_TENANT_ID,
     BETA_USER_ID,
+    DEMO_SHARED_COMPANY_CREDIT_CODE,
     MOCK_SOURCE_ID,
     NO_ACCESS_USER_ID,
     demo_uuid,
 )
 from backend.app.models import (
+    ORGANIZATION_PRIVATE_SCOPE,
+    PERSONAL_PRIVATE_SCOPE,
+    PLATFORM_SHARED_SCOPE,
     Company,
     CompanyAlias,
     CompanySnapshot,
@@ -62,6 +66,7 @@ from backend.app.providers import (
 from backend.app.schemas import (
     CompanyDetail,
     CompanyListItem,
+    CompanySearchResult,
     EventOut,
     EvidenceOut,
     IdentityCandidateOut,
@@ -223,17 +228,19 @@ def seed_demo_entities(session: Session, records: list[MockResearchRecord]) -> N
 
     for index, record in enumerate(records, start=1):
         company_id = demo_uuid(f"company-{record.company_legal_name}")
-        _add_if_missing(
+        company = _add_if_missing(
             session,
             Company,
             company_id,
             tenant_id=None,
-            credit_code=None,
+            credit_code=DEMO_SHARED_COMPANY_CREDIT_CODE if index == 1 else None,
             legal_name=record.company_legal_name,
             registered_region=record.registered_region,
             identity_status="verified",
             visibility_scope="public",
         )
+        if index == 1 and company.credit_code is None:
+            company.credit_code = DEMO_SHARED_COMPANY_CREDIT_CODE
         _add_if_missing(
             session,
             CompanyAlias,
@@ -244,6 +251,9 @@ def seed_demo_entities(session: Session, records: list[MockResearchRecord]) -> N
             normalized_alias=record.company_alias.strip().lower(),
             alias_type="short_name",
             verification_status="verified",
+            visibility_scope=PLATFORM_SHARED_SCOPE,
+            owner_user_id=None,
+            owner_tenant_id=None,
         )
         _add_if_missing(
             session,
@@ -287,7 +297,12 @@ def ingest_mock_records(session: Session, provider: MockResearchProvider) -> Ing
     for record in records:
         dedupe_key = _sha256(f"{MOCK_SOURCE_ID}:{record.external_record_id}")
         existing = session.scalar(
-            select(RawDocument).where(RawDocument.document_dedupe_key == dedupe_key)
+            select(RawDocument).where(
+                RawDocument.visibility_scope == PLATFORM_SHARED_SCOPE,
+                RawDocument.owner_user_id.is_(None),
+                RawDocument.owner_tenant_id.is_(None),
+                RawDocument.document_dedupe_key == dedupe_key,
+            )
         )
         if existing is not None:
             continue
@@ -300,6 +315,9 @@ def ingest_mock_records(session: Session, provider: MockResearchProvider) -> Ing
         content_hash = _sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         document = RawDocument(
             source_id=MOCK_SOURCE_ID,
+            visibility_scope=PLATFORM_SHARED_SCOPE,
+            owner_user_id=None,
+            owner_tenant_id=None,
             external_record_id=record.external_record_id,
             canonical_url=record.canonical_url,
             title=record.title,
@@ -315,6 +333,9 @@ def ingest_mock_records(session: Session, provider: MockResearchProvider) -> Ing
         session.add(
             EntityMention(
                 raw_document_id=document.id,
+                visibility_scope=PLATFORM_SHARED_SCOPE,
+                owner_user_id=None,
+                owner_tenant_id=None,
                 candidate_company_id=company.id,
                 mention_text=record.company_legal_name,
                 match_rule="legal_name_exact",
@@ -335,6 +356,9 @@ def ingest_mock_records(session: Session, provider: MockResearchProvider) -> Ing
         )
         event = Event(
             company_id=company.id,
+            visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
+            owner_user_id=None,
+            owner_tenant_id=ALPHA_TENANT_ID,
             event_type=record.event_type.value,
             event_subtype=record.event_subtype,
             status="in_review",
@@ -359,6 +383,9 @@ def ingest_mock_records(session: Session, provider: MockResearchProvider) -> Ing
             EventEvidence(
                 event_id=event.id,
                 raw_document_id=document.id,
+                visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
+                owner_user_id=None,
+                owner_tenant_id=ALPHA_TENANT_ID,
                 evidence_excerpt=record.evidence_excerpt,
                 span_hash=_sha256(record.evidence_excerpt),
                 support_type="supports",
@@ -421,6 +448,14 @@ def user_has_role(session: Session, user_id: UUID, role_code: str) -> bool:
 
 def _normalized_identity_text(value: str) -> str:
     return "".join(value.split()).casefold()
+
+
+def _is_platform_shared_company(company: Company) -> bool:
+    return (
+        company.tenant_id is None
+        and company.visibility_scope == "public"
+        and company.identity_status == "verified"
+    )
 
 
 def _regions_compatible(left: str | None, right: str | None) -> bool:
@@ -642,6 +677,9 @@ def import_official_identities(
             document = RawDocument(
                 source_id=source.id,
                 research_import_id=research_import.id,
+                visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
+                owner_user_id=None,
+                owner_tenant_id=user.tenant_id,
                 external_record_id=f"official-identity:{source_record_key[:40]}",
                 canonical_url=record.canonical_url,
                 title=f"工商身份核验：{record.legal_name}",
@@ -893,10 +931,16 @@ def _add_manual_event_evidence(
     document_id: UUID,
     record: ManualResearchRecord,
 ) -> None:
+    document = session.get(RawDocument, document_id)
+    if document is None:
+        raise NotFoundError("evidence document not found")
     session.add(
         EventEvidence(
             event_id=event_id,
             raw_document_id=document_id,
+            visibility_scope=document.visibility_scope,
+            owner_user_id=document.owner_user_id,
+            owner_tenant_id=document.owner_tenant_id,
             evidence_excerpt=record.evidence_excerpt,
             span_hash=_sha256(record.evidence_excerpt),
             support_type="supports",
@@ -905,18 +949,59 @@ def _add_manual_event_evidence(
 
 
 def _mark_event_published(session: Session, event: Event, company: Company) -> None:
-    evidence_count = session.scalar(
-        select(func.count()).select_from(EventEvidence).where(EventEvidence.event_id == event.id)
-    )
-    if not evidence_count or company.identity_status != "verified":
+    evidence_rows = session.execute(
+        select(EventEvidence, RawDocument)
+        .join(RawDocument, RawDocument.id == EventEvidence.raw_document_id)
+        .where(EventEvidence.event_id == event.id)
+    ).all()
+    if not evidence_rows or company.identity_status != "verified":
         raise AccessDeniedError("published event requires verified identity and evidence")
+    if _is_platform_shared_company(company) and all(
+        document.visibility_scope == PLATFORM_SHARED_SCOPE for _, document in evidence_rows
+    ):
+        event.visibility_scope = PLATFORM_SHARED_SCOPE
+        event.owner_user_id = None
+        event.owner_tenant_id = None
+        for evidence, _ in evidence_rows:
+            evidence.visibility_scope = PLATFORM_SHARED_SCOPE
+            evidence.owner_user_id = None
+            evidence.owner_tenant_id = None
     event.status = "published"
 
 
-def _refresh_company_snapshot(session: Session, company: Company) -> None:
+def _scope_filters(
+    model: type[Event] | type[CompanySnapshot],
+    visibility_scope: str,
+    owner_user_id: UUID | None,
+    owner_tenant_id: UUID | None,
+) -> tuple[object, ...]:
+    return (
+        model.visibility_scope == visibility_scope,
+        model.owner_user_id == owner_user_id,
+        model.owner_tenant_id == owner_tenant_id,
+    )
+
+
+def _refresh_company_snapshot(
+    session: Session,
+    company: Company,
+    visibility_scope: str,
+    owner_user_id: UUID | None,
+    owner_tenant_id: UUID | None,
+) -> None:
+    scope_filters = _scope_filters(
+        CompanySnapshot,
+        visibility_scope,
+        owner_user_id,
+        owner_tenant_id,
+    )
     session.execute(
         update(CompanySnapshot)
-        .where(CompanySnapshot.company_id == company.id, CompanySnapshot.is_current.is_(True))
+        .where(
+            CompanySnapshot.company_id == company.id,
+            CompanySnapshot.is_current.is_(True),
+            *scope_filters,
+        )
         .values(is_current=False)
     )
     current_version = session.scalar(
@@ -926,7 +1011,16 @@ def _refresh_company_snapshot(session: Session, company: Company) -> None:
     )
     published_events = list(
         session.scalars(
-            select(Event).where(Event.company_id == company.id, Event.status == "published")
+            select(Event).where(
+                Event.company_id == company.id,
+                Event.status == "published",
+                *_scope_filters(
+                    Event,
+                    visibility_scope,
+                    owner_user_id,
+                    owner_tenant_id,
+                ),
+            )
         )
     )
     risk_order = {"none": 0, "low": 1, "moderate": 2, "high": 3, "critical": 4}
@@ -952,6 +1046,9 @@ def _refresh_company_snapshot(session: Session, company: Company) -> None:
     session.add(
         CompanySnapshot(
             company_id=company.id,
+            visibility_scope=visibility_scope,
+            owner_user_id=owner_user_id,
+            owner_tenant_id=owner_tenant_id,
             snapshot_version=(current_version or 0) + 1,
             is_current=True,
             data_as_of=max(event_dates, default=None),
@@ -980,6 +1077,7 @@ def _route_manual_record(
     document: RawDocument,
     verification: DocumentVerification,
     publication_policy: PublicationPolicy,
+    owner_tenant_id: UUID,
 ) -> tuple[Event, bool, str, bool]:
     publication_route, publication_reasons = _evaluate_publication_route(
         company,
@@ -991,6 +1089,8 @@ def _route_manual_record(
     existing_event = session.scalar(
         select(Event).where(
             Event.company_id == company.id,
+            Event.visibility_scope == ORGANIZATION_PRIVATE_SCOPE,
+            Event.owner_tenant_id == owner_tenant_id,
             Event.fingerprint_version == MANUAL_EVENT_FINGERPRINT_VERSION,
             Event.event_fingerprint == event_fingerprint,
         )
@@ -1016,6 +1116,9 @@ def _route_manual_record(
 
     event = Event(
         company_id=company.id,
+        visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
+        owner_user_id=None,
+        owner_tenant_id=owner_tenant_id,
         event_type=record.event_type.value,
         event_subtype=record.event_subtype,
         status="candidate",
@@ -1103,7 +1206,7 @@ def _ingest_manual_batch(
     reviews_created = 0
     external_calls = 0
     source_url_checks = 0
-    published_company_ids: set[UUID] = set()
+    published_snapshot_scopes: set[tuple[UUID, str, UUID | None, UUID | None]] = set()
 
     for record in batch_payload.records:
         company, match_rule, match_confidence, resolution_status = _resolve_manual_company(
@@ -1121,7 +1224,12 @@ def _ingest_manual_batch(
         content_hash = _sha256(json.dumps(record_payload, ensure_ascii=False, sort_keys=True))
         dedupe_key = _sha256(f"{source.id}:{record.external_record_id}")
         existing_document = session.scalar(
-            select(RawDocument).where(RawDocument.document_dedupe_key == dedupe_key)
+            select(RawDocument).where(
+                RawDocument.visibility_scope == ORGANIZATION_PRIVATE_SCOPE,
+                RawDocument.owner_user_id.is_(None),
+                RawDocument.owner_tenant_id == user.tenant_id,
+                RawDocument.document_dedupe_key == dedupe_key,
+            )
         )
         if existing_document is not None:
             if existing_document.content_hash != content_hash:
@@ -1150,6 +1258,9 @@ def _ingest_manual_batch(
         document = RawDocument(
             source_id=source.id,
             research_import_id=research_import.id,
+            visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
+            owner_user_id=None,
+            owner_tenant_id=user.tenant_id,
             external_record_id=record.external_record_id,
             canonical_url=record.canonical_url,
             title=record.title,
@@ -1165,6 +1276,9 @@ def _ingest_manual_batch(
         session.flush()
         mention = EntityMention(
             raw_document_id=document.id,
+            visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
+            owner_user_id=None,
+            owner_tenant_id=user.tenant_id,
             candidate_company_id=company.id if company is not None else None,
             mention_text=record.company_identity_evidence.legal_name,
             match_rule=match_rule,
@@ -1187,13 +1301,14 @@ def _ingest_manual_batch(
             research_import.identity_review_count += 1
             continue
 
-        _, event_created, publication_route, snapshot_required = _route_manual_record(
+        routed_event, event_created, publication_route, snapshot_required = _route_manual_record(
             session,
             company,
             record,
             document,
             verification,
             publication_policy,
+            user.tenant_id,
         )
         if publication_route == "auto_published":
             research_import.auto_published_count += 1
@@ -1201,14 +1316,30 @@ def _ingest_manual_batch(
             research_import.unconfirmed_count += 1
 
         if snapshot_required:
-            published_company_ids.add(company.id)
+            published_snapshot_scopes.add(
+                (
+                    company.id,
+                    routed_event.visibility_scope,
+                    routed_event.owner_user_id,
+                    routed_event.owner_tenant_id,
+                )
+            )
         if event_created:
             events_created += 1
 
-    for company_id in sorted(published_company_ids, key=str):
+    for company_id, scope, owner_user_id, owner_tenant_id in sorted(
+        published_snapshot_scopes,
+        key=lambda item: tuple(str(value) for value in item),
+    ):
         company = session.get(Company, company_id)
         if company is not None:
-            _refresh_company_snapshot(session, company)
+            _refresh_company_snapshot(
+                session,
+                company,
+                scope,
+                owner_user_id,
+                owner_tenant_id,
+            )
 
     research_import.status = (
         "completed_with_unresolved" if research_import.unresolved_count else "completed"
@@ -1328,12 +1459,58 @@ def _authorized_investments(
     return list(session.execute(statement).all())
 
 
-def _event_out(session: Session, event: Event) -> EventOut:
+def _readable_scope_clause(
+    model: type[CompanyAlias]
+    | type[RawDocument]
+    | type[EntityMention]
+    | type[Event]
+    | type[EventEvidence]
+    | type[CompanySnapshot],
+    user: User,
+    *,
+    allow_organization_private: bool,
+) -> object:
+    clauses = [
+        (model.visibility_scope == PLATFORM_SHARED_SCOPE)
+        & model.owner_user_id.is_(None)
+        & model.owner_tenant_id.is_(None),
+        (model.visibility_scope == PERSONAL_PRIVATE_SCOPE)
+        & (model.owner_user_id == user.id)
+        & model.owner_tenant_id.is_(None),
+    ]
+    if allow_organization_private:
+        clauses.append(
+            (model.visibility_scope == ORGANIZATION_PRIVATE_SCOPE)
+            & model.owner_user_id.is_(None)
+            & (model.owner_tenant_id == user.tenant_id)
+        )
+    return or_(*clauses)
+
+
+def _event_out(
+    session: Session,
+    event: Event,
+    user: User,
+    *,
+    allow_organization_private: bool,
+) -> EventOut:
     evidence_rows = session.execute(
         select(EventEvidence, RawDocument, Source)
         .join(RawDocument, RawDocument.id == EventEvidence.raw_document_id)
         .join(Source, Source.id == RawDocument.source_id)
-        .where(EventEvidence.event_id == event.id)
+        .where(
+            EventEvidence.event_id == event.id,
+            _readable_scope_clause(
+                EventEvidence,
+                user,
+                allow_organization_private=allow_organization_private,
+            ),
+            _readable_scope_clause(
+                RawDocument,
+                user,
+                allow_organization_private=allow_organization_private,
+            ),
+        )
     ).all()
     evidence_items: list[EvidenceOut] = []
     for evidence, document, source in evidence_rows:
@@ -1355,6 +1532,7 @@ def _event_out(session: Session, event: Event) -> EventOut:
                 url_http_status=verification.get("http_status"),
                 url_checked_at=verification.get("checked_at"),
                 final_url=verification.get("final_url"),
+                visibility_scope=evidence.visibility_scope,
             )
         )
     return EventOut(
@@ -1379,6 +1557,7 @@ def _event_out(session: Session, event: Event) -> EventOut:
         publication_reasons=event.publication_reasons,
         observed_at=event.observed_at,
         evidence=evidence_items,
+        visibility_scope=event.visibility_scope,
     )
 
 
@@ -1477,7 +1656,12 @@ def list_review_workbench(
             event = session.get(Event, review.event_id)
             if event is not None:
                 company = session.get(Company, event.company_id)
-                event_out = _event_out(session, event)
+                event_out = _event_out(
+                    session,
+                    event,
+                    user,
+                    allow_organization_private=True,
+                )
         elif review.entity_mention_id is not None:
             mention = session.get(EntityMention, review.entity_mention_id)
             if mention is not None:
@@ -1561,15 +1745,36 @@ def list_companies(session: Session, user_id: UUID, policy: RefreshPolicy) -> li
         company = session.get(Company, company_id)
         if company is None:
             continue
+        snapshot_scope = (
+            PLATFORM_SHARED_SCOPE
+            if _is_platform_shared_company(company)
+            else ORGANIZATION_PRIVATE_SCOPE
+        )
         snapshot = session.scalar(
             select(CompanySnapshot).where(
-                CompanySnapshot.company_id == company_id, CompanySnapshot.is_current.is_(True)
+                CompanySnapshot.company_id == company_id,
+                CompanySnapshot.is_current.is_(True),
+                CompanySnapshot.visibility_scope == snapshot_scope,
+                CompanySnapshot.owner_user_id.is_(None),
+                CompanySnapshot.owner_tenant_id
+                == (None if snapshot_scope == PLATFORM_SHARED_SCOPE else user.tenant_id),
             )
         )
         events = list(
             session.scalars(
                 select(Event)
-                .where(Event.company_id == company_id, Event.status == "published")
+                .where(
+                    Event.company_id == company_id,
+                    Event.status == "published",
+                    or_(
+                        (Event.visibility_scope == PLATFORM_SHARED_SCOPE)
+                        & Event.owner_user_id.is_(None)
+                        & Event.owner_tenant_id.is_(None),
+                        (Event.visibility_scope == ORGANIZATION_PRIVATE_SCOPE)
+                        & Event.owner_user_id.is_(None)
+                        & (Event.owner_tenant_id == user.tenant_id),
+                    ),
+                )
                 .order_by(Event.occurred_at.desc())
             )
         )
@@ -1598,6 +1803,66 @@ def list_companies(session: Session, user_id: UUID, policy: RefreshPolicy) -> li
     return items
 
 
+def search_companies(
+    session: Session,
+    user: User,
+    query: str,
+    policy: RefreshPolicy,
+) -> list[CompanySearchResult]:
+    normalized_query = _normalized_identity_text(query)
+    exact_query = query.strip()
+    if not normalized_query:
+        return []
+    alias_company_ids = select(CompanyAlias.company_id).where(
+        CompanyAlias.visibility_scope == PLATFORM_SHARED_SCOPE,
+        CompanyAlias.owner_user_id.is_(None),
+        CompanyAlias.owner_tenant_id.is_(None),
+        CompanyAlias.verification_status == "verified",
+        CompanyAlias.normalized_alias == normalized_query,
+    )
+    companies = list(
+        session.scalars(
+            select(Company)
+            .where(
+                Company.tenant_id.is_(None),
+                Company.visibility_scope == "public",
+                Company.identity_status == "verified",
+                or_(
+                    Company.credit_code == exact_query.upper(),
+                    Company.legal_name == exact_query,
+                    Company.id.in_(alias_company_ids),
+                ),
+            )
+            .order_by(Company.legal_name)
+            .limit(20)
+        )
+    )
+    now = utc_now()
+    results: list[CompanySearchResult] = []
+    for company in companies:
+        snapshot = session.scalar(
+            select(CompanySnapshot).where(
+                CompanySnapshot.company_id == company.id,
+                CompanySnapshot.is_current.is_(True),
+                CompanySnapshot.visibility_scope == PLATFORM_SHARED_SCOPE,
+                CompanySnapshot.owner_user_id.is_(None),
+                CompanySnapshot.owner_tenant_id.is_(None),
+            )
+        )
+        results.append(
+            CompanySearchResult(
+                id=company.id,
+                legal_name=company.legal_name,
+                credit_code=company.credit_code,
+                registered_region=company.registered_region,
+                identity_status=company.identity_status,
+                freshness_status=_snapshot_freshness_status(snapshot, policy, now, None),
+                last_checked_at=snapshot.last_checked_at if snapshot else None,
+            )
+        )
+    return results
+
+
 def get_company_detail(
     session: Session,
     user: User,
@@ -1607,14 +1872,20 @@ def get_company_detail(
     auto_refresh_enabled: bool,
 ) -> CompanyDetail:
     investment_rows = _authorized_investments(session, user.id, company_id)
-    if not investment_rows:
-        raise NotFoundError("company not found")
     company = session.get(Company, company_id)
     if company is None:
         raise NotFoundError("company not found")
+    shared_company = _is_platform_shared_company(company)
+    if not shared_company and not investment_rows:
+        raise NotFoundError("company not found")
+    snapshot_scope = PLATFORM_SHARED_SCOPE if shared_company else ORGANIZATION_PRIVATE_SCOPE
     snapshot = session.scalar(
         select(CompanySnapshot).where(
-            CompanySnapshot.company_id == company_id, CompanySnapshot.is_current.is_(True)
+            CompanySnapshot.company_id == company_id,
+            CompanySnapshot.is_current.is_(True),
+            CompanySnapshot.visibility_scope == snapshot_scope,
+            CompanySnapshot.owner_user_id.is_(None),
+            CompanySnapshot.owner_tenant_id == (None if shared_company else user.tenant_id),
         )
     )
     now = utc_now()
@@ -1622,12 +1893,35 @@ def get_company_detail(
         snapshot,
         policy,
         now,
-        _active_refresh_job(session, user.tenant_id, company_id),
+        _active_refresh_job(session, user.tenant_id, company_id) if investment_rows else None,
     )
     events = list(
         session.scalars(
             select(Event)
-            .where(Event.company_id == company_id, Event.status == "published")
+            .where(
+                Event.company_id == company_id,
+                Event.status == "published",
+                Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+                Event.owner_user_id.is_(None),
+                Event.owner_tenant_id.is_(None),
+            )
+            .order_by(Event.occurred_at.desc())
+        )
+    )
+    private_scope_clause = _readable_scope_clause(
+        Event,
+        user,
+        allow_organization_private=bool(investment_rows),
+    )
+    private_events = list(
+        session.scalars(
+            select(Event)
+            .where(
+                Event.company_id == company_id,
+                Event.status == "published",
+                Event.visibility_scope != PLATFORM_SHARED_SCOPE,
+                private_scope_clause,
+            )
             .order_by(Event.occurred_at.desc())
         )
     )
@@ -1638,6 +1932,8 @@ def get_company_detail(
                 Event.company_id == company_id,
                 Event.status == "candidate",
                 Event.publication_route == "unconfirmed_lead",
+                Event.visibility_scope.in_([PERSONAL_PRIVATE_SCOPE, ORGANIZATION_PRIVATE_SCOPE]),
+                private_scope_clause,
             )
             .order_by(Event.observed_at.desc())
         )
@@ -1645,6 +1941,7 @@ def get_company_detail(
     detail = CompanyDetail(
         id=company.id,
         legal_name=company.legal_name,
+        credit_code=company.credit_code,
         registered_region=company.registered_region,
         official_website=company.official_website,
         identity_status=company.identity_status,
@@ -1665,10 +1962,35 @@ def get_company_detail(
             )
             for investment, fund in investment_rows
         ],
-        events=[_event_out(session, event) for event in events],
-        unconfirmed_leads=[_event_out(session, event) for event in unconfirmed_leads],
+        events=[
+            _event_out(
+                session,
+                event,
+                user,
+                allow_organization_private=bool(investment_rows),
+            )
+            for event in events
+        ],
+        private_events=[
+            _event_out(
+                session,
+                event,
+                user,
+                allow_organization_private=bool(investment_rows),
+            )
+            for event in private_events
+        ],
+        unconfirmed_leads=[
+            _event_out(
+                session,
+                event,
+                user,
+                allow_organization_private=bool(investment_rows),
+            )
+            for event in unconfirmed_leads
+        ],
     )
-    if auto_refresh_enabled and freshness_status in {"stale", "unknown"}:
+    if investment_rows and auto_refresh_enabled and freshness_status in {"stale", "unknown"}:
         _create_or_merge_refresh_job(
             session,
             user.tenant_id,
@@ -1685,11 +2007,15 @@ def _record_former_legal_name(
     company: Company,
     source_id: UUID,
     former_name: str,
+    owner_tenant_id: UUID,
 ) -> None:
     normalized_alias = _normalized_identity_text(former_name)
     existing = session.scalar(
         select(CompanyAlias).where(
             CompanyAlias.company_id == company.id,
+            CompanyAlias.visibility_scope == ORGANIZATION_PRIVATE_SCOPE,
+            CompanyAlias.owner_user_id.is_(None),
+            CompanyAlias.owner_tenant_id == owner_tenant_id,
             CompanyAlias.normalized_alias == normalized_alias,
             CompanyAlias.alias_type == "former_legal_name",
         )
@@ -1703,6 +2029,9 @@ def _record_former_legal_name(
                 normalized_alias=normalized_alias,
                 alias_type="former_legal_name",
                 verification_status="verified",
+                visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
+                owner_user_id=None,
+                owner_tenant_id=owner_tenant_id,
             )
         )
 
@@ -1764,6 +2093,7 @@ def resolve_identity_review(
                 company,
                 identity_document.source_id,
                 former_name,
+                user.tenant_id,
             )
         company.legal_name = verification.legal_name
         company.credit_code = verification.credit_code
@@ -1793,9 +2123,16 @@ def resolve_identity_review(
             source_document,
             _stored_document_verification(source_document),
             resolved_publication_policy,
+            user.tenant_id,
         )
         if snapshot_required:
-            _refresh_company_snapshot(session, company)
+            _refresh_company_snapshot(
+                session,
+                company,
+                event.visibility_scope,
+                event.owner_user_id,
+                event.owner_tenant_id,
+            )
 
         if source_document.research_import_id is not None:
             research_import = session.get(ResearchImport, source_document.research_import_id)
@@ -1879,7 +2216,13 @@ def decide_review(
     event.publication_policy_version = "legacy-review-workbench-v1"
     event.publication_reasons = ["human_approved"]
     _mark_event_published(session, event, company)
-    _refresh_company_snapshot(session, company)
+    _refresh_company_snapshot(
+        session,
+        company,
+        event.visibility_scope,
+        event.owner_user_id,
+        event.owner_tenant_id,
+    )
     session.commit()
     return review
 

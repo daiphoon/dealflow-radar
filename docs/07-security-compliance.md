@@ -29,15 +29,15 @@
 
 ## 3. `visibility_scope` 与 RLS
 
-目标领域作用域为 `platform_shared`、`personal_private`、`organization_private` 和 `system_restricted`。现有 `public`、`tenant`、`fund`、`user`、`system` 暂作兼容值；其中 `public` 只表示平台客户之间可复用，不表示匿名互联网公开。
+领域作用域为 `platform_shared`、`personal_private`、`organization_private` 和 `system_restricted`。别名、文档、提及、事件、证据引用和快照已使用这些值；公司、基金和投资关系仍保留 `public`、`tenant`、`fund` 兼容值。其中公司 `public` 只表示允许映射到平台共享目录，仍要求登录，不表示匿名互联网公开。
 
 访问判定顺序为：登录用户 → 有效个人或机构权益 → 记录作用域 → owner/机构关系 → 资源授权 → 动作权限 → 字段遮罩。平台共享档案读取要求有效个人权益或任一有效机构权益；个人私有数据要求当前用户为 owner；机构私有数据要求机构关系、机构权益、资源授权和动作权限同时有效。PostgreSQL RLS 使用请求事务内的 tenant/user 上下文；后台 Worker 使用受限服务身份并显式携带任务范围，禁止使用绕过 RLS 的日常应用账户。
 
 共享快照构建器只读平台共享事件和指标；基金投资概览及个人/机构私有数据在响应层按授权单独拼装，不能缓存为全局公司快照。没有基金授权但具有有效共享档案权益的用户仍可读取共享基础层。
 
-当前迁移已为 `fund_access_grants`、`funds`、`investments`、`research_imports`、`official_identity_verifications`、`review_queue`、`refresh_jobs` 和 `usage_ledger` 定义 RLS 策略；API 或本机导入命令在事务中设置用户和租户上下文。`research_imports` 还要求当前用户处于 active 状态、真实属于目标租户且拥有机构管理员角色，不能只靠伪造会话 tenant 值跨租户写入。`official_identity_verifications` 只允许同租户机构管理员写入，审核员/管理员读取；身份主数据变更要求操作人同时具有两个角色。SQLite 只验证应用层过滤，不能验证 RLS。2026-07-14 已在 PostgreSQL 16 上使用非表所有者、无 `BYPASSRLS` 权限的应用账户完成无上下文、跨租户、跨基金和无基金授权负向验证；2026-07-15 又验证了导入批次的机构管理员权限和伪造跨租户上下文写入拒绝。迁移账户仍可作为表所有者绕过策略，真实数据环境必须继续分离迁移账户和日常应用账户。本地初始化脚本会幂等创建或收敛受限应用账户，拒绝共用密码、角色继承关系、建库建角色、超级用户、绕过 RLS、创建 Schema 对象或持有业务对象所有权。
+当前 15 张表已启用 RLS：原有基金、导入、审核、任务和用量表，以及 `companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权，`system_restricted` 不向普通应用用户开放。私有别名、外部文档记录和文档去重键按 owner 分区唯一，避免不同客户因同名或同一来源记录相互阻塞。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
 
-ADR-0009 的个人/机构所有权、原始文档作用域和共享搜索 RLS 尚未实现。后续数据作用域 PR 必须先补安全基线，再开放个人搜索。
+当前权益校验仍由受控 Demo 登录资格代替，正式个人订阅、机构赞助权益和生产认证尚未实现；因此本能力仅适合本地或受控邀请验证。迁移账户仍可作为表所有者绕过策略，必须继续与日常 `NOBYPASSRLS` 应用账户分离。
 
 ## 4. 事件、证据与原始文档授权
 

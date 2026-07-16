@@ -99,8 +99,20 @@ def test_manual_import_is_idempotent_and_keeps_unresolved_out_of_events(
         company.credit_code = "91310000TEST000001"
         company.official_website = "https://official.example"
         session.commit()
-        first = import_manual_research(session, user, provider, document_verifier=verifier)
-        second = import_manual_research(session, user, provider, document_verifier=verifier)
+        first = import_manual_research(
+            session,
+            user,
+            provider,
+            publication_policy=PublicationPolicy(enabled=True),
+            document_verifier=verifier,
+        )
+        second = import_manual_research(
+            session,
+            user,
+            provider,
+            publication_policy=PublicationPolicy(enabled=True),
+            document_verifier=verifier,
+        )
 
         assert first.status == "completed_with_unresolved"
         assert first.records_seen == 2
@@ -178,7 +190,8 @@ def test_manual_import_is_idempotent_and_keeps_unresolved_out_of_events(
             headers={"X-Demo-User-Id": str(ALPHA_USER_ID)},
         )
         assert detail.status_code == 200
-        assert detail.json()["events"][0]["publication_route"] == "auto_published"
+        assert detail.json()["events"] == []
+        assert detail.json()["private_events"][0]["publication_route"] == "auto_published"
         assert detail.json()["unconfirmed_leads"] == []
 
         disabled = client.get(
@@ -275,6 +288,7 @@ def test_broken_source_becomes_visible_unconfirmed_lead_without_review(
             session,
             user,
             provider,
+            publication_policy=PublicationPolicy(enabled=True),
             document_verifier=StubDocumentVerifier("broken", 404),
         )
 
@@ -320,6 +334,7 @@ def test_auto_published_event_without_source_date_keeps_snapshot_date_unknown(
             session,
             user,
             provider,
+            publication_policy=PublicationPolicy(enabled=True),
             document_verifier=StubDocumentVerifier(),
         )
 
@@ -380,7 +395,7 @@ def test_source_url_check_budget_defers_remaining_records(
             session,
             user,
             provider,
-            PublicationPolicy(max_source_url_checks_per_import=1),
+            PublicationPolicy(enabled=True, max_source_url_checks_per_import=1),
             verifier,
         )
 
@@ -418,6 +433,7 @@ def test_manual_import_auto_attaches_verified_evidence_to_published_event(
             session,
             user,
             first_provider,
+            publication_policy=PublicationPolicy(enabled=True),
             document_verifier=verifier,
         )
         assert first.auto_published_records == 1
@@ -426,6 +442,7 @@ def test_manual_import_auto_attaches_verified_evidence_to_published_event(
             session,
             user,
             second_provider,
+            publication_policy=PublicationPolicy(enabled=True),
             document_verifier=verifier,
         )
 

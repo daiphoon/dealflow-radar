@@ -134,8 +134,12 @@ def test_review_publish_snapshot_and_fund_isolation(
 
     assert alpha_detail.status_code == 200
     assert beta_detail.status_code == 200
-    assert hidden_detail.status_code == 404
-    assert cross_fund_detail.status_code == 404
+    assert hidden_detail.status_code == 200
+    assert hidden_detail.json()["investments"] == []
+    assert hidden_detail.json()["private_events"] == []
+    assert hidden_detail.json()["unconfirmed_leads"] == []
+    assert cross_fund_detail.status_code == 200
+    assert cross_fund_detail.json()["investments"] == []
     assert [item["fund_id"] for item in alpha_detail.json()["investments"]] == [str(ALPHA_FUND_ID)]
     assert [item["fund_id"] for item in beta_detail.json()["investments"]] == [str(BETA_FUND_ID)]
     assert len(alpha_detail.json()["events"]) == 1
@@ -167,6 +171,11 @@ def test_review_publish_snapshot_and_fund_isolation(
 
     expired_access = client.get("/api/v1/companies", headers=BETA_HEADERS)
     assert expired_access.json() == []
+    shared_access_after_expiry = client.get(
+        f"/api/v1/companies/{SHARED_COMPANY_ID}", headers=BETA_HEADERS
+    )
+    assert shared_access_after_expiry.status_code == 200
+    assert shared_access_after_expiry.json()["investments"] == []
 
 
 def test_refresh_dry_run_and_duplicate_job_merge(client: TestClient, migrated_app: FastAPI) -> None:

@@ -11,8 +11,8 @@
 | 方法与路径 | 用途 | 关键行为 |
 | --- | --- | --- |
 | `GET /companies` | 当前授权公司列表 | 当前仍按基金权限；后续个人列表与 watchlist 单独设计 |
-| `GET /companies/search?query=`（目标） | 搜索平台共享公司 | 信用代码精确、工商全称或已核实别名；只查数据库，不自动建公司 |
-| `GET /companies/{id}` | 公司详情 | 目标先读共享基础层，再按个人或机构授权叠加私有层 |
+| `GET /companies/search?q=` | 搜索平台共享公司 | 已实现；信用代码、工商全称或已核实别名精确匹配，只查数据库，不自动建公司 |
+| `GET /companies/{id}` | 公司详情 | 已实现共享基础层独立读取，并按基金/owner 授权叠加私有层 |
 | `GET /companies/{id}/changes?since=` | 上次查看后变化 | 只返回版本化事实变化和纠正撤回 |
 | `GET /companies/{id}/events` | 事件时间线 | 按有效权益和记录作用域返回事件；业务状态不代替授权 |
 | `GET /events/{id}/evidence` | 证据 | 对证据引用和原始文档分别授权，只返回许可允许的最小内容 |
@@ -27,9 +27,9 @@
 | `GET /reports/portfolio-weekly` | 固定模板周报 | 按事实水位读取已生成结果 |
 | `GET /usage` | 成本仪表盘 | 聚合租户/公司/Provider/有效事件成本 |
 
-人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`，官方身份核验通过 `python -m scripts.import_official_identity_json` 导入，两者均未开放文件上传 API。原因是当前 `X-Demo-User-Id` 只适用于测试，不足以保护真实文件上传；网页/API 导入须等正式认证、上传隔离、文件审计和许可校验完成后再实现。当前公司列表和详情仍以基金投资关系为访问前置，`GET /companies/search` 尚未实现；ADR-0009 描述的是后续 PR 2、3、4 的目标契约，不是现有 API 能力。
+人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`，官方身份核验通过 `python -m scripts.import_official_identity_json` 导入，两者均未开放文件上传 API。原因是当前 `X-Demo-User-Id` 只适用于测试，不足以保护真实文件上传；网页/API 导入须等正式认证、上传隔离、文件审计和许可校验完成后再实现。`GET /companies` 继续返回基金授权列表；`GET /companies/search?q=` 和共享公司详情不再要求基金关系，但仍要求有效测试身份。
 
-当前详情响应包含 `events` 与 `unconfirmed_leads` 两个列表；后续必须先为线索、证据引用和原始文档补齐所有者及作用域，再开放无基金搜索。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放给 `reviewer`；该开关不能替代认证。实体提及不能用通用事件接口直接批准；专用身份接口只接受工作台返回的有效关联候选，页面决定过程不访问外部网站。纠正、撤回和保持待审仍属于后续契约。
+当前详情响应使用 `events` 表示平台共享已审核事实、`private_events` 表示当前机构可见的已确认信息、`unconfirmed_leads` 表示当前个人或机构 owner 可见的未确认线索，`investments` 只在基金授权存在时返回记录。证据引用和原始文档分别做作用域过滤；无基金用户不会因共享详情请求触发机构私有刷新状态或任务。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放给 `reviewer`；该开关不能替代认证。
 
 `POST /refresh` 的响应明确区分 `fresh_noop`、`queued`、`merged`、`cooldown_deferred`、`budget_deferred`、`external_disabled`。`dry_run=true` 时只返回计划 Provider、搜索数、Token 上界和预计费用，不产生外部调用。
 
@@ -46,13 +46,13 @@
 
 ### 详情组合
 
-目标响应逻辑分为：
+当前最小响应逻辑分为：
 
 - `shared_profile`：已核验身份、共享事件、允许展示的证据引用、新鲜度和来源状态；
 - `personal_overlay`：仅当前用户的关注、备注、查看水位和个人线索；
 - `organization_overlays`：仅当前用户有机构及资源授权的基金投资、机构线索和私有资料。
 
-字段名称和是否拆分端点由 PR 3 在兼容现有响应后确定，但授权顺序固定为“共享基础层独立判断，私有层逐层叠加”。无基金授权不再导致共享公司详情整体不可访问。
+watchlist、个人备注和正式 organization overlay 尚未实现；授权顺序已经固定为“共享基础层独立判断，私有层逐层叠加”。无基金授权不再导致共享公司详情整体不可访问。
 
 ### 防枚举
 

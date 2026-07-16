@@ -98,3 +98,12 @@
 - 实际命令：`git diff --check`；`uv run ruff check backend migrations scripts tests`；`uv run ruff format --check backend migrations scripts tests`；`uv run pytest -q`；`npm audit --audit-level=high`；`npm run typecheck`；`npm run build`；临时 PostgreSQL 16 空库迁移、`alembic check`、虚构数据导入、受限应用角色初始化、RLS 测试及官方身份冲突选择到事件重路由的真实事务闭环；本地虚构 SQLite 夹具下的审核页桌面浏览器交互、页面尺寸和控制台检查。
 - 测试结果：默认 Pytest 73 项通过、1 项 PostgreSQL 测试按预期跳过；真实 PostgreSQL 受限角色 RLS 测试 1 项通过，迁移应用与 Schema 漂移检查通过；事务闭环确认官方冲突记录不会静默改写主数据，人工选择后更新法定全称和代码、保留曾用名、完成审核并将来源未核验的事件安全路由为 `unconfirmed_lead`，所有业务外部调用、Token 与估算费用均为 0。Ruff、格式、TypeScript、Next.js 生产构建通过，依赖审计 0 个已知漏洞；浏览器确认候选选择、必填理由、二次确认、提交成功和审核计数更新，1280px 视口无横向溢出，控制台无警告或错误。真实 PostgreSQL 验收发现并修复解析器版本超出字段长度的问题，并增加回归断言；临时数据库容器和浏览器夹具均已清理。
 - 未解决阻塞：尚未获得官方工商数据接口或批量资源的授权，因此 V1 采用私有目录中的结构化官方查询结果导入，通过 Provider 边界预留未来授权 API；不会为自动化而绕过验证码、登录或调用未公开接口。正式认证、自动采集/Cron 和真实基金/投资关系仍不在本阶段；FastAPI TestClient 上游弃用警告仍存在，不影响当前结果。
+
+## 2026-07-17｜个人用户安全查询公司 MVP
+
+- 日期：2026-07-17
+- 任务：按 ADR-0009 完成平台共享、个人私有、机构私有和系统受限四类数据作用域安全基线；增加无基金用户按统一社会信用代码或工商全称精确搜索共享公司、共享详情与基金私有叠加层；保留现有影子验证基金和审核流程，不实现正式认证、订阅、关注列表或外部采集。
+- 关键文件：`migrations/versions/0008_add_data_scope_security_baseline.py`、`migrations/versions/0009_scope_private_alias_document_uniqueness.py`、`backend/app/models.py`、`backend/app/services.py`、`backend/app/main.py`、`backend/app/schemas.py`、`frontend/app/page.tsx`、`frontend/app/companies/[id]/page.tsx`、`frontend/lib/api.ts`、`tests/integration/test_personal_company_query.py`、`tests/integration/test_postgres_rls.py`、`.env.example`、`.github/workflows/ci.yml` 和受影响文档。
+- 实际命令：`uv run ruff check backend migrations scripts tests`；`uv run ruff format --check backend migrations scripts tests`；`uv run pytest -q`；SQLite `alembic upgrade head`、`alembic check`、`alembic downgrade base`；隔离 PostgreSQL 16 从 `0007` 升级到 `0009`、Schema 漂移检查、降级至 `0007`、重新升级及 RLS 负向测试；`npm audit --audit-level=high`、`npm run typecheck`、`npm run build`；本地 PostgreSQL `0008`、`0009` 迁移前后自定义格式备份及 `pg_restore -l` 检查；受限应用账户启动 API 和前端，执行个人及机构路径浏览器 DOM、页面和控制台检查；`git diff --check`。
+- 测试结果：Pytest 76 项通过，仅有 FastAPI TestClient 上游弃用警告；Ruff、格式、SQLite 和 PostgreSQL 迁移往返、15 张受保护表的 RLS、TypeScript、Next.js 生产构建和依赖审计通过，依赖审计 0 个已知漏洞。无基金用户可以精确搜索并查看共享虚构 Demo 公司，不能看到租户公司、私有别名、文档、实体提及、未确认线索、刷新状态或投资字段；基金用户仍能看到两家真实公司、影子基金投资叠加层、机构私有已确认事件和 2 条审核历史。浏览器控制台无错误；当前两家真实公司未被晋升为共享目录；重复运行 RLS 测试不污染本地数据库；四个安全开关均为关闭，业务外部调用、付费调用、Token 和估算费用均为 0。
+- 未解决阻塞：正式认证与订阅权益尚未实现，当前仍使用受控 Demo 用户头；搜索只支持精确工商全称、信用代码和已核实共享别名；个人关注、备注、请求收录、模糊搜索、真实 Provider 和 8—10 家真实公司双路径影子验证留待后续。FastAPI TestClient 上游弃用警告仍存在，不影响当前结果。

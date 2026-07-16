@@ -97,6 +97,10 @@ def test_official_identity_import_is_idempotent_and_enriches_exact_company(
     with migrated_app.state.session_factory() as session:
         user = session.get(User, ALPHA_USER_ID)
         assert user is not None
+        existing_company = session.scalar(select(Company).where(Company.legal_name == legal_name))
+        assert existing_company is not None
+        existing_company.credit_code = None
+        session.commit()
         first = import_official_identities(session, user, provider)
         second = import_official_identities(session, user, provider)
 

@@ -43,7 +43,47 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
         "publication_route",
         "publication_policy_version",
         "publication_reasons",
+        "visibility_scope",
+        "owner_user_id",
+        "owner_tenant_id",
     } <= event_columns
+    for table_name in (
+        "company_aliases",
+        "raw_documents",
+        "entity_mentions",
+        "event_evidence",
+        "company_snapshots",
+    ):
+        assert {
+            "visibility_scope",
+            "owner_user_id",
+            "owner_tenant_id",
+        } <= {column["name"] for column in inspect(engine).get_columns(table_name)}
+    event_indexes = {index["name"] for index in inspect(engine).get_indexes("events")}
+    assert {
+        "uq_event_fingerprint_platform_shared",
+        "uq_event_fingerprint_personal_private",
+        "uq_event_fingerprint_organization_private",
+        "uq_event_fingerprint_system_restricted",
+    } <= event_indexes
+    alias_indexes = {index["name"] for index in inspect(engine).get_indexes("company_aliases")}
+    assert {
+        "uq_company_alias_platform_shared",
+        "uq_company_alias_personal_private",
+        "uq_company_alias_organization_private",
+        "uq_company_alias_system_restricted",
+    } <= alias_indexes
+    document_indexes = {index["name"] for index in inspect(engine).get_indexes("raw_documents")}
+    assert {
+        "uq_raw_doc_source_record_platform_shared",
+        "uq_raw_doc_source_record_personal_private",
+        "uq_raw_doc_source_record_organization_private",
+        "uq_raw_doc_source_record_system_restricted",
+        "uq_raw_doc_dedupe_platform_shared",
+        "uq_raw_doc_dedupe_personal_private",
+        "uq_raw_doc_dedupe_organization_private",
+        "uq_raw_doc_dedupe_system_restricted",
+    } <= document_indexes
     snapshot_columns = {
         column["name"]: column for column in inspect(engine).get_columns("company_snapshots")
     }
@@ -60,6 +100,12 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
         "checked_at",
     } <= identity_columns
 
+    command.downgrade(config, "0007")
+    assert "visibility_scope" not in {
+        column["name"] for column in inspect(engine).get_columns("events")
+    }
+    command.upgrade(config, "head")
+    command.check(config)
     command.downgrade(config, "base")
     assert inspect(engine).get_table_names() == ["alembic_version"]
     engine.dispose()
@@ -101,3 +147,7 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "CREATE TABLE official_identity_verifications" in ddl
     assert "official_identity_verifications_read" in ddl
     assert "official_identity_verifications_insert" in ddl
+    assert "ADD COLUMN visibility_scope" in ddl
+    assert "CREATE POLICY events_scope_read" in ddl
+    assert "CREATE POLICY raw_documents_scope_read" in ddl
+    assert "CREATE POLICY companies_scope_read" in ddl

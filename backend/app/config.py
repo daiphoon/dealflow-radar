@@ -52,7 +52,7 @@ class RefreshPolicy:
 @dataclass(frozen=True)
 class PublicationPolicy:
     version: str = "identity-first-v1"
-    enabled: bool = True
+    enabled: bool = False
     min_confidence: Decimal = Decimal("0.80")
     source_url_timeout_seconds: int = 10
     max_source_url_checks_per_import: int = 20
@@ -112,7 +112,7 @@ class Settings:
             ),
             publication_policy=PublicationPolicy(
                 version=os.getenv("PUBLICATION_POLICY_VERSION", "identity-first-v1"),
-                enabled=_as_bool(os.getenv("AUTO_PUBLISH_ENABLED", "true")),
+                enabled=_as_bool(os.getenv("AUTO_PUBLISH_ENABLED", "false")),
                 min_confidence=_as_rate("AUTO_PUBLISH_MIN_CONFIDENCE", "0.80"),
                 source_url_timeout_seconds=_as_positive_int("SOURCE_URL_TIMEOUT_SECONDS", 10),
                 max_source_url_checks_per_import=_as_positive_int(
