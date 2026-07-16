@@ -114,6 +114,7 @@ class Company(TimestampMixin, Base):
     registered_region: Mapped[str | None] = mapped_column(String(120))
     official_website: Mapped[str | None] = mapped_column(String(500))
     identity_status: Mapped[str] = mapped_column(String(32), default="unresolved")
+    last_identity_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     visibility_scope: Mapped[str] = mapped_column(String(16), default="public")
 
 
@@ -240,6 +241,38 @@ class EntityMention(TimestampMixin, Base):
     match_rule: Mapped[str] = mapped_column(String(80))
     match_confidence: Mapped[Decimal] = mapped_column(Numeric(4, 3))
     resolution_status: Mapped[str] = mapped_column(String(32))
+
+
+class OfficialIdentityVerification(TimestampMixin, Base):
+    __tablename__ = "official_identity_verifications"
+    __table_args__ = (
+        UniqueConstraint("raw_document_id", name="uq_official_identity_document"),
+        CheckConstraint(
+            "verification_status IN ('verified', 'conflict', 'unmatched')",
+            name="ck_official_identity_status",
+        ),
+        Index(
+            "ix_official_identity_tenant_status_checked",
+            "tenant_id",
+            "verification_status",
+            "checked_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    company_id: Mapped[UUID | None] = mapped_column(ForeignKey("companies.id"), index=True)
+    raw_document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("raw_documents.id", ondelete="CASCADE")
+    )
+    query_text: Mapped[str] = mapped_column(String(240), index=True)
+    legal_name: Mapped[str] = mapped_column(String(240))
+    credit_code: Mapped[str] = mapped_column(String(18), index=True)
+    registered_region: Mapped[str | None] = mapped_column(String(120))
+    registration_status: Mapped[str] = mapped_column(String(64))
+    verification_status: Mapped[str] = mapped_column(String(32))
+    match_rule: Mapped[str] = mapped_column(String(80))
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class Event(TimestampMixin, Base):

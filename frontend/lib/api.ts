@@ -68,6 +68,21 @@ export type ReviewWorkbenchItem = {
   match_rule: string | null;
   match_confidence: string | null;
   resolution_status: string | null;
+  identity_candidates: IdentityCandidate[];
+};
+
+export type IdentityCandidate = {
+  verification_id: string;
+  company_id: string;
+  legal_name: string;
+  credit_code: string;
+  registered_region: string | null;
+  registration_status: string;
+  verification_status: string;
+  match_rule: string;
+  checked_at: string;
+  source_name: string;
+  canonical_url: string;
 };
 
 export type Investment = {
@@ -152,6 +167,17 @@ export function decideReview(
 ): Promise<unknown> {
   return postJson(`/api/v1/reviews/${encodeURIComponent(reviewId)}/decision`, {
     decision,
+    reason,
+  });
+}
+
+export function resolveIdentityReview(
+  reviewId: string,
+  verificationId: string,
+  reason: string,
+): Promise<unknown> {
+  return postJson(`/api/v1/reviews/${encodeURIComponent(reviewId)}/identity-resolution`, {
+    verification_id: verificationId,
     reason,
   });
 }

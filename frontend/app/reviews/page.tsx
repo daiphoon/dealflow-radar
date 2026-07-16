@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { ApiError, getReviewWorkbench, type ReviewWorkbenchItem } from "@/lib/api";
 
-import { submitReviewDecision } from "./actions";
+import { submitIdentityResolution, submitReviewDecision } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -44,10 +44,13 @@ const triggerLabels: Record<string, string> = {
 const resultMessages: Record<string, string> = {
   approve: "已批准候选事件并更新发布状态。",
   reject: "已驳回候选事件，审核理由已保留。",
+  identity_resolved: "已确认工商主体，原始记录已按现行策略自动重新路由。",
 };
 
 const errorMessages: Record<string, string> = {
   invalid_input: "请填写 3—1000 字的决定理由。",
+  invalid_identity_input: "请选择一条官方工商候选、填写理由并确认操作。",
+  identity_forbidden: "候选核验已过期、与该线索无关，或当前身份无权修改主数据。",
   forbidden: "该审核项不可决定、已被处理，或当前身份无权操作。",
   request_failed: "决定提交失败，数据未变更，请检查后端状态。",
 };
@@ -254,8 +257,66 @@ function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
             {review.match_confidence ? `${Math.round(Number(review.match_confidence) * 100)}%` : "未知"}
           </p>
           <p>
-            当前状态：{review.resolution_status ?? "unresolved"}。该类审核项需先完成“选择公司并重建候选”流程，本工作台不提供直接批准按钮。
+            当前状态：{review.resolution_status ?? "unresolved"}。只有官方工商候选需要人工选择；选定后系统会自动重建事件并按现行策略路由。
           </p>
+          {review.status === "pending" && review.identity_candidates.length ? (
+            <form action={submitIdentityResolution} className="review-form">
+              <input name="review_id" type="hidden" value={review.id} />
+              <fieldset>
+                <legend>选择官方工商主体</legend>
+                {review.identity_candidates.map((candidate) => (
+                  <label className="review-confirmation" key={candidate.verification_id}>
+                    <input
+                      name="verification_id"
+                      required
+                      type="radio"
+                      value={candidate.verification_id}
+                    />
+                    <span>
+                      <strong>{candidate.legal_name}</strong>
+                      <br />
+                      统一社会信用代码：{candidate.credit_code} · 注册地：
+                      {candidate.registered_region ?? "未载明"} · 登记状态：
+                      {candidate.registration_status}
+                      <br />
+                      <a href={candidate.canonical_url} rel="noreferrer" target="_blank">
+                        {candidate.source_name} ↗
+                      </a>
+                      · 核验时间：{formatDateTime(candidate.checked_at)}
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+              <label htmlFor={`identity-reason-${review.id}`}>选择理由（必填）</label>
+              <textarea
+                id={`identity-reason-${review.id}`}
+                maxLength={1000}
+                minLength={3}
+                name="reason"
+                placeholder="说明代码、工商全称和注册地的对应结论"
+                required
+                rows={3}
+              />
+              <label className="review-confirmation">
+                <input name="confirmed" required type="checkbox" />
+                <span>我已核对官方记录，并理解选择会更新公司身份主数据。</span>
+              </label>
+              <button className="button button-approve" type="submit">
+                确认主体并重新路由
+              </button>
+              <p>该操作只读取已入库证据，不会在页面请求中访问外部网站。</p>
+            </form>
+          ) : review.status === "pending" ? (
+            <p className="muted">
+              暂无在当前有效期内且与该线索关联的官方工商候选。请先通过本机官方身份导入命令入库。
+            </p>
+          ) : (
+            <div className="decision-note">
+              <strong>身份处理结果：{statusLabel(review.status)}</strong>
+              <span>{review.decision_reason ?? "未记录理由"}</span>
+              <span>{formatDateTime(review.decided_at)}</span>
+            </div>
+          )}
         </div>
       )}
     </article>

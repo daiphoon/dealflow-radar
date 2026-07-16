@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "batch_id": "official-identity-demo-001",
+  "queried_at": "2026-07-16T09:00:00+08:00",
+  "source": {
+    "code": "national_enterprise_credit_publicity_system",
+    "name": "国家企业信用信息公示系统",
+    "base_url": "https://bt.gsxt.gov.cn/"
+  },
+  "original_query": "示例星河科技一号有限公司",
+  "target_company_hint": "示例星河科技一号有限公司",
+  "license_status": "public",
+  "records": [
+    {
+      "external_record_id": "demo-official-identity-001",
+      "query_text": "示例星河科技一号有限公司",
+      "legal_name": "示例星河科技一号有限公司",
+      "credit_code": "91310000MA1K000006",
+      "registered_region": "虚构省甲市",
+      "registration_status": "存续",
+      "canonical_url": "https://bt.gsxt.gov.cn/",
+      "checked_at": "2026-07-16T09:00:00+08:00"
+    }
+  ]
+}

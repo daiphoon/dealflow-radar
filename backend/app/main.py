@@ -14,6 +14,8 @@ from backend.app.providers import MockResearchProvider
 from backend.app.schemas import (
     CompanyDetail,
     CompanyListItem,
+    IdentityResolutionIn,
+    IdentityResolutionOut,
     IngestResult,
     RefreshResult,
     ReviewDecisionIn,
@@ -29,6 +31,7 @@ from backend.app.services import (
     list_companies,
     list_review_workbench,
     request_refresh,
+    resolve_identity_review,
     user_has_role,
 )
 
@@ -125,7 +128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not app.state.settings.review_workbench_enabled:
             raise HTTPException(status_code=404, detail="review_workbench_disabled")
         try:
-            return list_review_workbench(session, user)
+            return list_review_workbench(session, user, app.state.settings.identity_policy)
         except AccessDeniedError as error:
             raise HTTPException(status_code=403, detail="forbidden_scope") from error
 
@@ -138,6 +141,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> ReviewQueue:
         try:
             return decide_review(session, review_id, user, payload.decision, payload.reason)
+        except NotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except AccessDeniedError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+
+    @app.post(
+        "/api/v1/reviews/{review_id}/identity-resolution",
+        response_model=IdentityResolutionOut,
+    )
+    def identity_resolution(
+        review_id: UUID,
+        payload: IdentityResolutionIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> IdentityResolutionOut:
+        if not app.state.settings.review_workbench_enabled:
+            raise HTTPException(status_code=404, detail="review_workbench_disabled")
+        try:
+            return resolve_identity_review(
+                session,
+                review_id,
+                user,
+                payload.verification_id,
+                payload.reason,
+                app.state.settings.identity_policy,
+                app.state.settings.publication_policy,
+            )
         except NotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except AccessDeniedError as error:

@@ -14,7 +14,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `user_role_assignments` | `user_id`, `role_id`, `scope_id`, validity | 复合唯一；FK user/role；索引有效授权 |
 | `funds` | `id`, `tenant_id`, `name`, `code`, `status`, `visibility_scope` | 唯一 `(tenant_id, code)`；索引 tenant/status |
 | `fund_access_grants` | `user_id`, `fund_id`, `permission`, validity | 复合唯一；FK user/fund；索引 fund/user |
-| `companies` | `id`, `credit_code`, `legal_name`, `registered_region`, `official_website`, `identity_status`, `tenant_id?`, `visibility_scope` | 信用代码条件唯一；规范名称/地区索引；已核验官网作为身份锚点；私有主体含 tenant |
+| `companies` | `id`, `credit_code`, `legal_name`, `registered_region`, `official_website`, `identity_status`, `last_identity_checked_at`, `tenant_id?`, `visibility_scope` | 信用代码条件唯一；规范名称/地区索引；已核验官网作为身份锚点；私有主体含 tenant |
 | `company_aliases` | `id`, `company_id`, `alias`, `alias_type`, validity, `verification_status`, `source_id` | 唯一 `(company_id, normalized_alias, alias_type, valid_from)`；别名检索索引 |
 | `company_relationships` | `from_company_id`, `to_company_id`, `relationship_type`, validity, evidence | 禁止自关联；版本化唯一；双向查询索引 |
 | `investments` | `id`, `tenant_id`, `fund_id`, `company_id`, amount, currency, ownership, internal_valuation, `visibility_scope` | FK tenant/fund/company；同一轮次条件唯一；RLS；fund/company 索引 |
@@ -45,6 +45,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `refresh_jobs` | company、原因、优先级、状态、幂等键、租约、预计成本 | 幂等键唯一；同公司/类型活跃任务部分唯一；领取索引 |
 | `refresh_runs` | 每次尝试、检查点、Provider 结果、错误、变化计数、起止时间 | FK job；job/attempt 唯一；状态/开始时间索引 |
 | `research_imports` | tenant、导入人、批次、格式、工具、原始文件哈希、许可、自动发布/未确认/身份审核计数与状态 | `(tenant_id, batch_id)` 和 `(tenant_id, file_hash, parser_version)` 唯一；机构管理员 RLS；状态索引 |
+| `official_identity_verifications` | tenant、公司候选、官方原文档、查询词、工商全称、信用代码、注册地、登记状态、核验结果/规则/时间 | 每份原文档唯一核验记录；tenant/状态/时间及信用代码索引；管理员写、审核员读 RLS |
 | `review_queue` | 事件或实体提及、触发规则、状态、分配人、决定和理由 | `event_id` 与 `entity_mention_id` 必须且只能存在一个；每个对象唯一；状态索引 |
 | `usage_ledger` | task/run/company/tenant/provider、调用量、Token、估算/实际费用、有效产出 | 用量幂等键唯一；tenant/company/provider/日期索引 |
 | `prompt_versions` | prompt code、版本、模板哈希、Schema 版本、状态 | 唯一 `(prompt_code, version)`；活动版本条件唯一 |

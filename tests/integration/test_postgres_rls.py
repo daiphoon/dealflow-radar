@@ -28,7 +28,7 @@ pytestmark = [
 
 def _visible_counts(
     engine: Engine, user_id: UUID | None = None, tenant_id: UUID | None = None
-) -> tuple[int, int, int, int]:
+) -> tuple[int, int, int, int, int]:
     with engine.begin() as connection:
         if user_id is not None and tenant_id is not None:
             connection.execute(
@@ -45,7 +45,8 @@ def _visible_counts(
                 "(SELECT count(*) FROM investments), "
                 "(SELECT count(*) FROM funds), "
                 "(SELECT count(*) FROM review_queue), "
-                "(SELECT count(*) FROM research_imports)"
+                "(SELECT count(*) FROM research_imports), "
+                "(SELECT count(*) FROM official_identity_verifications)"
             )
         ).one()
         return tuple(row)
@@ -154,18 +155,18 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
                     WHERE relname IN (
                         'fund_access_grants', 'funds', 'investments',
                         'research_imports', 'review_queue', 'refresh_jobs',
-                        'usage_ledger'
+                        'usage_ledger', 'official_identity_verifications'
                     )
                       AND relrowsecurity
                     """
                 )
             )
         assert role == (False, False, False, False, False)
-        assert enabled_rls_tables == 7
-        assert _visible_counts(engine) == (0, 0, 0, 0)
-        assert _visible_counts(engine, ALPHA_USER_ID, ALPHA_TENANT_ID) == (10, 1, 10, 1)
-        assert _visible_counts(engine, BETA_USER_ID, BETA_TENANT_ID) == (1, 1, 0, 0)
-        assert _visible_counts(engine, NO_ACCESS_USER_ID, ALPHA_TENANT_ID) == (0, 0, 0, 0)
-        assert _visible_counts(engine, ALPHA_USER_ID, BETA_TENANT_ID) == (0, 0, 0, 0)
+        assert enabled_rls_tables == 8
+        assert _visible_counts(engine) == (0, 0, 0, 0, 0)
+        assert _visible_counts(engine, ALPHA_USER_ID, ALPHA_TENANT_ID) == (10, 1, 10, 1, 0)
+        assert _visible_counts(engine, BETA_USER_ID, BETA_TENANT_ID) == (1, 1, 0, 0, 0)
+        assert _visible_counts(engine, NO_ACCESS_USER_ID, ALPHA_TENANT_ID) == (0, 0, 0, 0, 0)
+        assert _visible_counts(engine, ALPHA_USER_ID, BETA_TENANT_ID) == (0, 0, 0, 0, 0)
     finally:
         engine.dispose()

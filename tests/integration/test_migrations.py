@@ -19,7 +19,7 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     command.upgrade(config, "head")
     command.check(config)
     engine = create_engine(database_url)
-    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 19
+    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 20
     assert "heartbeat_at" in {
         column["name"] for column in inspect(engine).get_columns("refresh_jobs")
     }
@@ -34,6 +34,9 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "official_website" in {
         column["name"] for column in inspect(engine).get_columns("companies")
     }
+    assert "last_identity_checked_at" in {
+        column["name"] for column in inspect(engine).get_columns("companies")
+    }
     event_columns = {column["name"] for column in inspect(engine).get_columns("events")}
     assert {
         "published_on",
@@ -45,6 +48,17 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
         column["name"]: column for column in inspect(engine).get_columns("company_snapshots")
     }
     assert snapshot_columns["data_as_of"]["nullable"] is True
+    identity_columns = {
+        column["name"] for column in inspect(engine).get_columns("official_identity_verifications")
+    }
+    assert {
+        "tenant_id",
+        "company_id",
+        "raw_document_id",
+        "credit_code",
+        "verification_status",
+        "checked_at",
+    } <= identity_columns
 
     command.downgrade(config, "base")
     assert inspect(engine).get_table_names() == ["alembic_version"]
@@ -83,3 +97,7 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "ADD COLUMN official_website" in ddl
     assert "ADD COLUMN publication_route" in ddl
     assert "ALTER COLUMN data_as_of DROP NOT NULL" in ddl
+    assert "ADD COLUMN last_identity_checked_at" in ddl
+    assert "CREATE TABLE official_identity_verifications" in ddl
+    assert "official_identity_verifications_read" in ddl
+    assert "official_identity_verifications_insert" in ddl

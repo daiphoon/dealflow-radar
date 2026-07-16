@@ -69,6 +69,18 @@ class PublicationPolicy:
 
 
 @dataclass(frozen=True)
+class IdentityPolicy:
+    version: str = "official-identity-v1"
+    verification_ttl_days: int = 30
+
+    def __post_init__(self) -> None:
+        if not self.version.strip():
+            raise ValueError("IDENTITY_POLICY_VERSION must not be empty")
+        if self.verification_ttl_days <= 0:
+            raise ValueError("IDENTITY_VERIFICATION_TTL_DAYS must be a positive integer")
+
+
+@dataclass(frozen=True)
 class Settings:
     database_url: str
     app_mode: str
@@ -78,6 +90,7 @@ class Settings:
     review_workbench_enabled: bool = False
     refresh_policy: RefreshPolicy = field(default_factory=RefreshPolicy)
     publication_policy: PublicationPolicy = field(default_factory=PublicationPolicy)
+    identity_policy: IdentityPolicy = field(default_factory=IdentityPolicy)
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -105,5 +118,9 @@ class Settings:
                 max_source_url_checks_per_import=_as_positive_int(
                     "SOURCE_URL_MAX_CHECKS_PER_IMPORT", 20
                 ),
+            ),
+            identity_policy=IdentityPolicy(
+                version=os.getenv("IDENTITY_POLICY_VERSION", "official-identity-v1"),
+                verification_ttl_days=_as_positive_int("IDENTITY_VERIFICATION_TTL_DAYS", 30),
             ),
         )
