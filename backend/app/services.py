@@ -11,7 +11,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.app.config import RefreshPolicy
+from backend.app.config import PublicationPolicy, RefreshPolicy
 from backend.app.demo import (
     ALPHA_FUND_ID,
     ALPHA_TENANT_ID,
@@ -46,6 +46,9 @@ from backend.app.models import (
     utc_now,
 )
 from backend.app.providers import (
+    DisabledDocumentVerifier,
+    DocumentVerification,
+    DocumentVerifier,
     LoadedResearchImport,
     ManualResearchImportProvider,
     ManualResearchRecord,
@@ -434,6 +437,22 @@ def _manual_source(session: Session, record: ManualResearchRecord) -> Source:
     return source
 
 
+def _normalized_web_host(url: str | None) -> str | None:
+    if url is None:
+        return None
+    host = urlsplit(url).hostname
+    if host is None:
+        return None
+    normalized = host.rstrip(".").lower()
+    return normalized.removeprefix("www.")
+
+
+def _website_conflicts(company: Company, record: ManualResearchRecord) -> bool:
+    company_host = _normalized_web_host(company.official_website)
+    evidence_host = _normalized_web_host(record.company_identity_evidence.official_website)
+    return company_host is not None and evidence_host is not None and company_host != evidence_host
+
+
 def _resolve_manual_company(
     session: Session,
     tenant_id: UUID,
@@ -461,6 +480,7 @@ def _resolve_manual_company(
         if (
             company.legal_name != identity.legal_name
             or region_conflict
+            or _website_conflicts(company, record)
             or company.identity_status != "verified"
         ):
             return company, "credit_code_conflict", Decimal("0.500"), "unresolved"
@@ -482,9 +502,66 @@ def _resolve_manual_company(
         and company.registered_region is not None
         and identity.registered_region != company.registered_region
     )
-    if region_conflict or company.identity_status != "verified":
+    if (
+        region_conflict
+        or _website_conflicts(company, record)
+        or company.identity_status != "verified"
+    ):
         return company, "legal_name_conflict", Decimal("0.600"), "unresolved"
     return company, "legal_name_exact", Decimal("0.950"), "verified"
+
+
+def _record_published_on(record: ManualResearchRecord) -> date | None:
+    if record.source_published_on is not None:
+        return record.source_published_on
+    if record.source_published_at is not None:
+        return record.source_published_at.date()
+    for fact in record.facts:
+        if fact.name != "source_displayed_date":
+            continue
+        try:
+            return date.fromisoformat(fact.value)
+        except ValueError:
+            return None
+    return None
+
+
+def _evaluate_publication_route(
+    company: Company,
+    record: ManualResearchRecord,
+    verification: DocumentVerification,
+    policy: PublicationPolicy,
+) -> tuple[str, list[str]]:
+    blocking_reasons: list[str] = []
+    if not policy.enabled:
+        blocking_reasons.append("auto_publish_disabled")
+    if verification.status != "healthy":
+        blocking_reasons.append(f"source_url_{verification.status}")
+    if record.source_quality.value not in {"A", "B"}:
+        blocking_reasons.append("source_quality_not_allowed")
+    if Decimal(str(record.confidence_score)) < policy.min_confidence:
+        blocking_reasons.append("confidence_below_threshold")
+    if record.risk_severity.value in {"high", "critical"}:
+        blocking_reasons.append("high_risk_unconfirmed")
+    if record.source_quality.value == "B":
+        company_host = _normalized_web_host(company.official_website)
+        source_host = _normalized_web_host(verification.final_url or record.canonical_url)
+        if company_host is None:
+            blocking_reasons.append("official_website_not_verified")
+        elif company_host != source_host:
+            blocking_reasons.append("official_source_domain_mismatch")
+    if blocking_reasons:
+        return "unconfirmed_lead", blocking_reasons
+    return (
+        "auto_published",
+        [
+            "identity_verified",
+            "source_url_healthy",
+            "source_quality_allowed",
+            "confidence_threshold_met",
+            "risk_allowed",
+        ],
+    )
 
 
 def _manual_event_fingerprint(company_id: UUID, record: ManualResearchRecord) -> str:
@@ -528,6 +605,65 @@ def _add_manual_event_evidence(
     )
 
 
+def _mark_event_published(session: Session, event: Event, company: Company) -> None:
+    evidence_count = session.scalar(
+        select(func.count()).select_from(EventEvidence).where(EventEvidence.event_id == event.id)
+    )
+    if not evidence_count or company.identity_status != "verified":
+        raise AccessDeniedError("published event requires verified identity and evidence")
+    event.status = "published"
+
+
+def _refresh_company_snapshot(session: Session, company: Company) -> None:
+    session.execute(
+        update(CompanySnapshot)
+        .where(CompanySnapshot.company_id == company.id, CompanySnapshot.is_current.is_(True))
+        .values(is_current=False)
+    )
+    current_version = session.scalar(
+        select(func.max(CompanySnapshot.snapshot_version)).where(
+            CompanySnapshot.company_id == company.id
+        )
+    )
+    published_events = list(
+        session.scalars(
+            select(Event).where(Event.company_id == company.id, Event.status == "published")
+        )
+    )
+    risk_order = {"none": 0, "low": 1, "moderate": 2, "high": 3, "critical": 4}
+    highest_risk = max(
+        (item.risk_severity for item in published_events),
+        key=lambda value: risk_order.get(value, -1),
+        default="none",
+    )
+    event_dates: list[date] = []
+    missing_fact_dates = False
+    for item in published_events:
+        if item.occurred_at is not None:
+            event_dates.append(item.occurred_at.date())
+        elif item.published_at is not None:
+            event_dates.append(item.published_at.date())
+        elif item.published_on is not None:
+            event_dates.append(item.published_on)
+        else:
+            missing_fact_dates = True
+    information_gaps = ["财务数据：暂无可靠公开数据。"]
+    if missing_fact_dates:
+        information_gaps.append("部分事件缺少发生或来源日期；数据基准使用系统发现日期。")
+    session.add(
+        CompanySnapshot(
+            company_id=company.id,
+            snapshot_version=(current_version or 0) + 1,
+            is_current=True,
+            data_as_of=max(event_dates, default=None),
+            last_checked_at=utc_now(),
+            freshness_status="fresh",
+            summary={"published_event_count": len(published_events), "highest_risk": highest_risk},
+            information_gaps=information_gaps,
+        )
+    )
+
+
 def _duplicate_import_result(existing: ResearchImport) -> ResearchImportResult:
     return ResearchImportResult(
         status="duplicate",
@@ -539,6 +675,9 @@ def _duplicate_import_result(existing: ResearchImport) -> ResearchImportResult:
         reviews_created=0,
         resolved_records=existing.resolved_count,
         unresolved_records=existing.unresolved_count,
+        auto_published_records=existing.auto_published_count,
+        unconfirmed_records=existing.unconfirmed_count,
+        identity_review_records=existing.identity_review_count,
     )
 
 
@@ -547,6 +686,8 @@ def _ingest_manual_batch(
     user: User,
     provider: ManualResearchImportProvider,
     loaded: LoadedResearchImport,
+    publication_policy: PublicationPolicy,
+    document_verifier: DocumentVerifier,
 ) -> ResearchImportResult:
     batch_payload = loaded.batch
     research_import = ResearchImport(
@@ -568,12 +709,18 @@ def _ingest_manual_batch(
         record_count=len(batch_payload.records),
         resolved_count=0,
         unresolved_count=0,
+        auto_published_count=0,
+        unconfirmed_count=0,
+        identity_review_count=0,
     )
     session.add(research_import)
     session.flush()
     documents_created = 0
     events_created = 0
     reviews_created = 0
+    external_calls = 0
+    source_url_checks = 0
+    published_company_ids: set[UUID] = set()
 
     for record in batch_payload.records:
         company, match_rule, match_confidence, resolution_status = _resolve_manual_company(
@@ -587,8 +734,8 @@ def _ingest_manual_batch(
             research_import.unresolved_count += 1
 
         source = _manual_source(session, record)
-        document_payload = record.model_dump(mode="json")
-        content_hash = _sha256(json.dumps(document_payload, ensure_ascii=False, sort_keys=True))
+        record_payload = record.model_dump(mode="json")
+        content_hash = _sha256(json.dumps(record_payload, ensure_ascii=False, sort_keys=True))
         dedupe_key = _sha256(f"{source.id}:{record.external_record_id}")
         existing_document = session.scalar(
             select(RawDocument).where(RawDocument.document_dedupe_key == dedupe_key)
@@ -600,6 +747,23 @@ def _ingest_manual_batch(
                 )
             continue
 
+        verification = DisabledDocumentVerifier().verify(record.canonical_url)
+        if resolution_status == "verified" and publication_policy.enabled:
+            if source_url_checks < publication_policy.max_source_url_checks_per_import:
+                verification = document_verifier.verify(record.canonical_url)
+                source_url_checks += 1
+                external_calls += verification.external_calls
+            else:
+                verification = DocumentVerification(
+                    status="unchecked",
+                    reason="source_url_check_budget_deferred",
+                    external_calls=0,
+                )
+        document_payload = {
+            **record_payload,
+            "_source_verification": verification.model_dump(mode="json"),
+        }
+
         document = RawDocument(
             source_id=source.id,
             research_import_id=research_import.id,
@@ -607,6 +771,7 @@ def _ingest_manual_batch(
             canonical_url=record.canonical_url,
             title=record.title,
             published_at=record.source_published_at,
+            published_on=_record_published_on(record),
             observed_at=utc_now(),
             content_hash=content_hash,
             document_dedupe_key=dedupe_key,
@@ -636,7 +801,19 @@ def _ingest_manual_batch(
                 )
             )
             reviews_created += 1
+            research_import.identity_review_count += 1
             continue
+
+        publication_route, publication_reasons = _evaluate_publication_route(
+            company,
+            record,
+            verification,
+            publication_policy,
+        )
+        if publication_route == "auto_published":
+            research_import.auto_published_count += 1
+        else:
+            research_import.unconfirmed_count += 1
 
         event_fingerprint = _manual_event_fingerprint(company.id, record)
         existing_event = session.scalar(
@@ -647,27 +824,27 @@ def _ingest_manual_batch(
             )
         )
         if existing_event is not None:
-            if existing_event.status in {"candidate", "in_review"}:
+            if existing_event.status == "candidate":
                 _add_manual_event_evidence(session, existing_event.id, document.id, record)
-            else:
-                session.add(
-                    ReviewQueue(
-                        tenant_id=user.tenant_id,
-                        entity_mention_id=mention.id,
-                        status="pending",
-                        trigger_rules=[
-                            "manual_research_import",
-                            "existing_event_new_evidence",
-                        ],
-                    )
+                existing_event.publication_route = publication_route
+                existing_event.publication_policy_version = publication_policy.version
+                existing_event.publication_reasons = publication_reasons
+                if publication_route == "auto_published":
+                    _mark_event_published(session, existing_event, company)
+                    published_company_ids.add(company.id)
+            elif existing_event.status == "published" and publication_route == "auto_published":
+                _add_manual_event_evidence(session, existing_event.id, document.id, record)
+                existing_event.publication_reasons = sorted(
+                    {*existing_event.publication_reasons, "additional_evidence_auto_attached"}
                 )
-                reviews_created += 1
+            elif existing_event.status == "in_review":
+                _add_manual_event_evidence(session, existing_event.id, document.id, record)
             continue
         event = Event(
             company_id=company.id,
             event_type=record.event_type.value,
             event_subtype=record.event_subtype,
-            status="in_review",
+            status="candidate",
             direction=record.direction.value,
             materiality_score=record.materiality_score,
             risk_severity=record.risk_severity.value,
@@ -679,23 +856,26 @@ def _ingest_manual_batch(
             uncertainties=record.uncertainties,
             occurred_at=record.occurred_at,
             published_at=record.source_published_at,
+            published_on=_record_published_on(record),
             observed_at=utc_now(),
             fingerprint_version=MANUAL_EVENT_FINGERPRINT_VERSION,
             event_fingerprint=event_fingerprint,
+            publication_route=publication_route,
+            publication_policy_version=publication_policy.version,
+            publication_reasons=publication_reasons,
         )
         session.add(event)
         session.flush()
         _add_manual_event_evidence(session, event.id, document.id, record)
-        session.add(
-            ReviewQueue(
-                tenant_id=user.tenant_id,
-                event_id=event.id,
-                status="pending",
-                trigger_rules=["manual_research_import", "human_review_required"],
-            )
-        )
+        if publication_route == "auto_published":
+            _mark_event_published(session, event, company)
+            published_company_ids.add(company.id)
         events_created += 1
-        reviews_created += 1
+
+    for company_id in sorted(published_company_ids, key=str):
+        company = session.get(Company, company_id)
+        if company is not None:
+            _refresh_company_snapshot(session, company)
 
     research_import.status = (
         "completed_with_unresolved" if research_import.unresolved_count else "completed"
@@ -705,7 +885,7 @@ def _ingest_manual_batch(
             tenant_id=user.tenant_id,
             provider=provider.code,
             operation="manual_research_import",
-            external_calls=0,
+            external_calls=external_calls,
             input_tokens=0,
             output_tokens=0,
             estimated_cost=Decimal("0"),
@@ -716,6 +896,11 @@ def _ingest_manual_batch(
                 "events_created": events_created,
                 "resolved_records": research_import.resolved_count,
                 "unresolved_records": research_import.unresolved_count,
+                "auto_published_records": research_import.auto_published_count,
+                "unconfirmed_records": research_import.unconfirmed_count,
+                "identity_review_records": research_import.identity_review_count,
+                "publication_policy_version": publication_policy.version,
+                "source_url_checks": source_url_checks,
             },
             idempotency_key=_sha256(f"manual-research-import:{research_import.id}"),
         )
@@ -731,6 +916,10 @@ def _ingest_manual_batch(
         reviews_created=reviews_created,
         resolved_records=research_import.resolved_count,
         unresolved_records=research_import.unresolved_count,
+        auto_published_records=research_import.auto_published_count,
+        unconfirmed_records=research_import.unconfirmed_count,
+        identity_review_records=research_import.identity_review_count,
+        external_calls=external_calls,
     )
 
 
@@ -738,6 +927,8 @@ def import_manual_research(
     session: Session,
     user: User,
     provider: ManualResearchImportProvider,
+    publication_policy: PublicationPolicy | None = None,
+    document_verifier: DocumentVerifier | None = None,
 ) -> ResearchImportResult:
     if not user_has_role(session, user.id, "institution_admin"):
         session.rollback()
@@ -764,7 +955,14 @@ def import_manual_research(
         session.rollback()
         raise ImportConflictError(f"batch_id conflict: {loaded.batch.batch_id}")
     try:
-        return _ingest_manual_batch(session, user, provider, loaded)
+        return _ingest_manual_batch(
+            session,
+            user,
+            provider,
+            loaded,
+            publication_policy or PublicationPolicy(),
+            document_verifier or DisabledDocumentVerifier(),
+        )
     except Exception:
         session.rollback()
         raise
@@ -804,12 +1002,35 @@ def _event_out(session: Session, event: Event) -> EventOut:
         .join(Source, Source.id == RawDocument.source_id)
         .where(EventEvidence.event_id == event.id)
     ).all()
+    evidence_items: list[EvidenceOut] = []
+    for evidence, document, source in evidence_rows:
+        verification = document.payload.get("_source_verification", {})
+        if not isinstance(verification, dict):
+            verification = {}
+        evidence_items.append(
+            EvidenceOut(
+                id=evidence.id,
+                source_name=source.name,
+                source_quality=source.source_quality,
+                title=document.title,
+                canonical_url=document.canonical_url,
+                published_at=document.published_at,
+                published_on=document.published_on,
+                observed_at=document.observed_at,
+                excerpt=evidence.evidence_excerpt,
+                url_health_status=str(verification.get("status", "unchecked")),
+                url_http_status=verification.get("http_status"),
+                url_checked_at=verification.get("checked_at"),
+                final_url=verification.get("final_url"),
+            )
+        )
     return EventOut(
         id=event.id,
         event_type=event.event_type,
         event_subtype=event.event_subtype,
         occurred_at=event.occurred_at,
         published_at=event.published_at,
+        published_on=event.published_on,
         direction=event.direction,
         materiality_score=event.materiality_score,
         risk_severity=event.risk_severity,
@@ -820,20 +1041,11 @@ def _event_out(session: Session, event: Event) -> EventOut:
         facts=event.facts,
         uncertainties=event.uncertainties,
         status=event.status,
+        publication_route=event.publication_route,
+        publication_policy_version=event.publication_policy_version,
+        publication_reasons=event.publication_reasons,
         observed_at=event.observed_at,
-        evidence=[
-            EvidenceOut(
-                id=evidence.id,
-                source_name=source.name,
-                source_quality=source.source_quality,
-                title=document.title,
-                canonical_url=document.canonical_url,
-                published_at=document.published_at,
-                observed_at=document.observed_at,
-                excerpt=evidence.evidence_excerpt,
-            )
-            for evidence, document, source in evidence_rows
-        ],
+        evidence=evidence_items,
     )
 
 
@@ -1005,10 +1217,22 @@ def get_company_detail(
             .order_by(Event.occurred_at.desc())
         )
     )
+    unconfirmed_leads = list(
+        session.scalars(
+            select(Event)
+            .where(
+                Event.company_id == company_id,
+                Event.status == "candidate",
+                Event.publication_route == "unconfirmed_lead",
+            )
+            .order_by(Event.observed_at.desc())
+        )
+    )
     detail = CompanyDetail(
         id=company.id,
         legal_name=company.legal_name,
         registered_region=company.registered_region,
+        official_website=company.official_website,
         identity_status=company.identity_status,
         data_as_of=snapshot.data_as_of if snapshot else None,
         last_checked_at=snapshot.last_checked_at if snapshot else None,
@@ -1028,6 +1252,7 @@ def get_company_detail(
             for investment, fund in investment_rows
         ],
         events=[_event_out(session, event) for event in events],
+        unconfirmed_leads=[_event_out(session, event) for event in unconfirmed_leads],
     )
     if auto_refresh_enabled and freshness_status in {"stale", "unknown"}:
         _create_or_merge_refresh_job(
@@ -1065,51 +1290,14 @@ def decide_review(
         event.status = "rejected"
         session.commit()
         return review
-    evidence_count = session.scalar(
-        select(func.count()).select_from(EventEvidence).where(EventEvidence.event_id == event.id)
-    )
     company = session.get(Company, event.company_id)
-    if not evidence_count or company is None or company.identity_status != "verified":
-        raise AccessDeniedError("published event requires verified identity and evidence")
-    event.status = "published"
-    session.execute(
-        update(CompanySnapshot)
-        .where(CompanySnapshot.company_id == company.id, CompanySnapshot.is_current.is_(True))
-        .values(is_current=False)
-    )
-    current_version = session.scalar(
-        select(func.max(CompanySnapshot.snapshot_version)).where(
-            CompanySnapshot.company_id == company.id
-        )
-    )
-    published_events = list(
-        session.scalars(
-            select(Event).where(Event.company_id == company.id, Event.status == "published")
-        )
-    )
-    risk_order = {"none": 0, "low": 1, "moderate": 2, "high": 3, "critical": 4}
-    highest_risk = max(
-        (item.risk_severity for item in published_events),
-        key=lambda value: risk_order.get(value, -1),
-        default="none",
-    )
-    event_dates = [
-        value.date()
-        for item in published_events
-        if (value := item.occurred_at or item.published_at) is not None
-    ]
-    session.add(
-        CompanySnapshot(
-            company_id=company.id,
-            snapshot_version=(current_version or 0) + 1,
-            is_current=True,
-            data_as_of=max(event_dates, default=date.today()),
-            last_checked_at=utc_now(),
-            freshness_status="fresh",
-            summary={"published_event_count": len(published_events), "highest_risk": highest_risk},
-            information_gaps=["财务数据：暂无可靠公开数据。"],
-        )
-    )
+    if company is None:
+        raise AccessDeniedError("published event requires a resolved company")
+    event.publication_route = "human_confirmed"
+    event.publication_policy_version = "legacy-review-workbench-v1"
+    event.publication_reasons = ["human_approved"]
+    _mark_event_published(session, event, company)
+    _refresh_company_snapshot(session, company)
     session.commit()
     return review
 

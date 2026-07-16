@@ -31,6 +31,20 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     }
     assert review_columns["event_id"]["nullable"] is True
     assert review_columns["entity_mention_id"]["nullable"] is True
+    assert "official_website" in {
+        column["name"] for column in inspect(engine).get_columns("companies")
+    }
+    event_columns = {column["name"] for column in inspect(engine).get_columns("events")}
+    assert {
+        "published_on",
+        "publication_route",
+        "publication_policy_version",
+        "publication_reasons",
+    } <= event_columns
+    snapshot_columns = {
+        column["name"]: column for column in inspect(engine).get_columns("company_snapshots")
+    }
+    assert snapshot_columns["data_as_of"]["nullable"] is True
 
     command.downgrade(config, "base")
     assert inspect(engine).get_table_names() == ["alembic_version"]
@@ -66,3 +80,6 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "CREATE POLICY research_imports_admin" in ddl
     assert "ADD COLUMN entity_mention_id UUID" in ddl
     assert "ck_review_queue_subject" in ddl
+    assert "ADD COLUMN official_website" in ddl
+    assert "ADD COLUMN publication_route" in ddl
+    assert "ALTER COLUMN data_as_of DROP NOT NULL" in ddl

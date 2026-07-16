@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from backend.app.providers import MAX_IMPORT_FILE_BYTES, ManualResearchImportProvider
+from backend.app.providers import (
+    MAX_IMPORT_FILE_BYTES,
+    HttpDocumentVerifier,
+    ManualResearchImportProvider,
+)
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> bytes:
@@ -28,6 +32,29 @@ def test_manual_provider_loads_strict_public_json(
     assert loaded.source_filename == "batch.json"
     assert loaded.batch.batch_id == "manual-batch-001"
     assert loaded.batch.records[0].requires_human_review is True
+
+
+def test_manual_provider_accepts_date_only_source_date(
+    tmp_path: Path,
+    manual_import_payload: dict[str, object],
+) -> None:
+    records = manual_import_payload["records"]
+    assert isinstance(records, list)
+    records[0]["source_published_at"] = None
+    records[0]["source_published_on"] = "2026-07-14"
+    _write_json(tmp_path / "batch.json", manual_import_payload)
+
+    loaded = ManualResearchImportProvider("batch.json", allowed_root=tmp_path).load()
+
+    assert loaded.batch.records[0].source_published_on.isoformat() == "2026-07-14"
+
+
+def test_http_document_verifier_rejects_private_network_without_request() -> None:
+    result = HttpDocumentVerifier().verify("http://127.0.0.1/private")
+
+    assert result.status == "unavailable"
+    assert result.reason == "unsafe_or_unresolvable_url"
+    assert result.external_calls == 0
 
 
 def test_manual_provider_rejects_path_outside_private_root(
@@ -76,17 +103,23 @@ def test_manual_provider_rejects_unsupported_batch_values(
         ManualResearchImportProvider("batch.json", allowed_root=tmp_path).load()
 
 
-def test_manual_provider_requires_human_review(
+@pytest.mark.parametrize("legacy_value", [False, None])
+def test_manual_provider_accepts_legacy_review_hint_without_requiring_it(
     tmp_path: Path,
     manual_import_payload: dict[str, object],
+    legacy_value: bool | None,
 ) -> None:
     records = manual_import_payload["records"]
     assert isinstance(records, list)
-    records[0]["requires_human_review"] = False
+    if legacy_value is None:
+        records[0].pop("requires_human_review")
+    else:
+        records[0]["requires_human_review"] = legacy_value
     _write_json(tmp_path / "batch.json", manual_import_payload)
 
-    with pytest.raises(ValidationError):
-        ManualResearchImportProvider("batch.json", allowed_root=tmp_path).load()
+    loaded = ManualResearchImportProvider("batch.json", allowed_root=tmp_path).load()
+
+    assert loaded.batch.records[0].requires_human_review is legacy_value
 
 
 @pytest.mark.parametrize("field", ["source_published_at", "occurred_at"])

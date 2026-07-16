@@ -44,6 +44,33 @@ def test_review_workbench_requires_explicit_enable(monkeypatch: pytest.MonkeyPat
     assert Settings.from_env().review_workbench_enabled is True
 
 
+def test_publication_policy_is_configured_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PUBLICATION_POLICY_VERSION", "identity-first-v2")
+    monkeypatch.setenv("AUTO_PUBLISH_ENABLED", "false")
+    monkeypatch.setenv("AUTO_PUBLISH_MIN_CONFIDENCE", "0.91")
+    monkeypatch.setenv("SOURCE_URL_TIMEOUT_SECONDS", "7")
+    monkeypatch.setenv("SOURCE_URL_MAX_CHECKS_PER_IMPORT", "12")
+
+    policy = Settings.from_env().publication_policy
+
+    assert policy.version == "identity-first-v2"
+    assert policy.enabled is False
+    assert str(policy.min_confidence) == "0.91"
+    assert policy.source_url_timeout_seconds == 7
+    assert policy.max_source_url_checks_per_import == 12
+
+
+def test_publication_policy_rejects_invalid_confidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AUTO_PUBLISH_MIN_CONFIDENCE", "1.1")
+
+    with pytest.raises(ValueError, match="AUTO_PUBLISH_MIN_CONFIDENCE"):
+        Settings.from_env()
+
+
 def test_bootstrap_rejects_shared_database_password() -> None:
     with pytest.raises(RuntimeError, match="passwords must differ"):
         bootstrap_application_role(

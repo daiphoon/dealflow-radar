@@ -13,19 +13,19 @@
 | `GET /companies` | 公司列表 | 按权限展示新鲜度和风险；不因列表访问批量入队 |
 | `GET /companies/{id}` | 公司详情 | 读快照/事件/指标；过期且自动刷新开启时创建或合并后台任务 |
 | `GET /companies/{id}/changes?since=` | 上次查看后变化 | 只返回版本化事实变化和纠正撤回 |
-| `GET /companies/{id}/events` | 事件时间线 | 仅按权限返回发布状态与证据元数据 |
+| `GET /companies/{id}/events` | 事件时间线 | 按权限返回已发布事实；公司详情另列未确认线索 |
 | `GET /events/{id}/evidence` | 证据 | 按许可返回最小片段或受控存储引用 |
 | `GET /companies/{id}/metrics` | 指标历史 | 返回来源性质、期间、单位和审核状态 |
 | `POST /companies/{id}/refresh` | 请求更新或 `dry-run` | 检查开关/预算/冷却，返回已有或新任务 ID |
 | `GET /refresh-jobs/{id}` | 查看后台状态 | 不暴露 Secret 或 Provider 原始敏感响应 |
-| `POST /research-imports` | 创建导入批次 | 文件哈希幂等；只生成候选 |
-| `GET /reviews` | 审核队列 | 按角色/范围和风险排序 |
-| `GET /reviews/workbench` | 审核工作台详情 | V1 仅在显式开关开启后返回候选、证据、评价和不确定性 |
-| `POST /reviews/{id}/decision` | 审核决定 | V1 支持批准或驳回；理由必填，事务发布并保留决定记录 |
+| `POST /research-imports` | 创建导入批次 | 文件哈希幂等；身份通过后自动发布或保留未确认线索（尚未实现网页/API 上传） |
+| `GET /reviews` | 身份例外及历史审核队列 | 按角色/范围排序；新导入不为每条事件创建任务 |
+| `GET /reviews/workbench` | 审核工作台详情 | V1 仅在显式开关开启后返回身份例外与既有历史候选 |
+| `POST /reviews/{id}/decision` | 既有事件审核决定 | 兼容批准或驳回；理由必填，事务发布并保留决定记录 |
 | `GET /reports/portfolio-weekly` | 固定模板周报 | 按事实水位读取已生成结果 |
 | `GET /usage` | 成本仪表盘 | 聚合租户/公司/Provider/有效事件成本 |
 
-人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`，尚未实现 `POST /research-imports`。原因是当前 `X-Demo-User-Id` 只适用于测试，不足以保护真实文件上传；网页/API 导入须等正式认证、上传隔离、文件审计和许可校验完成后再实现。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放给 `reviewer`；该开关不能替代认证。`POST /reviews/{id}/decision` 当前只处理事件审核；实体提及审核会明确拒绝直接批准，后续需新增“选择公司并重建候选”的专用身份解析契约。纠正、撤回和保持待审仍属于后续契约。
+人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`，尚未实现 `POST /research-imports`。原因是当前 `X-Demo-User-Id` 只适用于测试，不足以保护真实文件上传；网页/API 导入须等正式认证、上传隔离、文件审计和许可校验完成后再实现。公司详情响应包含 `events` 与 `unconfirmed_leads` 两个列表；事件和证据返回日期精度、发布路由/策略原因及 URL 检查状态。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放给 `reviewer`；该开关不能替代认证。`POST /reviews/{id}/decision` 当前只处理既有事件审核；实体提及审核会明确拒绝直接批准，后续需新增“选择公司并重建候选”的专用身份解析契约。纠正、撤回和保持待审仍属于后续契约。
 
 `POST /refresh` 的响应明确区分 `fresh_noop`、`queued`、`merged`、`cooldown_deferred`、`budget_deferred`、`external_disabled`。`dry_run=true` 时只返回计划 Provider、搜索数、Token 上界和预计费用，不产生外部调用。
 

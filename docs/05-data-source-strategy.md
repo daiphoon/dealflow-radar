@@ -34,7 +34,7 @@
 | 实现 | 当前状态 | 启用前提 |
 | --- | --- | --- |
 | `MockSearchProvider` | 第 2 阶段建议实现 | 只读虚构 fixture，无网络 |
-| `ManualResearchImportProvider` | 已实现 V1 | 仅本机 JSON、公开来源元数据和机构管理员；始终进入人工审核 |
+| `ManualResearchImportProvider` | 已实现 V1 | 仅本机 JSON、公开来源元数据和机构管理员；身份例外审核，其余由确定性策略自动路由 |
 | `KimiAgentImportProvider` | 预留 | 用户人工导出、许可明确，不调用未公开接口 |
 | `KimiScheduledResearchImportProvider` | 预留 | Kimi Work/Claw 等官方导出能力、授权和稳定格式已确认 |
 | `KimiOpenPlatformProvider` | 预留 | 正式 API 文档、账号授权、价格和数据条款确认 |
@@ -61,13 +61,13 @@ Kimi 消费端会员/Agent、Kimi Work 或 Kimi Claw、Kimi Code、开放平台 
 每条记录包含：
 
 - `external_record_id` 和 `company_identity_evidence`（工商全称必填，信用代码、地区、官网可选）；
-- `source_code`、`source_name`、`canonical_url`、可空的 `source_published_at`、可空且独立的 `occurred_at`、`title` 与最小必要 `evidence_excerpt`；
+- `source_code`、`source_name`、`canonical_url`、可空的 `source_published_at` 或日期精度 `source_published_on`、可空且独立的 `occurred_at`、`title` 与最小必要 `evidence_excerpt`；
 - `event_type`、`event_subtype`、`direction`、重要性、风险、置信度和来源质量；
-- 结构化 `facts`、`uncertainties`，以及固定为 `true` 的 `requires_human_review`。
+- 结构化 `facts`、`uncertainties`；旧文件中的 `requires_human_review` 仅作为兼容字段接受，不覆盖当前发布策略。
 
-目标公司必须预先存在。信用代码优先，其次使用工商全称和地区；未唯一解析时保留原始文档与实体提及并创建身份审核项，不生成事件。解析成功时也只创建 `in_review` 候选、证据和审核项，不自动发布或更新快照。同一候选事件的新独立来源会追加证据；已发布、驳回或撤回事件的新证据只创建独立审核项，不直接改变既有事件。相同租户内的文件哈希/解析器版本和批次编号分别幂等；同一外部记录内容冲突时整批回滚。
+目标公司必须预先存在。信用代码优先，其次使用工商全称、地区和已核验官网；未唯一解析或官网冲突时保留原始文档与实体提及并创建身份审核项，不生成事件。解析成功后检查 URL 可用性、来源 A/B、官方域名一致性、可信度和风险：全部满足时自动发布并更新快照；否则以 `unconfirmed_lead` 保存且不创建逐条事件审核任务。同一候选事件的新独立来源会追加证据；已发布事件的新安全证据可直接附加，其他证据保持未确认且不改变既有事实。相同租户内的文件哈希/解析器版本和批次编号分别幂等；同一外部记录内容冲突时整批回滚。
 
-来源发布日期与事件实际发生时间必须分开；未知保持 `null`，不得用发布日期、查询时间或观察时间替代实际发生时间。所有非空输入时间必须带时区。
+来源发布日期与事件实际发生时间必须分开；仅知道日期时使用 `source_published_on`，不得虚构时刻。未知保持 `null`，不得用查询时间或观察时间替代来源/事件时间。所有非空时间戳必须带时区。
 
 V1 不复制保存原始文件字节，只保存受 RLS 保护的批次元数据、文件哈希，以及许可允许的公开来源定位、最小证据片段和结构化记录。CSV、Excel、Markdown、网页上传、内部财务和投资协议等敏感材料均未实现，启用前需另行设计格式、恶意内容隔离、正式认证与存储许可。实体提及审核目前只用于安全排队，通用事件审核接口不会批准它；选择目标公司、重跑解析和生成候选需要后续专用工作流。
 
@@ -78,7 +78,7 @@ sequenceDiagram
   participant I as ResearchImportProvider
   participant D as 去重与身份解析
   participant G as 证据与风险闸门
-  participant Q as 审核队列
+  participant Q as 身份例外队列
   A->>K: 在授权产品中完成研究并导出文件
   A->>I: 从私有目录导入 JSON
   I->>I: 校验格式、文件哈希、许可和批次元数据
@@ -87,10 +87,16 @@ sequenceDiagram
   alt 主体未唯一解析
     D->>Q: 创建实体提及审核项，不生成事件
   else 主体已验证
-    D->>G: 创建 in_review 候选与证据
-    G->>Q: 强制人工审核，不更新快照
+    D->>G: 创建事件候选与证据
+    alt URL、来源、可信度和风险均通过
+      G->>D: 自动发布并更新快照
+    else 命中质量或风险条件
+      G->>D: 保存 unconfirmed_lead，不创建人工任务
+    end
   end
 ```
+
+URL 验证是受控外部读取：`EXTERNAL_CALLS_ENABLED=false` 时不发请求并将记录降级为未确认；开启后仍受 `SOURCE_URL_MAX_CHECKS_PER_IMPORT` 限制，且拒绝私网、回环和非 HTTP(S) 目标。该步骤不调用模型或付费 API，请求数写入 `usage_ledger`。
 
 ## 7. DeepSeek 低成本抽取
 

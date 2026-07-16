@@ -14,7 +14,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `user_role_assignments` | `user_id`, `role_id`, `scope_id`, validity | 复合唯一；FK user/role；索引有效授权 |
 | `funds` | `id`, `tenant_id`, `name`, `code`, `status`, `visibility_scope` | 唯一 `(tenant_id, code)`；索引 tenant/status |
 | `fund_access_grants` | `user_id`, `fund_id`, `permission`, validity | 复合唯一；FK user/fund；索引 fund/user |
-| `companies` | `id`, `credit_code`, `legal_name`, `registered_region`, `identity_status`, `tenant_id?`, `visibility_scope` | 信用代码条件唯一；规范名称/地区索引；私有主体含 tenant |
+| `companies` | `id`, `credit_code`, `legal_name`, `registered_region`, `official_website`, `identity_status`, `tenant_id?`, `visibility_scope` | 信用代码条件唯一；规范名称/地区索引；已核验官网作为身份锚点；私有主体含 tenant |
 | `company_aliases` | `id`, `company_id`, `alias`, `alias_type`, validity, `verification_status`, `source_id` | 唯一 `(company_id, normalized_alias, alias_type, valid_from)`；别名检索索引 |
 | `company_relationships` | `from_company_id`, `to_company_id`, `relationship_type`, validity, evidence | 禁止自关联；版本化唯一；双向查询索引 |
 | `investments` | `id`, `tenant_id`, `fund_id`, `company_id`, amount, currency, ownership, internal_valuation, `visibility_scope` | FK tenant/fund/company；同一轮次条件唯一；RLS；fund/company 索引 |
@@ -26,13 +26,13 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | --- | --- | --- |
 | `sources` | 来源主体、等级、类型、许可、保留策略、基础 URL | 唯一来源代码；等级/许可索引 |
 | `source_connectors` | Provider 配置引用、能力、租户范围、启用状态；只存 Secret 引用 | 唯一 `(tenant_id, provider_code, connector_name)`；不存明文密钥 |
-| `raw_documents` | source、可选导入批次、外部记录 ID、规范 URL、标题、时间、哈希、存储引用、许可 | `document_dedupe_key` 唯一；内容哈希、导入批次和发布时间索引 |
+| `raw_documents` | source、可选导入批次、外部记录 ID、规范 URL、标题、时间/日期精度、URL 检查元数据、哈希、存储引用、许可 | `document_dedupe_key` 唯一；内容哈希、导入批次和发布时间索引 |
 | `entity_mentions` | 文档中的公司候选、命中依据、候选集合、置信度、解析状态 | 唯一 `(raw_document_id, mention_span_hash, candidate_company_id)`；待解析索引 |
-| `events` | 公司、类型/子类、状态、五项评价、事实、不确定性、事件指纹、版本关系 | 唯一 `(company_id, fingerprint_version, event_fingerprint)`；公司/状态/发生时间索引 |
+| `events` | 公司、类型/子类、状态、发布路由/策略版本/原因、五项评价、事实、不确定性、时间/日期精度、事件指纹、版本关系 | 唯一 `(company_id, fingerprint_version, event_fingerprint)`；公司/状态/发生时间索引 |
 | `event_evidence` | 事件到文档或结构化记录的证据片段、位置、支撑类型 | 唯一 `(event_id, raw_document_id, span_hash)`；文档反查索引 |
 | `metric_definitions` | 指标编码、类型、单位集合、周期和行业命名空间 | 唯一 `metric_code`; 行业索引 |
 | `metric_observations` | 公司指标历史值、单位、期间、`as_of_date`、来源性质、审核状态 | 观测幂等键唯一；公司/指标/基准日降序索引 |
-| `company_snapshots` | 派生状态、信息缺口、新鲜度、构建版本、事实水位 | 唯一 `(company_id, snapshot_version)`；当前快照条件唯一 |
+| `company_snapshots` | 派生状态、信息缺口、新鲜度、构建版本、可空的事实水位 | 唯一 `(company_id, snapshot_version)`；当前快照条件唯一；没有可靠事件/来源日期时 `data_as_of` 保持空 |
 | `report_templates` | 固定模板、版本、适用报告类型和可见范围 | 唯一 `(template_code, version, tenant_id)` |
 | `generated_reports` | 模板版本、事实水位、`as_of_date`、存储引用、可见范围 | 唯一报告幂等键；tenant/fund/as-of 索引 |
 | `notifications` | 已批准事件/报告的通知投递状态和幂等键 | 投递幂等键唯一；状态/计划时间索引 |
@@ -44,7 +44,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `refresh_policies` | TTL、升降频、冷却、预算和 Provider 规则的版本化配置 | 唯一 `(tenant_id, code, version)`；仅一个活动版本 |
 | `refresh_jobs` | company、原因、优先级、状态、幂等键、租约、预计成本 | 幂等键唯一；同公司/类型活跃任务部分唯一；领取索引 |
 | `refresh_runs` | 每次尝试、检查点、Provider 结果、错误、变化计数、起止时间 | FK job；job/attempt 唯一；状态/开始时间索引 |
-| `research_imports` | tenant、导入人、批次、格式、工具、原始文件哈希、许可、解析计数与状态 | `(tenant_id, batch_id)` 和 `(tenant_id, file_hash, parser_version)` 唯一；机构管理员 RLS；状态索引 |
+| `research_imports` | tenant、导入人、批次、格式、工具、原始文件哈希、许可、自动发布/未确认/身份审核计数与状态 | `(tenant_id, batch_id)` 和 `(tenant_id, file_hash, parser_version)` 唯一；机构管理员 RLS；状态索引 |
 | `review_queue` | 事件或实体提及、触发规则、状态、分配人、决定和理由 | `event_id` 与 `entity_mention_id` 必须且只能存在一个；每个对象唯一；状态索引 |
 | `usage_ledger` | task/run/company/tenant/provider、调用量、Token、估算/实际费用、有效产出 | 用量幂等键唯一；tenant/company/provider/日期索引 |
 | `prompt_versions` | prompt code、版本、模板哈希、Schema 版本、状态 | 唯一 `(prompt_code, version)`；活动版本条件唯一 |
@@ -85,6 +85,7 @@ erDiagram
 
 - `occurred_at`：事件实际发生时间；未知可空，不得用抓取时间填充。
 - `published_at`：来源首次发布时间；未知可空并保留原因。
+- `published_on`：来源只提供日期而没有可靠时刻时使用；不得虚构为当天零点。
 - `observed_at`：系统首次看到该来源或观测的时间，必填。
 - `as_of_date`：指标、快照或报告覆盖到的业务基准日。
 - `created_at`：数据库记录写入时间，不能替代以上业务时间。
@@ -101,7 +102,7 @@ erDiagram
 
 ## 8. 发布、纠错和历史保留
 
-事件状态为 `candidate`、`in_review`、`published`、`rejected`、`retracted`、`corrected`。驳回保留候选与理由；撤回保留原记录并从当前快照排除；纠错创建新事件版本，以 `corrects_event_id` 指向旧版本，原事件标记 `corrected`。发布事件至少有一条证据。审核发布、事件版本切换和新快照指针在同一事务中完成。
+事件状态为 `candidate`、`in_review`、`published`、`rejected`、`retracted`、`corrected`；发布路径另存 `publication_route`、`publication_policy_version` 和 `publication_reasons`。`unconfirmed_lead` 当前是 `candidate` 的路由标签，不进入快照；`auto_published` 只有在身份、证据和策略条件同时满足时才进入 `published`。驳回保留候选与理由；撤回保留原记录并从当前快照排除；纠错创建新事件版本，以 `corrects_event_id` 指向旧版本，原事件标记 `corrected`。发布事件至少有一条证据。自动发布或人工确认、事件版本切换和新快照指针均在同一事务中完成。
 
 ## 9. 租户、基金与可见范围
 
@@ -115,8 +116,9 @@ flowchart LR
   R --> H[内容哈希和存储引用]
   H --> M[实体提及与匹配依据]
   M --> C[候选事件或指标观测]
-  C --> V[证据校验与人工审核]
-  V --> P[已发布事实]
+  C --> V[身份、证据与风险规则校验]
+  V --> P[自动发布或人工确认的事实]
+  V --> L[未确认线索]
   P --> S[版本化公司快照]
   S --> G[固定模板报告]
   J[任务与运行记录] -.解释.-> R
