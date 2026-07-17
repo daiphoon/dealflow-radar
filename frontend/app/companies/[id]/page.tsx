@@ -149,7 +149,7 @@ function EventCard({
       ) : null}
       {event.evidence.map((evidence) => {
         const sourceUrl = evidence.final_url ?? evidence.canonical_url;
-        const sourceAvailable = evidence.url_health_status === "healthy";
+        const sourceAvailable = evidence.link_display_allowed;
         return (
           <div className="evidence" key={evidence.id}>
             <div>
@@ -163,10 +163,17 @@ function EventCard({
               </a>
             ) : (
               <span className="muted">
-                来源链接{evidence.url_health_status === "unchecked" ? "尚未检查" : "当前不可用"}
+                {evidence.url_health_status === "broken"
+                  ? "来源链接已失效"
+                  : "来源链接不可开放"}
                 {evidence.url_http_status ? `（HTTP ${evidence.url_http_status}）` : ""}
               </span>
             )}
+            {evidence.url_health_status === "unchecked" ? (
+              <p className="link-warning">尚未自动验证；可打开不代表证据已实质核验。</p>
+            ) : evidence.url_checked_at ? (
+              <span className="muted">链接检查时间：{formatDate(evidence.url_checked_at)}</span>
+            ) : null}
           </div>
         );
       })}

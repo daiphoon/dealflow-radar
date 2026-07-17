@@ -4,7 +4,7 @@
 
 PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；不修改已应用迁移。UUID 主键、UTC `timestamptz`、显式外键和状态约束为默认。原始事实追加保存，派生快照可重建。个人、机构与基金私有行必须通过应用授权和 PostgreSQL 行级安全（RLS）双重限制。
 
-本文件同时描述当前 `0009` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线和共享公司精确查询已经实现；标记为“目标”的 organization、watchlist、正式认证和商业权益对象仍未实现。当前 `tenant` 继续作为技术隔离边界，当前用户仍是 tenant 绑定的 Demo 身份。
+本文件同时描述当前 `0010` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询和受控共享事实晋升已经实现；标记为“目标”的 organization、watchlist、正式认证和商业权益对象仍未实现。当前 `tenant` 继续作为技术隔离边界，当前用户仍是 tenant 绑定的 Demo 身份。
 
 ## 2. 表目录：身份、投资与权限
 
@@ -37,7 +37,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `raw_documents` | source、可选导入批次、外部记录 ID、规范 URL、标题、时间、哈希、存储引用、许可、独立作用域和所有者 | 文档共享资格不继承事件；外部记录与去重键按共享/个人 owner/机构 owner 分别唯一 |
 | `entity_mentions` | 文档中的公司候选、命中依据、候选集合、置信度、解析状态 | 唯一 `(raw_document_id, mention_span_hash, candidate_company_id)`；待解析索引 |
 | `events` | 公司、类型/子类、业务状态、发布路由、作用域、所有者、审核/证据状态、五项评价、事实、时间和事件指纹 | 共享事件全局去重；私有候选在所有者范围内去重；业务状态不推断权限 |
-| `event_evidence` | 事件到文档或结构化记录的证据引用、最小片段、支撑类型、作用域和许可 | 证据引用独立授权；不得因事件共享而暴露受限原文 |
+| `event_evidence` | 事件到文档或结构化记录的证据引用、最小片段、支撑类型、作用域和许可；共享展示引用保存许可允许的来源快照并关联原私有引用 | 私有引用必须关联原文档；共享展示引用不关联私有原文档，使用 `source_event_evidence_id` 保留血缘；不得因事件共享而暴露受限原文 |
 | `metric_definitions` | 指标编码、类型、单位集合、周期和行业命名空间 | 唯一 `metric_code`; 行业索引 |
 | `metric_observations` | 公司指标历史值、单位、期间、`as_of_date`、来源性质、审核状态 | 观测幂等键唯一；公司/指标/基准日降序索引 |
 | `company_snapshots` | 派生状态、信息缺口、新鲜度、构建版本、可空的事实水位 | 唯一 `(company_id, snapshot_version)`；当前快照条件唯一；没有可靠事件/来源日期时 `data_as_of` 保持空 |
@@ -55,6 +55,8 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `research_imports` | tenant、导入人、批次、格式、工具、原始文件哈希、许可、自动发布/未确认/身份审核计数与状态 | `(tenant_id, batch_id)` 和 `(tenant_id, file_hash, parser_version)` 唯一；机构管理员 RLS；状态索引 |
 | `official_identity_verifications` | tenant、公司候选、官方原文档、查询词、工商全称、信用代码、注册地、登记状态、核验结果/规则/时间 | 每份原文档唯一核验记录；tenant/状态/时间及信用代码索引；管理员写、审核员读 RLS |
 | `review_queue` | 事件或实体提及、触发规则、状态、分配人、决定和理由 | `event_id` 与 `entity_mention_id` 必须且只能存在一个；每个对象唯一；状态索引 |
+| `event_sharing_decisions` | 平台管理员的晋升、拒绝和撤回决定；操作者、理由、私有来源事件、目标共享事件、共享表述和策略版本 | 幂等键唯一；来源/共享事件和操作者索引；只追加，不允许应用角色更新或删除 |
+| `event_sharing_decision_evidence` | 每次共享决定采用的私有证据引用和当时展示快照 | 每个决定与来源证据唯一；只追加；不授予原文档共享权限 |
 | `usage_ledger` | task/run/company/tenant/provider、调用量、Token、估算/实际费用、有效产出 | 用量幂等键唯一；tenant/company/provider/日期索引 |
 | `usage_records`（目标） | 查询、报告、刷新和席位等产品权益消耗 | 订阅主体、用户、动作、时间窗和幂等键；与成本 ledger 分离 |
 | `prompt_versions` | prompt code、版本、模板哈希、Schema 版本、状态 | 唯一 `(prompt_code, version)`；活动版本条件唯一 |
@@ -81,6 +83,9 @@ erDiagram
   COMPANIES ||--o{ ENTITY_MENTIONS : candidate
   COMPANIES ||--o{ EVENTS : concerns
   EVENTS ||--|{ EVENT_EVIDENCE : requires
+  EVENTS ||--o{ EVENT_SHARING_DECISIONS : source_or_target
+  EVENT_SHARING_DECISIONS ||--o{ EVENT_SHARING_DECISION_EVIDENCE : records
+  EVENT_EVIDENCE ||--o{ EVENT_SHARING_DECISION_EVIDENCE : selected
   EVENTS o|--o| REVIEW_QUEUE : reviews
   ENTITY_MENTIONS o|--o| REVIEW_QUEUE : reviews
   RAW_DOCUMENTS ||--o{ EVENT_EVIDENCE : supports
@@ -112,7 +117,7 @@ erDiagram
 
 ## 8. 发布、纠错和历史保留
 
-事件状态为 `candidate`、`in_review`、`published`、`rejected`、`retracted`、`corrected`；发布路径另存 `publication_route`、`publication_policy_version` 和 `publication_reasons`。`unconfirmed_lead` 当前是 `candidate` 的路由标签，不进入快照；`auto_published` 只有在身份、证据和策略条件同时满足时才进入 `published`。驳回保留候选与理由；撤回保留原记录并从当前快照排除；纠错创建新事件版本，以 `corrects_event_id` 指向旧版本，原事件标记 `corrected`。发布事件至少有一条证据。自动发布或人工确认、事件版本切换和新快照指针均在同一事务中完成。
+事件状态为 `candidate`、`in_review`、`published`、`rejected`、`retracted`、`corrected`；发布路径另存 `publication_route`、`publication_policy_version` 和 `publication_reasons`。`unconfirmed_lead` 当前是 `candidate` 的路由标签，不进入快照。受控晋升不会修改私有候选的作用域或所有者，而是创建独立 `platform_shared` 事件；共享指纹全局唯一，同一私有候选的决定键幂等，两个机构的相同事实可关联同一共享事件。驳回只追加决定记录并保留候选；撤回将共享事件标为 `retracted`，重建共享快照但不删除私有候选、原文档或审计记录。发布事件至少有一条允许展示的证据引用。当前四个外部和自动开关保持关闭，受控晋升只允许人工 `platform_admin` 路径。
 
 ## 9. 租户、基金与可见范围
 

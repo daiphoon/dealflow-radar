@@ -443,6 +443,13 @@ dd {
   font-weight: 700;
 }
 
+.link-warning {
+  margin: 0;
+  color: #725014;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .empty-state {
   padding: 38px;
   border: 1px dashed #bdc9c4;
@@ -610,6 +617,21 @@ dd {
 .review-form textarea:focus {
   border-color: var(--accent);
   outline: 3px solid rgb(20 92 71 / 12%);
+}
+
+.review-form fieldset {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.review-form legend {
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .review-form > p {

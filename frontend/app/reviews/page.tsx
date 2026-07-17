@@ -1,8 +1,20 @@
 import Link from "next/link";
 
-import { ApiError, getReviewWorkbench, type ReviewWorkbenchItem } from "@/lib/api";
+import {
+  ApiError,
+  getReviewWorkbench,
+  getSharingCandidates,
+  type ReviewWorkbenchItem,
+  type SharingCandidate,
+} from "@/lib/api";
 
-import { submitIdentityResolution, submitReviewDecision } from "./actions";
+import {
+  submitIdentityResolution,
+  submitReviewDecision,
+  submitSharingPromotion,
+  submitSharingRejection,
+  submitSharingRetraction,
+} from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +57,9 @@ const resultMessages: Record<string, string> = {
   approve: "已批准候选事件并更新发布状态。",
   reject: "已驳回候选事件，审核理由已保留。",
   identity_resolved: "已确认工商主体，原始记录已按现行策略自动重新路由。",
+  sharing_promoted: "已生成独立的平台共享事实，原私有候选与底稿保持不变。",
+  sharing_rejected: "已拒绝本次共享晋升，决定理由已记录。",
+  sharing_retracted: "已撤回平台共享事实，个人路径不再展示。",
 };
 
 const errorMessages: Record<string, string> = {
@@ -53,6 +68,9 @@ const errorMessages: Record<string, string> = {
   identity_forbidden: "候选核验已过期、与该线索无关，或当前身份无权修改主数据。",
   forbidden: "该审核项不可决定、已被处理，或当前身份无权操作。",
   request_failed: "决定提交失败，数据未变更，请检查后端状态。",
+  invalid_sharing_input: "请完整填写共享表述、理由，选择证据并确认证据支持。",
+  sharing_ineligible: "该候选未满足晋升条件：请检查主体、风险、证据、链接和许可状态。",
+  sharing_failed: "共享事实决定提交失败，原私有数据未变更。",
 };
 
 function formatDateTime(value: string | null): string {
@@ -180,7 +198,7 @@ function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
 
           <div className="review-evidence-list">
             {event.evidence.map((evidence) => {
-              const sourceAvailable = evidence.url_health_status === "healthy";
+              const sourceAvailable = evidence.link_display_allowed;
               return (
                 <div className="evidence" key={evidence.id}>
                   <div>
@@ -202,12 +220,18 @@ function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
                       </a>
                     ) : (
                       <span className="muted">
-                        来源链接
-                        {evidence.url_health_status === "unchecked" ? "尚未检查" : "当前不可用"}
+                        {evidence.url_health_status === "broken"
+                          ? "来源链接已失效"
+                          : "来源链接不可开放"}
                         {evidence.url_http_status ? `（HTTP ${evidence.url_http_status}）` : ""}
                       </span>
                     )}
                   </div>
+                  {evidence.url_health_status === "unchecked" ? (
+                    <p className="link-warning">尚未自动验证；可打开不代表证据已实质核验。</p>
+                  ) : evidence.url_checked_at ? (
+                    <p className="muted">链接检查时间：{formatDateTime(evidence.url_checked_at)}</p>
+                  ) : null}
                 </div>
               );
             })}
@@ -323,6 +347,225 @@ function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
   );
 }
 
+function SharingCandidateCard({ candidate }: { candidate: SharingCandidate }) {
+  const event = candidate.event;
+  const hasUncheckedLink = event.evidence.some(
+    (evidence) => evidence.url_health_status === "unchecked",
+  );
+  const latestDecision = candidate.decisions.at(-1);
+  const displayState =
+    candidate.shared_event_status === "published"
+      ? "shared"
+      : candidate.shared_event_status === "retracted"
+        ? "retracted"
+        : latestDecision?.action === "reject"
+          ? "rejected"
+          : "pending";
+  const displayStateLabel = {
+    shared: "已共享",
+    retracted: "已撤回",
+    rejected: "已拒绝",
+    pending: "待决定",
+  }[displayState];
+  return (
+    <article className="review-card">
+      <div className="review-card-heading">
+        <div>
+          <p className="eyebrow">
+            {candidate.company_legal_name} · {candidate.company_credit_code ?? "信用代码缺失"}
+          </p>
+          <h3>{event.title}</h3>
+        </div>
+        <span
+          className={`review-status review-status-${
+            displayState === "shared"
+              ? "approved"
+              : displayState === "pending"
+                ? "pending"
+                : "rejected"
+          }`}
+        >
+          {displayStateLabel}
+        </span>
+      </div>
+      <p className="privacy-note">
+        原作用域：{candidate.source_scope} · 来源所有者：{candidate.owner_name}
+        。晋升后原候选与原文仍归原所有者。
+      </p>
+      {candidate.identity_ambiguous ? (
+        <div className="feedback feedback-error">主体存在歧义，当前不允许晋升。</div>
+      ) : null}
+      <p className="review-summary">{event.summary}</p>
+      <dl className="score-grid review-score-grid">
+        <div>
+          <dt>类别</dt>
+          <dd>{eventTypeLabels[event.event_type] ?? event.event_type}</dd>
+        </div>
+        <div>
+          <dt>方向</dt>
+          <dd>{directionLabels[event.direction] ?? event.direction}</dd>
+        </div>
+        <div>
+          <dt>重要性</dt>
+          <dd>{event.materiality_score}/100</dd>
+        </div>
+        <div>
+          <dt>风险</dt>
+          <dd>{riskLabels[event.risk_severity] ?? event.risk_severity}</dd>
+        </div>
+        <div>
+          <dt>可见证据</dt>
+          <dd>{event.evidence.length} 条</dd>
+        </div>
+      </dl>
+
+      <div className="review-evidence-list">
+        {event.evidence.map((evidence) => (
+          <div className="evidence" key={evidence.id}>
+            <div>
+              <span className="eyebrow">
+                证据 · {evidence.source_name} · {evidence.source_quality} 级
+              </span>
+              <strong>{evidence.title}</strong>
+            </div>
+            <blockquote>{evidence.excerpt}</blockquote>
+            <div className="evidence-footer">
+              <span>来源日期：{formatSourceDate(evidence.published_at, evidence.published_on)}</span>
+              {evidence.link_display_allowed ? (
+                <a
+                  href={evidence.final_url ?? evidence.canonical_url}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  查看来源 ↗
+                </a>
+              ) : (
+                <span className="muted">
+                  {evidence.url_health_status === "broken"
+                    ? "来源链接已失效"
+                    : "来源链接不可开放"}
+                </span>
+              )}
+            </div>
+            {evidence.url_health_status === "unchecked" ? (
+              <p className="link-warning">尚未自动验证；可打开不代表证据已实质核验。</p>
+            ) : evidence.url_checked_at ? (
+              <p className="muted">链接检查时间：{formatDateTime(evidence.url_checked_at)}</p>
+            ) : null}
+          </div>
+        ))}
+      </div>
+
+      {displayState === "shared" && candidate.shared_event_id ? (
+        <form action={submitSharingRetraction} className="review-form">
+          <input name="shared_event_id" type="hidden" value={candidate.shared_event_id} />
+          <label htmlFor={`retract-reason-${candidate.source_event_id}`}>撤回理由</label>
+          <textarea
+            id={`retract-reason-${candidate.source_event_id}`}
+            maxLength={1000}
+            minLength={3}
+            name="reason"
+            required
+            rows={3}
+          />
+          <button className="button button-reject" type="submit">
+            撤回共享事实
+          </button>
+          <p>撤回只停止个人路径展示，不删除原候选、证据或审计记录。</p>
+        </form>
+      ) : displayState === "pending" ? (
+        <>
+          <form action={submitSharingPromotion} className="review-form">
+            <input name="source_event_id" type="hidden" value={candidate.source_event_id} />
+            <label htmlFor={`sharing-title-${candidate.source_event_id}`}>共享事实标题</label>
+            <textarea
+              defaultValue={event.title}
+              id={`sharing-title-${candidate.source_event_id}`}
+              maxLength={200}
+              minLength={3}
+              name="title"
+              required
+              rows={2}
+            />
+            <label htmlFor={`sharing-summary-${candidate.source_event_id}`}>谨慎共享表述</label>
+            <textarea
+              defaultValue={event.summary}
+              id={`sharing-summary-${candidate.source_event_id}`}
+              maxLength={2000}
+              minLength={3}
+              name="summary"
+              required
+              rows={4}
+            />
+            <fieldset>
+              <legend>选择允许展示的证据引用</legend>
+              {event.evidence.map((evidence) => (
+                <label className="review-confirmation" key={evidence.id}>
+                  <input defaultChecked name="evidence_ids" type="checkbox" value={evidence.id} />
+                  <span>
+                    {evidence.source_name}：{evidence.title}（{evidence.url_health_status}）
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+            <label htmlFor={`sharing-reason-${candidate.source_event_id}`}>晋升理由</label>
+            <textarea
+              id={`sharing-reason-${candidate.source_event_id}`}
+              maxLength={1000}
+              minLength={3}
+              name="reason"
+              required
+              rows={3}
+            />
+            <label className="review-confirmation">
+              <input name="confirm_evidence_support" required type="checkbox" />
+              <span>我已确认共享表述受所选证据支持。</span>
+            </label>
+            {hasUncheckedLink ? (
+              <label className="review-confirmation">
+                <input name="confirm_unchecked_links" required type="checkbox" />
+                <span>我已人工打开并检查未自动验证的链接。</span>
+              </label>
+            ) : null}
+            <button className="button button-approve" type="submit">
+              生成独立共享事实
+            </button>
+            <p>操作不会改变原私有事件和原始文档的作用域。</p>
+          </form>
+          <form action={submitSharingRejection} className="review-form">
+            <input name="source_event_id" type="hidden" value={candidate.source_event_id} />
+            <label htmlFor={`reject-sharing-${candidate.source_event_id}`}>拒绝共享理由</label>
+            <textarea
+              id={`reject-sharing-${candidate.source_event_id}`}
+              maxLength={1000}
+              minLength={3}
+              name="reason"
+              required
+              rows={3}
+            />
+            <button className="button button-reject" type="submit">
+              拒绝本次共享晋升
+            </button>
+          </form>
+        </>
+      ) : (
+        <p className="privacy-note">
+          {displayState === "retracted"
+            ? "该共享事实已停止对个人路径展示；原私有候选和审计记录继续保留。"
+            : "该私有候选已被拒绝晋升；原记录继续保持私有。"}
+        </p>
+      )}
+      {latestDecision ? (
+        <div className="decision-note">
+          <strong>最近决定：{latestDecision.action}</strong>
+          <span>{latestDecision.reason}</span>
+          <span>{formatDateTime(latestDecision.created_at)}</span>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
 export default async function ReviewsPage({
   searchParams,
 }: {
@@ -331,6 +574,12 @@ export default async function ReviewsPage({
   const query = await searchParams;
   try {
     const reviews = await getReviewWorkbench();
+    let sharingCandidates: SharingCandidate[] = [];
+    try {
+      sharingCandidates = await getSharingCandidates();
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 403)) throw error;
+    }
     const sortedReviews = [...reviews].sort((left, right) => {
       const statusDifference = Number(left.status !== "pending") - Number(right.status !== "pending");
       return statusDifference || left.created_at.localeCompare(right.created_at);
@@ -341,9 +590,9 @@ export default async function ReviewsPage({
         <section className="hero detail-hero">
           <div>
             <p className="eyebrow">本机受控验证</p>
-            <h1>身份例外与历史审核</h1>
+            <h1>身份例外与共享事实审核</h1>
             <p>
-              新导入只把身份歧义放到这里；既有事件审核记录继续保留。打开页面不会产生外部调用。
+              平台管理员可把合格的私有候选生成独立共享事实；原底稿不共享。打开页面不会产生外部调用。
             </p>
           </div>
           <Link className="back-link" href="/">
@@ -356,6 +605,23 @@ export default async function ReviewsPage({
         ) : null}
         {query.error && errorMessages[query.error] ? (
           <div className="feedback feedback-error">{errorMessages[query.error]}</div>
+        ) : null}
+
+        {sharingCandidates.length ? (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">平台管理员专用</p>
+                <h2>受控平台共享事实晋升</h2>
+              </div>
+              <span className="muted">{sharingCandidates.length} 条私有候选</span>
+            </div>
+            <div className="review-list">
+              {sharingCandidates.map((candidate) => (
+                <SharingCandidateCard candidate={candidate} key={candidate.source_event_id} />
+              ))}
+            </div>
+          </section>
         ) : null}
 
         <section className="panel">

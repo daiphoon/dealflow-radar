@@ -22,17 +22,27 @@ from backend.app.schemas import (
     ReviewDecisionIn,
     ReviewOut,
     ReviewWorkbenchOut,
+    SharingActionOut,
+    SharingCandidateOut,
+    SharingPromotionIn,
+    SharingRejectionIn,
+    SharingRetractionIn,
 )
 from backend.app.services import (
     AccessDeniedError,
     NotFoundError,
+    PromotionEligibilityError,
     decide_review,
     get_company_detail,
     ingest_mock_records,
     list_companies,
     list_review_workbench,
+    list_sharing_candidates,
+    promote_private_event,
+    reject_private_event,
     request_refresh,
     resolve_identity_review,
+    retract_shared_event,
     search_companies,
     user_has_role,
 )
@@ -182,6 +192,91 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except AccessDeniedError as error:
             raise HTTPException(status_code=403, detail=str(error)) from error
+
+    @app.get("/api/v1/sharing-candidates", response_model=list[SharingCandidateOut])
+    def sharing_candidates(
+        user: User = Depends(get_current_user), session: Session = Depends(get_session)
+    ) -> list[SharingCandidateOut]:
+        if not app.state.settings.review_workbench_enabled:
+            raise HTTPException(status_code=404, detail="review_workbench_disabled")
+        try:
+            return list_sharing_candidates(session, user)
+        except AccessDeniedError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+
+    @app.post(
+        "/api/v1/events/{source_event_id}/sharing/promotion",
+        response_model=SharingActionOut,
+    )
+    def sharing_promotion(
+        source_event_id: UUID,
+        payload: SharingPromotionIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> SharingActionOut:
+        if not app.state.settings.review_workbench_enabled:
+            raise HTTPException(status_code=404, detail="review_workbench_disabled")
+        try:
+            return promote_private_event(
+                session,
+                source_event_id,
+                user,
+                title=payload.title,
+                summary=payload.summary,
+                reason=payload.reason,
+                evidence_ids=payload.evidence_ids,
+                confirm_evidence_support=payload.confirm_evidence_support,
+                confirm_unchecked_links=payload.confirm_unchecked_links,
+                auto_publish_enabled=app.state.settings.publication_policy.enabled,
+            )
+        except NotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except AccessDeniedError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except PromotionEligibilityError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post(
+        "/api/v1/events/{source_event_id}/sharing/rejection",
+        response_model=SharingActionOut,
+    )
+    def sharing_rejection(
+        source_event_id: UUID,
+        payload: SharingRejectionIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> SharingActionOut:
+        if not app.state.settings.review_workbench_enabled:
+            raise HTTPException(status_code=404, detail="review_workbench_disabled")
+        try:
+            return reject_private_event(session, source_event_id, user, payload.reason)
+        except NotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except AccessDeniedError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except PromotionEligibilityError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post(
+        "/api/v1/shared-events/{shared_event_id}/retraction",
+        response_model=SharingActionOut,
+    )
+    def sharing_retraction(
+        shared_event_id: UUID,
+        payload: SharingRetractionIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> SharingActionOut:
+        if not app.state.settings.review_workbench_enabled:
+            raise HTTPException(status_code=404, detail="review_workbench_disabled")
+        try:
+            return retract_shared_event(session, shared_event_id, user, payload.reason)
+        except NotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except AccessDeniedError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except PromotionEligibilityError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     @app.post("/api/v1/companies/{company_id}/refresh", response_model=RefreshResult)
     def refresh_company(

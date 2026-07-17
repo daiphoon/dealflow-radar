@@ -34,6 +34,8 @@ from backend.app.models import (
     EntityMention,
     Event,
     EventEvidence,
+    EventSharingDecision,
+    EventSharingDecisionEvidence,
     Fund,
     FundAccessGrant,
     Investment,
@@ -77,9 +79,13 @@ from backend.app.schemas import (
     RefreshResult,
     ResearchImportResult,
     ReviewWorkbenchOut,
+    SharingActionOut,
+    SharingCandidateOut,
+    SharingDecisionOut,
 )
 
 MANUAL_EVENT_FINGERPRINT_VERSION = "manual-v1"
+SHARING_POLICY_VERSION = "controlled-promotion-v1"
 
 
 class AccessDeniedError(Exception):
@@ -91,6 +97,10 @@ class NotFoundError(Exception):
 
 
 class ImportConflictError(Exception):
+    pass
+
+
+class PromotionEligibilityError(Exception):
     pass
 
 
@@ -172,6 +182,14 @@ def seed_demo_entities(session: Session, records: list[MockResearchRecord]) -> N
         code="reviewer",
         permissions=["review:read", "review:decide"],
         scope_type="tenant",
+    )
+    _add_if_missing(
+        session,
+        Role,
+        demo_uuid("role-platform-admin"),
+        code="platform_admin",
+        permissions=["sharing:read", "sharing:decide"],
+        scope_type="platform",
     )
     investor_role = _add_if_missing(
         session,
@@ -1487,36 +1505,146 @@ def _readable_scope_clause(
     return or_(*clauses)
 
 
+def _scope_is_readable(
+    record: RawDocument,
+    user: User,
+    *,
+    allow_organization_private: bool,
+    allow_platform_admin_private: bool = False,
+) -> bool:
+    if record.visibility_scope == PLATFORM_SHARED_SCOPE:
+        return record.owner_user_id is None and record.owner_tenant_id is None
+    if record.visibility_scope == PERSONAL_PRIVATE_SCOPE:
+        return (
+            allow_platform_admin_private or record.owner_user_id == user.id
+        ) and record.owner_tenant_id is None
+    if record.visibility_scope == ORGANIZATION_PRIVATE_SCOPE:
+        return (
+            (allow_platform_admin_private or allow_organization_private)
+            and record.owner_user_id is None
+            and (allow_platform_admin_private or record.owner_tenant_id == user.tenant_id)
+        )
+    return False
+
+
+def _scope_owner_matches(
+    left: Event | EventEvidence | RawDocument | EntityMention,
+    right: Event | EventEvidence | RawDocument | EntityMention,
+) -> bool:
+    return (
+        left.visibility_scope == right.visibility_scope
+        and left.owner_user_id == right.owner_user_id
+        and left.owner_tenant_id == right.owner_tenant_id
+    )
+
+
+def _link_can_be_displayed(url: str, health_status: str, license_status: str | None) -> bool:
+    parsed = urlsplit(url)
+    return (
+        license_status == "public"
+        and parsed.scheme in {"http", "https"}
+        and bool(parsed.netloc)
+        and health_status in {"healthy", "unchecked"}
+    )
+
+
 def _event_out(
     session: Session,
     event: Event,
     user: User,
     *,
     allow_organization_private: bool,
+    allow_platform_admin_private: bool = False,
 ) -> EventOut:
-    evidence_rows = session.execute(
-        select(EventEvidence, RawDocument, Source)
-        .join(RawDocument, RawDocument.id == EventEvidence.raw_document_id)
-        .join(Source, Source.id == RawDocument.source_id)
-        .where(
-            EventEvidence.event_id == event.id,
-            _readable_scope_clause(
-                EventEvidence,
-                user,
-                allow_organization_private=allow_organization_private,
-            ),
-            _readable_scope_clause(
-                RawDocument,
-                user,
-                allow_organization_private=allow_organization_private,
-            ),
+    evidence_rows = list(
+        session.scalars(
+            select(EventEvidence).where(
+                EventEvidence.event_id == event.id,
+                *(
+                    (
+                        EventEvidence.visibility_scope.in_(
+                            [
+                                PLATFORM_SHARED_SCOPE,
+                                PERSONAL_PRIVATE_SCOPE,
+                                ORGANIZATION_PRIVATE_SCOPE,
+                            ]
+                        ),
+                    )
+                    if allow_platform_admin_private
+                    else (
+                        _readable_scope_clause(
+                            EventEvidence,
+                            user,
+                            allow_organization_private=allow_organization_private,
+                        ),
+                    )
+                ),
+            )
         )
-    ).all()
+    )
     evidence_items: list[EvidenceOut] = []
-    for evidence, document, source in evidence_rows:
+    for evidence in evidence_rows:
+        if event.visibility_scope != PLATFORM_SHARED_SCOPE and not _scope_owner_matches(
+            evidence, event
+        ):
+            continue
+        if evidence.display_allowed:
+            if not all(
+                [
+                    evidence.display_source_name,
+                    evidence.display_source_quality,
+                    evidence.display_title,
+                    evidence.display_canonical_url,
+                    evidence.display_observed_at,
+                ]
+            ):
+                continue
+            health_status = evidence.display_url_health_status or "unchecked"
+            evidence_items.append(
+                EvidenceOut(
+                    id=evidence.id,
+                    source_name=evidence.display_source_name,
+                    source_quality=evidence.display_source_quality,
+                    title=evidence.display_title,
+                    canonical_url=evidence.display_canonical_url,
+                    published_at=evidence.display_published_at,
+                    published_on=evidence.display_published_on,
+                    observed_at=evidence.display_observed_at,
+                    excerpt=evidence.evidence_excerpt,
+                    url_health_status=health_status,
+                    url_http_status=evidence.display_url_http_status,
+                    url_checked_at=evidence.display_url_checked_at,
+                    final_url=evidence.display_final_url,
+                    visibility_scope=evidence.visibility_scope,
+                    link_display_allowed=_link_can_be_displayed(
+                        evidence.display_final_url or evidence.display_canonical_url,
+                        health_status,
+                        evidence.display_license_status,
+                    ),
+                )
+            )
+            continue
+        if evidence.raw_document_id is None:
+            continue
+        document = session.get(RawDocument, evidence.raw_document_id)
+        if document is None:
+            continue
+        if not _scope_owner_matches(document, evidence):
+            continue
+        if not _scope_is_readable(
+            document,
+            user,
+            allow_organization_private=allow_organization_private,
+            allow_platform_admin_private=allow_platform_admin_private,
+        ):
+            continue
+        source = session.get(Source, document.source_id)
+        if source is None:
+            continue
         verification = document.payload.get("_source_verification", {})
         if not isinstance(verification, dict):
             verification = {}
+        health_status = str(verification.get("status", "unchecked"))
         evidence_items.append(
             EvidenceOut(
                 id=evidence.id,
@@ -1528,11 +1656,16 @@ def _event_out(
                 published_on=document.published_on,
                 observed_at=document.observed_at,
                 excerpt=evidence.evidence_excerpt,
-                url_health_status=str(verification.get("status", "unchecked")),
+                url_health_status=health_status,
                 url_http_status=verification.get("http_status"),
                 url_checked_at=verification.get("checked_at"),
                 final_url=verification.get("final_url"),
                 visibility_scope=evidence.visibility_scope,
+                link_display_allowed=_link_can_be_displayed(
+                    str(verification.get("final_url") or document.canonical_url),
+                    health_status,
+                    document.license_status if source.license_status == "public" else None,
+                ),
             )
         )
     return EventOut(
@@ -1700,6 +1833,492 @@ def list_review_workbench(
             )
         )
     return items
+
+
+def _require_platform_admin(session: Session, user: User) -> None:
+    if not user_has_role(session, user.id, "platform_admin"):
+        raise AccessDeniedError("platform administrator role required")
+
+
+def _event_has_identity_ambiguity(session: Session, event: Event) -> bool:
+    return bool(
+        session.scalar(
+            select(func.count())
+            .select_from(EntityMention)
+            .join(EventEvidence, EventEvidence.raw_document_id == EntityMention.raw_document_id)
+            .where(
+                EventEvidence.event_id == event.id,
+                or_(
+                    EntityMention.resolution_status != "verified",
+                    EntityMention.candidate_company_id.is_(None),
+                    EntityMention.candidate_company_id != event.company_id,
+                ),
+            )
+        )
+    )
+
+
+def _shared_event_for_source(session: Session, event: Event) -> Event | None:
+    return session.scalar(
+        select(Event).where(
+            Event.company_id == event.company_id,
+            Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+            Event.owner_user_id.is_(None),
+            Event.owner_tenant_id.is_(None),
+            Event.fingerprint_version == event.fingerprint_version,
+            Event.event_fingerprint == event.event_fingerprint,
+        )
+    )
+
+
+def _sharing_decision_out(decision: EventSharingDecision) -> SharingDecisionOut:
+    return SharingDecisionOut(
+        id=decision.id,
+        action=decision.action,
+        reason=decision.reason,
+        actor_user_id=decision.actor_user_id,
+        created_at=decision.created_at,
+        shared_event_id=decision.shared_event_id,
+    )
+
+
+def list_sharing_candidates(session: Session, user: User) -> list[SharingCandidateOut]:
+    _require_platform_admin(session, user)
+    events = list(
+        session.scalars(
+            select(Event)
+            .where(
+                Event.visibility_scope.in_([PERSONAL_PRIVATE_SCOPE, ORGANIZATION_PRIVATE_SCOPE]),
+                Event.status == "candidate",
+                Event.publication_route == "unconfirmed_lead",
+            )
+            .order_by(Event.created_at)
+        )
+    )
+    items: list[SharingCandidateOut] = []
+    for event in events:
+        company = session.get(Company, event.company_id)
+        if company is None:
+            continue
+        if event.visibility_scope == PERSONAL_PRIVATE_SCOPE:
+            owner_id = event.owner_user_id
+            owner = session.get(User, owner_id) if owner_id is not None else None
+            owner_type = "user"
+            owner_name = owner.display_name if owner is not None else "未知个人"
+        else:
+            owner_id = event.owner_tenant_id
+            owner = session.get(Tenant, owner_id) if owner_id is not None else None
+            owner_type = "tenant"
+            owner_name = owner.name if owner is not None else "未知机构"
+        if owner_id is None:
+            continue
+        shared_event = _shared_event_for_source(session, event)
+        decisions = list(
+            session.scalars(
+                select(EventSharingDecision)
+                .where(EventSharingDecision.source_event_id == event.id)
+                .order_by(EventSharingDecision.created_at)
+            )
+        )
+        items.append(
+            SharingCandidateOut(
+                source_event_id=event.id,
+                company_id=company.id,
+                company_legal_name=company.legal_name,
+                company_credit_code=company.credit_code,
+                source_scope=event.visibility_scope,
+                owner_type=owner_type,
+                owner_id=owner_id,
+                owner_name=owner_name,
+                identity_ambiguous=_event_has_identity_ambiguity(session, event),
+                shared_event_id=shared_event.id if shared_event is not None else None,
+                shared_event_status=shared_event.status if shared_event is not None else None,
+                event=_event_out(
+                    session,
+                    event,
+                    user,
+                    allow_organization_private=True,
+                    allow_platform_admin_private=True,
+                ),
+                decisions=[_sharing_decision_out(decision) for decision in decisions],
+            )
+        )
+    return items
+
+
+def _load_promotable_evidence(
+    session: Session,
+    source_event: Event,
+    evidence_ids: list[UUID],
+    *,
+    confirm_unchecked_links: bool,
+) -> list[tuple[EventEvidence, RawDocument, Source, DocumentVerification]]:
+    unique_ids = set(evidence_ids)
+    if len(unique_ids) != len(evidence_ids):
+        raise PromotionEligibilityError("duplicate evidence selection")
+    evidence_rows = list(
+        session.scalars(
+            select(EventEvidence).where(
+                EventEvidence.event_id == source_event.id,
+                EventEvidence.id.in_(unique_ids),
+            )
+        )
+    )
+    if len(evidence_rows) != len(unique_ids):
+        raise PromotionEligibilityError("selected evidence does not belong to source event")
+    loaded: list[tuple[EventEvidence, RawDocument, Source, DocumentVerification]] = []
+    for evidence in evidence_rows:
+        if evidence.raw_document_id is None or evidence.display_allowed:
+            raise PromotionEligibilityError("source evidence must retain its private raw document")
+        if not _scope_owner_matches(evidence, source_event):
+            raise PromotionEligibilityError("evidence scope does not match source event")
+        document = session.get(RawDocument, evidence.raw_document_id)
+        if document is None:
+            raise PromotionEligibilityError("evidence document not found")
+        if not _scope_owner_matches(document, evidence):
+            raise PromotionEligibilityError("evidence document scope does not match source event")
+        source = session.get(Source, document.source_id)
+        if source is None or not source.name.strip():
+            raise PromotionEligibilityError("evidence source name is required")
+        if document.license_status != "public" or source.license_status != "public":
+            raise PromotionEligibilityError("evidence license does not permit shared display")
+        verification = _stored_document_verification(document)
+        if not _link_can_be_displayed(
+            verification.final_url or document.canonical_url,
+            verification.status,
+            document.license_status,
+        ):
+            raise PromotionEligibilityError("evidence link is broken, unsafe, or restricted")
+        if verification.status == "unchecked" and not confirm_unchecked_links:
+            raise PromotionEligibilityError(
+                "unchecked evidence link requires administrator confirmation"
+            )
+        identity_mentions = list(
+            session.scalars(
+                select(EntityMention).where(EntityMention.raw_document_id == document.id)
+            )
+        )
+        if not identity_mentions or any(
+            mention.resolution_status != "verified"
+            or mention.candidate_company_id != source_event.company_id
+            or not _scope_owner_matches(mention, evidence)
+            for mention in identity_mentions
+        ):
+            raise PromotionEligibilityError(
+                "evidence company identity is unresolved or conflicting"
+            )
+        loaded.append((evidence, document, source, verification))
+    return loaded
+
+
+def _sharing_action_out(
+    decision: EventSharingDecision,
+    shared_event: Event | None,
+    *,
+    reused_shared_event: bool = False,
+) -> SharingActionOut:
+    return SharingActionOut(
+        action=decision.action,
+        decision_id=decision.id,
+        source_event_id=decision.source_event_id,
+        shared_event_id=decision.shared_event_id,
+        shared_event_status=shared_event.status if shared_event is not None else None,
+        reused_shared_event=reused_shared_event,
+    )
+
+
+def promote_private_event(
+    session: Session,
+    source_event_id: UUID,
+    user: User,
+    *,
+    title: str,
+    summary: str,
+    reason: str,
+    evidence_ids: list[UUID],
+    confirm_evidence_support: bool,
+    confirm_unchecked_links: bool,
+    auto_publish_enabled: bool,
+) -> SharingActionOut:
+    _require_platform_admin(session, user)
+    if auto_publish_enabled:
+        raise PromotionEligibilityError("automatic publication must remain disabled")
+    existing_decision = session.scalar(
+        select(EventSharingDecision).where(
+            EventSharingDecision.idempotency_key == _sha256(f"sharing:promote:{source_event_id}")
+        )
+    )
+    if existing_decision is not None:
+        shared_event = (
+            session.get(Event, existing_decision.shared_event_id)
+            if existing_decision.shared_event_id is not None
+            else None
+        )
+        return _sharing_action_out(existing_decision, shared_event, reused_shared_event=True)
+    source_event = session.get(Event, source_event_id)
+    if source_event is None:
+        raise NotFoundError("source event not found")
+    rejected_decision = session.scalar(
+        select(EventSharingDecision).where(
+            EventSharingDecision.source_event_id == source_event.id,
+            EventSharingDecision.action == "reject",
+        )
+    )
+    if rejected_decision is not None:
+        raise PromotionEligibilityError("source event was already rejected for sharing")
+    if source_event.visibility_scope not in {
+        PERSONAL_PRIVATE_SCOPE,
+        ORGANIZATION_PRIVATE_SCOPE,
+    }:
+        raise PromotionEligibilityError("only private events can be promoted")
+    if source_event.status != "candidate" or source_event.publication_route != "unconfirmed_lead":
+        raise PromotionEligibilityError("source event is not an unconfirmed candidate")
+    company = session.get(Company, source_event.company_id)
+    if company is None or not _is_platform_shared_company(company):
+        raise PromotionEligibilityError("company identity is not verified for shared catalog")
+    if _event_has_identity_ambiguity(session, source_event):
+        raise PromotionEligibilityError("company identity is ambiguous")
+    if source_event.risk_severity in {"high", "critical"}:
+        raise PromotionEligibilityError("serious negative or high-risk event cannot be promoted")
+    if not confirm_evidence_support:
+        raise PromotionEligibilityError("administrator must confirm evidence support")
+    loaded_evidence = _load_promotable_evidence(
+        session,
+        source_event,
+        evidence_ids,
+        confirm_unchecked_links=confirm_unchecked_links,
+    )
+    shared_event = _shared_event_for_source(session, source_event)
+    reused_shared_event = shared_event is not None
+    if shared_event is not None and shared_event.status != "published":
+        raise PromotionEligibilityError("matching shared fact is not currently publishable")
+    if shared_event is None:
+        shared_event = Event(
+            company_id=source_event.company_id,
+            visibility_scope=PLATFORM_SHARED_SCOPE,
+            owner_user_id=None,
+            owner_tenant_id=None,
+            event_type=source_event.event_type,
+            event_subtype=source_event.event_subtype,
+            status="published",
+            direction=source_event.direction,
+            materiality_score=source_event.materiality_score,
+            risk_severity=source_event.risk_severity,
+            confidence_score=source_event.confidence_score,
+            source_quality=source_event.source_quality,
+            title=title.strip(),
+            summary=summary.strip(),
+            facts=source_event.facts,
+            uncertainties=source_event.uncertainties,
+            occurred_at=source_event.occurred_at,
+            published_at=source_event.published_at,
+            published_on=source_event.published_on,
+            observed_at=utc_now(),
+            fingerprint_version=source_event.fingerprint_version,
+            event_fingerprint=source_event.event_fingerprint,
+            publication_route="human_promoted",
+            publication_policy_version=SHARING_POLICY_VERSION,
+            publication_reasons=["platform_admin_approved", "private_source_preserved"],
+        )
+        session.add(shared_event)
+        session.flush()
+
+    shared_evidence_by_source: dict[UUID, EventEvidence] = {}
+    for evidence, document, source, verification in loaded_evidence:
+        shared_evidence = session.scalar(
+            select(EventEvidence).where(
+                EventEvidence.event_id == shared_event.id,
+                EventEvidence.source_event_evidence_id == evidence.id,
+            )
+        )
+        if shared_evidence is None:
+            shared_evidence = EventEvidence(
+                event_id=shared_event.id,
+                raw_document_id=None,
+                source_event_evidence_id=evidence.id,
+                visibility_scope=PLATFORM_SHARED_SCOPE,
+                owner_user_id=None,
+                owner_tenant_id=None,
+                evidence_excerpt=evidence.evidence_excerpt[:1000],
+                span_hash=evidence.span_hash,
+                support_type=evidence.support_type,
+                display_source_name=source.name,
+                display_source_quality=source.source_quality,
+                display_title=document.title,
+                display_canonical_url=document.canonical_url,
+                display_published_at=document.published_at,
+                display_published_on=document.published_on,
+                display_observed_at=document.observed_at,
+                display_url_health_status=verification.status,
+                display_url_http_status=verification.http_status,
+                display_url_checked_at=verification.checked_at,
+                display_final_url=verification.final_url,
+                display_license_status=document.license_status,
+                display_allowed=True,
+            )
+            session.add(shared_evidence)
+            session.flush()
+        shared_evidence_by_source[evidence.id] = shared_evidence
+
+    decision = EventSharingDecision(
+        source_event_id=source_event.id,
+        shared_event_id=shared_event.id,
+        actor_user_id=user.id,
+        actor_tenant_id=user.tenant_id,
+        action="promote",
+        reason=reason.strip(),
+        shared_title=title.strip(),
+        shared_summary=summary.strip(),
+        policy_version=SHARING_POLICY_VERSION,
+        idempotency_key=_sha256(f"sharing:promote:{source_event.id}"),
+    )
+    session.add(decision)
+    session.flush()
+    for evidence, document, source, verification in loaded_evidence:
+        shared_evidence = shared_evidence_by_source[evidence.id]
+        session.add(
+            EventSharingDecisionEvidence(
+                decision_id=decision.id,
+                source_event_evidence_id=evidence.id,
+                shared_event_evidence_id=shared_evidence.id,
+                evidence_snapshot={
+                    "source_name": source.name,
+                    "canonical_url": document.canonical_url,
+                    "published_at": document.published_at.isoformat()
+                    if document.published_at
+                    else None,
+                    "published_on": document.published_on.isoformat()
+                    if document.published_on
+                    else None,
+                    "excerpt": shared_evidence.evidence_excerpt,
+                    "url_health_status": verification.status,
+                    "url_http_status": verification.http_status,
+                    "url_checked_at": verification.checked_at.isoformat()
+                    if verification.checked_at
+                    else None,
+                    "license_status": document.license_status,
+                },
+            )
+        )
+    _refresh_company_snapshot(
+        session,
+        company,
+        PLATFORM_SHARED_SCOPE,
+        None,
+        None,
+    )
+    session.commit()
+    return _sharing_action_out(
+        decision,
+        shared_event,
+        reused_shared_event=reused_shared_event,
+    )
+
+
+def reject_private_event(
+    session: Session,
+    source_event_id: UUID,
+    user: User,
+    reason: str,
+) -> SharingActionOut:
+    _require_platform_admin(session, user)
+    idempotency_key = _sha256(f"sharing:reject:{source_event_id}")
+    existing = session.scalar(
+        select(EventSharingDecision).where(EventSharingDecision.idempotency_key == idempotency_key)
+    )
+    if existing is not None:
+        return _sharing_action_out(existing, None)
+    source_event = session.get(Event, source_event_id)
+    if source_event is None:
+        raise NotFoundError("source event not found")
+    if source_event.visibility_scope not in {
+        PERSONAL_PRIVATE_SCOPE,
+        ORGANIZATION_PRIVATE_SCOPE,
+    }:
+        raise PromotionEligibilityError("only private events can be rejected")
+    if source_event.status != "candidate" or source_event.publication_route != "unconfirmed_lead":
+        raise PromotionEligibilityError("source event is not an unconfirmed candidate")
+    promoted_decision = session.scalar(
+        select(EventSharingDecision).where(
+            EventSharingDecision.source_event_id == source_event.id,
+            EventSharingDecision.action == "promote",
+        )
+    )
+    if promoted_decision is not None:
+        raise PromotionEligibilityError("source event was already promoted")
+    decision = EventSharingDecision(
+        source_event_id=source_event.id,
+        shared_event_id=None,
+        actor_user_id=user.id,
+        actor_tenant_id=user.tenant_id,
+        action="reject",
+        reason=reason.strip(),
+        shared_title=None,
+        shared_summary=None,
+        policy_version=SHARING_POLICY_VERSION,
+        idempotency_key=idempotency_key,
+    )
+    session.add(decision)
+    session.commit()
+    return _sharing_action_out(decision, None)
+
+
+def retract_shared_event(
+    session: Session,
+    shared_event_id: UUID,
+    user: User,
+    reason: str,
+) -> SharingActionOut:
+    _require_platform_admin(session, user)
+    idempotency_key = _sha256(f"sharing:retract:{shared_event_id}")
+    existing = session.scalar(
+        select(EventSharingDecision).where(EventSharingDecision.idempotency_key == idempotency_key)
+    )
+    if existing is not None:
+        shared_event = session.get(Event, shared_event_id)
+        return _sharing_action_out(existing, shared_event)
+    shared_event = session.get(Event, shared_event_id)
+    if (
+        shared_event is None
+        or shared_event.visibility_scope != PLATFORM_SHARED_SCOPE
+        or shared_event.owner_user_id is not None
+        or shared_event.owner_tenant_id is not None
+    ):
+        raise NotFoundError("shared event not found")
+    if shared_event.status != "published":
+        raise PromotionEligibilityError("shared event is not published")
+    company = session.get(Company, shared_event.company_id)
+    if company is None:
+        raise NotFoundError("company not found")
+    shared_event.status = "retracted"
+    shared_event.publication_route = "human_retracted"
+    shared_event.publication_policy_version = SHARING_POLICY_VERSION
+    shared_event.publication_reasons = [
+        *shared_event.publication_reasons,
+        "platform_admin_retracted",
+    ]
+    decision = EventSharingDecision(
+        source_event_id=None,
+        shared_event_id=shared_event.id,
+        actor_user_id=user.id,
+        actor_tenant_id=user.tenant_id,
+        action="retract",
+        reason=reason.strip(),
+        shared_title=shared_event.title,
+        shared_summary=shared_event.summary,
+        policy_version=SHARING_POLICY_VERSION,
+        idempotency_key=idempotency_key,
+    )
+    session.add(decision)
+    _refresh_company_snapshot(
+        session,
+        company,
+        PLATFORM_SHARED_SCOPE,
+        None,
+        None,
+    )
+    session.commit()
+    return _sharing_action_out(decision, shared_event)
 
 
 def _active_refresh_job(session: Session, tenant_id: UUID, company_id: UUID) -> RefreshJob | None:

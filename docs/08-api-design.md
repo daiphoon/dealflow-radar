@@ -24,12 +24,18 @@
 | `GET /reviews/workbench` | 审核工作台详情 | V1 仅在显式开关开启后返回身份例外与既有历史候选 |
 | `POST /reviews/{id}/decision` | 既有事件审核决定 | 兼容批准或驳回；理由必填，事务发布并保留决定记录 |
 | `POST /reviews/{id}/identity-resolution` | 选择官方工商候选 | 要求审核员+机构管理员；更新身份、重建原事件/证据并按版本化策略重路由 |
+| `GET /sharing-candidates` | 平台共享候选工作台 | 仅平台管理员；读取可晋升的私有候选、身份/风险/来源/证据状态及既有决定 |
+| `POST /events/{id}/sharing/promotion` | 晋升独立共享事实 | 仅平台管理员；谨慎表述、理由、所选证据和必要确认必填；幂等创建或复用共享事件 |
+| `POST /events/{id}/sharing/rejection` | 拒绝私有候选晋升 | 仅平台管理员；保留私有候选并追加理由与策略审计 |
+| `POST /shared-events/{id}/retraction` | 撤回共享事实 | 仅平台管理员；共享事件停止展示，保留私有来源、撤回理由和全部血缘 |
 | `GET /reports/portfolio-weekly` | 固定模板周报 | 按事实水位读取已生成结果 |
 | `GET /usage` | 成本仪表盘 | 聚合租户/公司/Provider/有效事件成本 |
 
 人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`，官方身份核验通过 `python -m scripts.import_official_identity_json` 导入，两者均未开放文件上传 API。原因是当前 `X-Demo-User-Id` 只适用于测试，不足以保护真实文件上传；网页/API 导入须等正式认证、上传隔离、文件审计和许可校验完成后再实现。`GET /companies` 继续返回基金授权列表；`GET /companies/search?q=` 和共享公司详情不再要求基金关系，但仍要求有效测试身份。
 
-当前详情响应使用 `events` 表示平台共享已审核事实、`private_events` 表示当前机构可见的已确认信息、`unconfirmed_leads` 表示当前个人或机构 owner 可见的未确认线索，`investments` 只在基金授权存在时返回记录。证据引用和原始文档分别做作用域过滤；无基金用户不会因共享详情请求触发机构私有刷新状态或任务。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放给 `reviewer`；该开关不能替代认证。
+当前详情响应使用 `events` 表示平台共享已审核事实、`private_events` 表示当前机构可见的已确认信息、`unconfirmed_leads` 表示当前个人或机构 owner 可见的未确认线索，`investments` 只在基金授权存在时返回记录。证据引用和原始文档分别做作用域过滤；共享事件只序列化独立展示引用的来源名称、URL、日期、状态和许可短摘录，不读取私有原文档。无基金用户不会因共享详情请求触发机构私有刷新状态或任务。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放；普通审核区要求 `reviewer`，共享晋升区另要求 `platform_admin`，该开关不能替代认证。
+
+链接展示按 `link_display_allowed` 和检查状态决定：健康链接显示检查时间；合法但未检查的 URL 可点击并明确警告；失效链接只保留历史来源信息；不安全或许可受限链接不返回为可点击链接。链接可点击不表示证据内容已完成实质核验。
 
 `POST /refresh` 的响应明确区分 `fresh_noop`、`queued`、`merged`、`cooldown_deferred`、`budget_deferred`、`external_disabled`。`dry_run=true` 时只返回计划 Provider、搜索数、Token 上界和预计费用，不产生外部调用。
 
