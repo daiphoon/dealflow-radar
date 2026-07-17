@@ -10,8 +10,15 @@ from sqlalchemy import and_, or_, select, text
 from sqlalchemy.orm import Session
 
 from backend.app.config import RefreshPolicy
-from backend.app.demo import DEMO_TENANT_IDS
-from backend.app.models import CompanySnapshot, RefreshJob, UsageLedger, utc_now
+from backend.app.demo import DEMO_TENANT_IDS, DEMO_TENANT_USER_IDS
+from backend.app.models import (
+    ORGANIZATION_PRIVATE_SCOPE,
+    PLATFORM_SHARED_SCOPE,
+    CompanySnapshot,
+    RefreshJob,
+    UsageLedger,
+    utc_now,
+)
 
 
 @dataclass(frozen=True)
@@ -56,10 +63,13 @@ def _set_worker_tenant_context(session: Session, tenant_id: UUID) -> None:
     session.execute(
         text(
             "SELECT "
-            "set_config('app.current_user_id', '', true), "
+            "set_config('app.current_user_id', :user_id, true), "
             "set_config('app.current_tenant_id', :tenant_id, true)"
         ),
-        {"tenant_id": str(tenant_id)},
+        {
+            "user_id": str(DEMO_TENANT_USER_IDS[tenant_id]),
+            "tenant_id": str(tenant_id),
+        },
     )
 
 
@@ -132,8 +142,21 @@ def _complete_job(
         select(CompanySnapshot).where(
             CompanySnapshot.company_id == lease.company_id,
             CompanySnapshot.is_current.is_(True),
+            CompanySnapshot.visibility_scope == PLATFORM_SHARED_SCOPE,
+            CompanySnapshot.owner_user_id.is_(None),
+            CompanySnapshot.owner_tenant_id.is_(None),
         )
     )
+    if snapshot is None:
+        snapshot = session.scalar(
+            select(CompanySnapshot).where(
+                CompanySnapshot.company_id == lease.company_id,
+                CompanySnapshot.is_current.is_(True),
+                CompanySnapshot.visibility_scope == ORGANIZATION_PRIVATE_SCOPE,
+                CompanySnapshot.owner_user_id.is_(None),
+                CompanySnapshot.owner_tenant_id == lease.tenant_id,
+            )
+        )
     snapshot_updated = snapshot is not None
     outcome = "no_change" if snapshot_updated else "no_snapshot"
     if snapshot is not None:

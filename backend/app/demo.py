@@ -16,3 +16,8 @@ NO_ACCESS_USER_ID = demo_uuid("user-alpha-no-access")
 ALPHA_FUND_ID = demo_uuid("fund-alpha")
 BETA_FUND_ID = demo_uuid("fund-beta")
 MOCK_SOURCE_ID = demo_uuid("source-mock-official")
+DEMO_SHARED_COMPANY_CREDIT_CODE = "91310000MA1K000006"
+DEMO_TENANT_USER_IDS: dict[UUID, UUID] = {
+    ALPHA_TENANT_ID: ALPHA_USER_ID,
+    BETA_TENANT_ID: BETA_USER_ID,
+}

@@ -14,6 +14,7 @@ from backend.app.providers import MockResearchProvider
 from backend.app.schemas import (
     CompanyDetail,
     CompanyListItem,
+    CompanySearchResult,
     IdentityResolutionIn,
     IdentityResolutionOut,
     IngestResult,
@@ -32,6 +33,7 @@ from backend.app.services import (
     list_review_workbench,
     request_refresh,
     resolve_identity_review,
+    search_companies,
     user_has_role,
 )
 
@@ -80,6 +82,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user: User = Depends(get_current_user), session: Session = Depends(get_session)
     ) -> list[CompanyListItem]:
         return list_companies(session, user.id, app.state.settings.refresh_policy)
+
+    @app.get("/api/v1/companies/search", response_model=list[CompanySearchResult])
+    def company_search(
+        q: str = Query(min_length=1, max_length=240),
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> list[CompanySearchResult]:
+        return search_companies(session, user, q, app.state.settings.refresh_policy)
 
     @app.get("/api/v1/companies/{company_id}", response_model=CompanyDetail)
     def company_detail(

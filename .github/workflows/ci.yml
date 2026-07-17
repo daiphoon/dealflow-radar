@@ -23,6 +23,7 @@ jobs:
       EXTERNAL_CALLS_ENABLED: "false"
       PAID_API_CALLS_ENABLED: "false"
       AUTO_REFRESH_ENABLED: "false"
+      AUTO_PUBLISH_ENABLED: "false"
       RUN_EXTERNAL_TESTS: "false"
       DATABASE_ADMIN_URL: postgresql+psycopg://demo_user:ci_owner_password@127.0.0.1:5432/equity_radar_ci
       DATABASE_URL: postgresql+psycopg://equity_app:ci_app_password@127.0.0.1:5432/equity_radar_ci

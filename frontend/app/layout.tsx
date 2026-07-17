@@ -20,7 +20,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             </Link>
             <div className="header-actions">
               <nav className="site-nav" aria-label="主导航">
-                <Link href="/">公司组合</Link>
+                <Link href="/">公司查询</Link>
                 <Link href="/reviews">人工审核</Link>
               </nav>
               <span className="demo-badge">Demo / Validation</span>

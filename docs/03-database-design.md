@@ -4,7 +4,7 @@
 
 PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；不修改已应用迁移。UUID 主键、UTC `timestamptz`、显式外键和状态约束为默认。原始事实追加保存，派生快照可重建。个人、机构与基金私有行必须通过应用授权和 PostgreSQL 行级安全（RLS）双重限制。
 
-本文件同时描述当前 `0007` Schema 和 ADR-0009 的目标边界。标记为“目标”的对象尚未实现；当前 `tenant` 继续作为技术隔离边界，当前用户仍是 tenant 绑定的 Demo 身份，不得把目标模型描述成现有能力。
+本文件同时描述当前 `0009` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线和共享公司精确查询已经实现；标记为“目标”的 organization、watchlist、正式认证和商业权益对象仍未实现。当前 `tenant` 继续作为技术隔离边界，当前用户仍是 tenant 绑定的 Demo 身份。
 
 ## 2. 表目录：身份、投资与权限
 
@@ -19,7 +19,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `funds` | `id`, `tenant_id`, `name`, `code`, `status`, `visibility_scope` | 唯一 `(tenant_id, code)`；索引 tenant/status |
 | `fund_access_grants` | `user_id`, `fund_id`, `permission`, validity；只授权基金私有层 | 复合唯一；FK user/fund；不授予平台共享档案读取权限 |
 | `companies` | 全局工商主体 ID、信用代码、工商全称、地区、官网、身份状态和目录资格 | 信用代码全局唯一；只有已核实且通过目录审核的主体进入共享搜索 |
-| `company_aliases` | `id`, `company_id`, `alias`, `alias_type`, validity, `verification_status`, `source_id` | 唯一 `(company_id, normalized_alias, alias_type, valid_from)`；别名检索索引 |
+| `company_aliases` | 公司、别名、类型、核验状态、来源、独立作用域及 owner | 共享别名全局唯一；个人和机构私有别名分别在 owner 范围内唯一；只有已核实共享别名进入搜索 |
 | `company_relationships` | `from_company_id`, `to_company_id`, `relationship_type`, validity, evidence | 禁止自关联；版本化唯一；双向查询索引 |
 | `investments` | `id`, `tenant_id`, `fund_id`, `company_id`, amount, currency, ownership, internal_valuation, `visibility_scope` | FK tenant/fund/company；同一轮次条件唯一；RLS；fund/company 索引 |
 | `watchlists`（目标） | 个人清单名称、所有者和状态 | 必须有 `owner_user_id`；不产生公司读取权限 |
@@ -34,7 +34,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | --- | --- | --- |
 | `sources` | 来源主体、等级、类型、许可、保留策略、基础 URL | 唯一来源代码；等级/许可索引 |
 | `source_connectors` | Provider 配置引用、能力、租户范围、启用状态；只存 Secret 引用 | 唯一 `(tenant_id, provider_code, connector_name)`；不存明文密钥 |
-| `raw_documents` | source、可选导入批次、外部记录 ID、规范 URL、标题、时间、哈希、存储引用、许可、独立作用域和所有者 | 文档共享资格不继承事件；内容哈希、导入批次和发布时间索引 |
+| `raw_documents` | source、可选导入批次、外部记录 ID、规范 URL、标题、时间、哈希、存储引用、许可、独立作用域和所有者 | 文档共享资格不继承事件；外部记录与去重键按共享/个人 owner/机构 owner 分别唯一 |
 | `entity_mentions` | 文档中的公司候选、命中依据、候选集合、置信度、解析状态 | 唯一 `(raw_document_id, mention_span_hash, candidate_company_id)`；待解析索引 |
 | `events` | 公司、类型/子类、业务状态、发布路由、作用域、所有者、审核/证据状态、五项评价、事实、时间和事件指纹 | 共享事件全局去重；私有候选在所有者范围内去重；业务状态不推断权限 |
 | `event_evidence` | 事件到文档或结构化记录的证据引用、最小片段、支撑类型、作用域和许可 | 证据引用独立授权；不得因事件共享而暴露受限原文 |
@@ -116,7 +116,7 @@ erDiagram
 
 ## 9. 租户、基金与可见范围
 
-目标领域术语为 `platform_shared`、`personal_private`、`organization_private` 和 `system_restricted`。现有数据库中的 `public`、`tenant`、`fund`、`user`、`system` 暂时保留为兼容值，物理迁移由后续数据作用域 PR 决定。
+`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence` 和 `company_snapshots` 已使用 `platform_shared`、`personal_private`、`organization_private` 和 `system_restricted`，并以数据库检查约束保证 owner 组合合法。`companies`、`funds` 和 `investments` 中原有的 `public`、`tenant`、`fund` 值暂时保留为兼容映射；公司 `public` 仍要求登录和应用授权，不表示匿名互联网公开。
 
 平台共享记录不得有个人或机构访问所有者；个人私有记录必须有 `owner_user_id`；机构私有记录必须有 `owner_organization_id`，过渡期使用 `owner_tenant_id`；同一记录不能同时归个人和机构。来源用户、来源租户和导入批次属于数据血缘，不等同于访问 owner。事件、证据引用和原始文档分别判断作用域、许可和展示范围。访问条件同时校验登录状态、有效权益、记录作用域、owner、机构关系、资源授权和动作权限。详细规则见[安全合规](07-security-compliance.md)和 [ADR-0009](DECISIONS/ADR-0009-dual-channel-access-and-data-scope.md)。
 

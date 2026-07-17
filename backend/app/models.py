@@ -28,6 +28,23 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+PLATFORM_SHARED_SCOPE = "platform_shared"
+PERSONAL_PRIVATE_SCOPE = "personal_private"
+ORGANIZATION_PRIVATE_SCOPE = "organization_private"
+SYSTEM_RESTRICTED_SCOPE = "system_restricted"
+
+SCOPED_OWNER_CHECK = (
+    "(visibility_scope = 'platform_shared' "
+    "AND owner_user_id IS NULL AND owner_tenant_id IS NULL) OR "
+    "(visibility_scope = 'personal_private' "
+    "AND owner_user_id IS NOT NULL AND owner_tenant_id IS NULL) OR "
+    "(visibility_scope = 'organization_private' "
+    "AND owner_user_id IS NULL AND owner_tenant_id IS NOT NULL) OR "
+    "(visibility_scope = 'system_restricted' "
+    "AND owner_user_id IS NULL AND owner_tenant_id IS NULL)"
+)
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -132,12 +149,57 @@ class Source(TimestampMixin, Base):
 class CompanyAlias(TimestampMixin, Base):
     __tablename__ = "company_aliases"
     __table_args__ = (
-        UniqueConstraint("company_id", "normalized_alias", "alias_type", name="uq_company_alias"),
+        Index(
+            "uq_company_alias_platform_shared",
+            "company_id",
+            "normalized_alias",
+            "alias_type",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'platform_shared'"),
+            sqlite_where=text("visibility_scope = 'platform_shared'"),
+        ),
+        Index(
+            "uq_company_alias_personal_private",
+            "company_id",
+            "owner_user_id",
+            "normalized_alias",
+            "alias_type",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'personal_private'"),
+            sqlite_where=text("visibility_scope = 'personal_private'"),
+        ),
+        Index(
+            "uq_company_alias_organization_private",
+            "company_id",
+            "owner_tenant_id",
+            "normalized_alias",
+            "alias_type",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'organization_private'"),
+            sqlite_where=text("visibility_scope = 'organization_private'"),
+        ),
+        Index(
+            "uq_company_alias_system_restricted",
+            "company_id",
+            "normalized_alias",
+            "alias_type",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'system_restricted'"),
+            sqlite_where=text("visibility_scope = 'system_restricted'"),
+        ),
+        CheckConstraint(SCOPED_OWNER_CHECK, name="ck_company_alias_scope_owner"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     company_id: Mapped[UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
     source_id: Mapped[UUID | None] = mapped_column(ForeignKey("sources.id"))
+    owner_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    owner_tenant_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    visibility_scope: Mapped[str] = mapped_column(String(32), default=SYSTEM_RESTRICTED_SCOPE)
     alias: Mapped[str] = mapped_column(String(240))
     normalized_alias: Mapped[str] = mapped_column(String(240), index=True)
     alias_type: Mapped[str] = mapped_column(String(32))
@@ -201,7 +263,71 @@ class ResearchImport(TimestampMixin, Base):
 class RawDocument(TimestampMixin, Base):
     __tablename__ = "raw_documents"
     __table_args__ = (
-        UniqueConstraint("source_id", "external_record_id", name="uq_document_source_record"),
+        Index(
+            "uq_raw_doc_source_record_platform_shared",
+            "source_id",
+            "external_record_id",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'platform_shared'"),
+            sqlite_where=text("visibility_scope = 'platform_shared'"),
+        ),
+        Index(
+            "uq_raw_doc_source_record_personal_private",
+            "source_id",
+            "owner_user_id",
+            "external_record_id",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'personal_private'"),
+            sqlite_where=text("visibility_scope = 'personal_private'"),
+        ),
+        Index(
+            "uq_raw_doc_source_record_organization_private",
+            "source_id",
+            "owner_tenant_id",
+            "external_record_id",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'organization_private'"),
+            sqlite_where=text("visibility_scope = 'organization_private'"),
+        ),
+        Index(
+            "uq_raw_doc_source_record_system_restricted",
+            "source_id",
+            "external_record_id",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'system_restricted'"),
+            sqlite_where=text("visibility_scope = 'system_restricted'"),
+        ),
+        Index(
+            "uq_raw_doc_dedupe_platform_shared",
+            "document_dedupe_key",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'platform_shared'"),
+            sqlite_where=text("visibility_scope = 'platform_shared'"),
+        ),
+        Index(
+            "uq_raw_doc_dedupe_personal_private",
+            "owner_user_id",
+            "document_dedupe_key",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'personal_private'"),
+            sqlite_where=text("visibility_scope = 'personal_private'"),
+        ),
+        Index(
+            "uq_raw_doc_dedupe_organization_private",
+            "owner_tenant_id",
+            "document_dedupe_key",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'organization_private'"),
+            sqlite_where=text("visibility_scope = 'organization_private'"),
+        ),
+        Index(
+            "uq_raw_doc_dedupe_system_restricted",
+            "document_dedupe_key",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'system_restricted'"),
+            sqlite_where=text("visibility_scope = 'system_restricted'"),
+        ),
+        CheckConstraint(SCOPED_OWNER_CHECK, name="ck_raw_document_scope_owner"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
@@ -209,6 +335,13 @@ class RawDocument(TimestampMixin, Base):
     research_import_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("research_imports.id", ondelete="SET NULL"), index=True
     )
+    owner_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    owner_tenant_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    visibility_scope: Mapped[str] = mapped_column(String(32), default=SYSTEM_RESTRICTED_SCOPE)
     external_record_id: Mapped[str] = mapped_column(String(160))
     canonical_url: Mapped[str] = mapped_column(String(1000))
     title: Mapped[str] = mapped_column(String(500))
@@ -216,7 +349,7 @@ class RawDocument(TimestampMixin, Base):
     published_on: Mapped[date | None] = mapped_column(Date)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
-    document_dedupe_key: Mapped[str] = mapped_column(String(64), unique=True)
+    document_dedupe_key: Mapped[str] = mapped_column(String(64))
     license_status: Mapped[str] = mapped_column(String(32))
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
@@ -230,12 +363,20 @@ class EntityMention(TimestampMixin, Base):
         CheckConstraint(
             "match_confidence >= 0 AND match_confidence <= 1", name="ck_match_confidence"
         ),
+        CheckConstraint(SCOPED_OWNER_CHECK, name="ck_entity_mention_scope_owner"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     raw_document_id: Mapped[UUID] = mapped_column(
         ForeignKey("raw_documents.id", ondelete="CASCADE")
     )
+    owner_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    owner_tenant_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    visibility_scope: Mapped[str] = mapped_column(String(32), default=SYSTEM_RESTRICTED_SCOPE)
     candidate_company_id: Mapped[UUID | None] = mapped_column(ForeignKey("companies.id"))
     mention_text: Mapped[str] = mapped_column(String(240))
     match_rule: Mapped[str] = mapped_column(String(80))
@@ -278,8 +419,43 @@ class OfficialIdentityVerification(TimestampMixin, Base):
 class Event(TimestampMixin, Base):
     __tablename__ = "events"
     __table_args__ = (
-        UniqueConstraint(
-            "company_id", "fingerprint_version", "event_fingerprint", name="uq_event_fingerprint"
+        Index(
+            "uq_event_fingerprint_platform_shared",
+            "company_id",
+            "fingerprint_version",
+            "event_fingerprint",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'platform_shared'"),
+            sqlite_where=text("visibility_scope = 'platform_shared'"),
+        ),
+        Index(
+            "uq_event_fingerprint_personal_private",
+            "company_id",
+            "owner_user_id",
+            "fingerprint_version",
+            "event_fingerprint",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'personal_private'"),
+            sqlite_where=text("visibility_scope = 'personal_private'"),
+        ),
+        Index(
+            "uq_event_fingerprint_organization_private",
+            "company_id",
+            "owner_tenant_id",
+            "fingerprint_version",
+            "event_fingerprint",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'organization_private'"),
+            sqlite_where=text("visibility_scope = 'organization_private'"),
+        ),
+        Index(
+            "uq_event_fingerprint_system_restricted",
+            "company_id",
+            "fingerprint_version",
+            "event_fingerprint",
+            unique=True,
+            postgresql_where=text("visibility_scope = 'system_restricted'"),
+            sqlite_where=text("visibility_scope = 'system_restricted'"),
         ),
         CheckConstraint(
             "materiality_score >= 0 AND materiality_score <= 100",
@@ -289,10 +465,18 @@ class Event(TimestampMixin, Base):
             "confidence_score >= 0 AND confidence_score <= 1",
             name="ck_event_confidence",
         ),
+        CheckConstraint(SCOPED_OWNER_CHECK, name="ck_event_scope_owner"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     company_id: Mapped[UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
+    owner_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    owner_tenant_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    visibility_scope: Mapped[str] = mapped_column(String(32), default=SYSTEM_RESTRICTED_SCOPE)
     event_type: Mapped[str] = mapped_column(String(64), index=True)
     event_subtype: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32), default="candidate", index=True)
@@ -320,6 +504,7 @@ class EventEvidence(TimestampMixin, Base):
     __tablename__ = "event_evidence"
     __table_args__ = (
         UniqueConstraint("event_id", "raw_document_id", "span_hash", name="uq_event_evidence"),
+        CheckConstraint(SCOPED_OWNER_CHECK, name="ck_event_evidence_scope_owner"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
@@ -327,6 +512,13 @@ class EventEvidence(TimestampMixin, Base):
     raw_document_id: Mapped[UUID] = mapped_column(
         ForeignKey("raw_documents.id", ondelete="CASCADE")
     )
+    owner_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    owner_tenant_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    visibility_scope: Mapped[str] = mapped_column(String(32), default=SYSTEM_RESTRICTED_SCOPE)
     evidence_excerpt: Mapped[str] = mapped_column(Text)
     span_hash: Mapped[str] = mapped_column(String(64))
     support_type: Mapped[str] = mapped_column(String(32), default="supports")
@@ -337,16 +529,47 @@ class CompanySnapshot(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("company_id", "snapshot_version", name="uq_company_snapshot_version"),
         Index(
-            "uq_company_snapshot_current",
+            "uq_company_snapshot_current_platform_shared",
             "company_id",
             unique=True,
-            postgresql_where=text("is_current"),
-            sqlite_where=text("is_current = 1"),
+            postgresql_where=text("is_current AND visibility_scope = 'platform_shared'"),
+            sqlite_where=text("is_current = 1 AND visibility_scope = 'platform_shared'"),
         ),
+        Index(
+            "uq_company_snapshot_current_personal_private",
+            "company_id",
+            "owner_user_id",
+            unique=True,
+            postgresql_where=text("is_current AND visibility_scope = 'personal_private'"),
+            sqlite_where=text("is_current = 1 AND visibility_scope = 'personal_private'"),
+        ),
+        Index(
+            "uq_company_snapshot_current_organization_private",
+            "company_id",
+            "owner_tenant_id",
+            unique=True,
+            postgresql_where=text("is_current AND visibility_scope = 'organization_private'"),
+            sqlite_where=text("is_current = 1 AND visibility_scope = 'organization_private'"),
+        ),
+        Index(
+            "uq_company_snapshot_current_system_restricted",
+            "company_id",
+            unique=True,
+            postgresql_where=text("is_current AND visibility_scope = 'system_restricted'"),
+            sqlite_where=text("is_current = 1 AND visibility_scope = 'system_restricted'"),
+        ),
+        CheckConstraint(SCOPED_OWNER_CHECK, name="ck_company_snapshot_scope_owner"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     company_id: Mapped[UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
+    owner_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    owner_tenant_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    visibility_scope: Mapped[str] = mapped_column(String(32), default=SYSTEM_RESTRICTED_SCOPE)
     snapshot_version: Mapped[int] = mapped_column(Integer)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
     data_as_of: Mapped[date | None] = mapped_column(Date)

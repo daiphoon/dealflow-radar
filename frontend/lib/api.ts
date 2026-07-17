@@ -11,6 +11,16 @@ export type CompanyListItem = {
   information_gaps: string[];
 };
 
+export type CompanySearchResult = {
+  id: string;
+  legal_name: string;
+  credit_code: string | null;
+  registered_region: string | null;
+  identity_status: string;
+  freshness_status: string;
+  last_checked_at: string | null;
+};
+
 export type Evidence = {
   id: string;
   source_name: string;
@@ -25,6 +35,7 @@ export type Evidence = {
   url_http_status: number | null;
   url_checked_at: string | null;
   final_url: string | null;
+  visibility_scope: string;
 };
 
 export type Event = {
@@ -49,6 +60,7 @@ export type Event = {
   publication_reasons: string[];
   observed_at: string;
   evidence: Evidence[];
+  visibility_scope: string;
 };
 
 export type ReviewWorkbenchItem = {
@@ -99,6 +111,7 @@ export type Investment = {
 export type CompanyDetail = {
   id: string;
   legal_name: string;
+  credit_code: string | null;
   registered_region: string | null;
   official_website: string | null;
   identity_status: string;
@@ -108,6 +121,7 @@ export type CompanyDetail = {
   information_gaps: string[];
   investments: Investment[];
   events: Event[];
+  private_events: Event[];
   unconfirmed_leads: Event[];
 };
 
@@ -150,6 +164,11 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 
 export function getCompanies(): Promise<CompanyListItem[]> {
   return getJson("/api/v1/companies");
+}
+
+export function searchCompanies(query: string): Promise<CompanySearchResult[]> {
+  const params = new URLSearchParams({ q: query });
+  return getJson(`/api/v1/companies/search?${params.toString()}`);
 }
 
 export function getCompany(companyId: string): Promise<CompanyDetail> {
