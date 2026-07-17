@@ -107,3 +107,12 @@
 - 实际命令：`uv run ruff check backend migrations scripts tests`；`uv run ruff format --check backend migrations scripts tests`；`uv run pytest -q`；SQLite `alembic upgrade head`、`alembic check`、`alembic downgrade base`；隔离 PostgreSQL 16 从 `0007` 升级到 `0009`、Schema 漂移检查、降级至 `0007`、重新升级及 RLS 负向测试；`npm audit --audit-level=high`、`npm run typecheck`、`npm run build`；本地 PostgreSQL `0008`、`0009` 迁移前后自定义格式备份及 `pg_restore -l` 检查；受限应用账户启动 API 和前端，执行个人及机构路径浏览器 DOM、页面和控制台检查；`git diff --check`。
 - 测试结果：Pytest 76 项通过，仅有 FastAPI TestClient 上游弃用警告；Ruff、格式、SQLite 和 PostgreSQL 迁移往返、15 张受保护表的 RLS、TypeScript、Next.js 生产构建和依赖审计通过，依赖审计 0 个已知漏洞。无基金用户可以精确搜索并查看共享虚构 Demo 公司，不能看到租户公司、私有别名、文档、实体提及、未确认线索、刷新状态或投资字段；基金用户仍能看到两家真实公司、影子基金投资叠加层、机构私有已确认事件和 2 条审核历史。浏览器控制台无错误；当前两家真实公司未被晋升为共享目录；重复运行 RLS 测试不污染本地数据库；四个安全开关均为关闭，业务外部调用、付费调用、Token 和估算费用均为 0。
 - 未解决阻塞：正式认证与订阅权益尚未实现，当前仍使用受控 Demo 用户头；搜索只支持精确工商全称、信用代码和已核实共享别名；个人关注、备注、请求收录、模糊搜索、真实 Provider 和 8—10 家真实公司双路径影子验证留待后续。FastAPI TestClient 上游弃用警告仍存在，不影响当前结果。
+
+## 2026-07-17｜受控平台共享事实晋升闭环
+
+- 日期：2026-07-17
+- 任务：实现平台管理员将个人或机构私有候选人工晋升为独立平台共享事实、拒绝候选及撤回共享事实；保留私有来源与原文，新增共享展示证据、追加式决定审计、跨机构事实去重、RLS 和复用审核工作台的最小界面；四个外部及自动开关继续关闭。
+- 关键文件：`migrations/versions/0010_add_controlled_shared_fact_promotion.py`、`backend/app/models.py`、`backend/app/services.py`、`backend/app/main.py`、`backend/app/schemas.py`、`frontend/app/reviews/`、`frontend/app/companies/[id]/page.tsx`、`tests/integration/test_shared_fact_promotion.py`、`tests/integration/test_postgres_rls.py` 和受影响文档。
+- 实际命令：`uv run ruff check .`；`uv run ruff format --check .`；`uv run pytest -q`；SQLite 空库迁移升级、漂移检查和降级；临时 PostgreSQL 16 空库升级至 `0010`、降级至 `0009`、受限应用账户 17 表 RLS 负向测试；`npm audit --audit-level=high`、`npm run typecheck`、`npm run build`；隔离恢复的真实影子验证库上执行 3 条晋升、1 条拒绝、1 条撤回和个人/机构/其他机构 API 检查；浏览器完成管理员晋升、个人详情和撤回闭环。
+- 测试结果：私有候选批准后生成独立共享事件，原候选、owner、导入和私有原文不变；同源重复批准幂等，两个机构相同事实复用一个共享事件；共享证据不带私有 `raw_document_id`；身份歧义、严重负面、无展示证据和失效链接均被拒绝，未检查链接需管理员确认并显示警告；个人用户只见共享事实，其他机构不见来源底稿，基金投资叠加仍正常；撤回后个人不再看到事实且审计和私有来源保留。真实验证晋升法奥机器人、苏州博腾生物制药和上海沛塬电子三条低风险事件，随后撤回法奥机器人用于回归；武汉合生低重要性“拟支持”记录被人工拒绝。里程碑期间业务外部调用、付费调用、Token、估算费用和自动发布均为 0。
+- 未解决阻塞：链接健康仍以已有检查状态或管理员确认处理，尚未实现完整自动健康检查或正文语义自动核验；当前仍使用受控 Demo 身份头，平台管理员角色不代表生产认证；并发晋升依靠数据库唯一约束防重但尚未做压力测试；FastAPI TestClient 上游弃用警告仍存在，不影响当前结果。

@@ -504,13 +504,26 @@ class EventEvidence(TimestampMixin, Base):
     __tablename__ = "event_evidence"
     __table_args__ = (
         UniqueConstraint("event_id", "raw_document_id", "span_hash", name="uq_event_evidence"),
+        UniqueConstraint(
+            "event_id",
+            "source_event_evidence_id",
+            name="uq_event_evidence_source_reference",
+        ),
+        CheckConstraint(
+            "(raw_document_id IS NOT NULL AND source_event_evidence_id IS NULL) OR "
+            "(raw_document_id IS NULL AND source_event_evidence_id IS NOT NULL)",
+            name="ck_event_evidence_single_origin",
+        ),
         CheckConstraint(SCOPED_OWNER_CHECK, name="ck_event_evidence_scope_owner"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     event_id: Mapped[UUID] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
-    raw_document_id: Mapped[UUID] = mapped_column(
+    raw_document_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("raw_documents.id", ondelete="CASCADE")
+    )
+    source_event_evidence_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("event_evidence.id"), index=True
     )
     owner_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
@@ -522,6 +535,75 @@ class EventEvidence(TimestampMixin, Base):
     evidence_excerpt: Mapped[str] = mapped_column(Text)
     span_hash: Mapped[str] = mapped_column(String(64))
     support_type: Mapped[str] = mapped_column(String(32), default="supports")
+    display_source_name: Mapped[str | None] = mapped_column(String(200))
+    display_source_quality: Mapped[str | None] = mapped_column(String(1))
+    display_title: Mapped[str | None] = mapped_column(String(500))
+    display_canonical_url: Mapped[str | None] = mapped_column(String(1000))
+    display_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    display_published_on: Mapped[date | None] = mapped_column(Date)
+    display_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    display_url_health_status: Mapped[str | None] = mapped_column(String(32))
+    display_url_http_status: Mapped[int | None] = mapped_column(Integer)
+    display_url_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    display_final_url: Mapped[str | None] = mapped_column(String(1000))
+    display_license_status: Mapped[str | None] = mapped_column(String(32))
+    display_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class EventSharingDecision(Base):
+    __tablename__ = "event_sharing_decisions"
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('promote', 'reject', 'retract')",
+            name="ck_event_sharing_decision_action",
+        ),
+        CheckConstraint(
+            "(action = 'promote' AND source_event_id IS NOT NULL "
+            "AND shared_event_id IS NOT NULL) OR "
+            "(action = 'reject' AND source_event_id IS NOT NULL "
+            "AND shared_event_id IS NULL) OR "
+            "(action = 'retract' AND shared_event_id IS NOT NULL)",
+            name="ck_event_sharing_decision_subject",
+        ),
+        Index(
+            "uq_event_sharing_source_outcome",
+            "source_event_id",
+            unique=True,
+            postgresql_where=text("action IN ('promote', 'reject')"),
+            sqlite_where=text("action IN ('promote', 'reject')"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    source_event_id: Mapped[UUID | None] = mapped_column(ForeignKey("events.id"), index=True)
+    shared_event_id: Mapped[UUID | None] = mapped_column(ForeignKey("events.id"), index=True)
+    actor_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    actor_tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    action: Mapped[str] = mapped_column(String(16), index=True)
+    reason: Mapped[str] = mapped_column(Text)
+    shared_title: Mapped[str | None] = mapped_column(String(200))
+    shared_summary: Mapped[str | None] = mapped_column(Text)
+    policy_version: Mapped[str] = mapped_column(String(32))
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class EventSharingDecisionEvidence(Base):
+    __tablename__ = "event_sharing_decision_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "decision_id",
+            "source_event_evidence_id",
+            name="uq_event_sharing_decision_evidence_source",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    decision_id: Mapped[UUID] = mapped_column(ForeignKey("event_sharing_decisions.id"))
+    source_event_evidence_id: Mapped[UUID] = mapped_column(ForeignKey("event_evidence.id"))
+    shared_event_evidence_id: Mapped[UUID | None] = mapped_column(ForeignKey("event_evidence.id"))
+    evidence_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class CompanySnapshot(TimestampMixin, Base):

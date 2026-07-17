@@ -328,14 +328,15 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
                         'usage_ledger', 'official_identity_verifications',
                         'companies', 'company_aliases', 'raw_documents',
                         'entity_mentions', 'events', 'event_evidence',
-                        'company_snapshots'
+                        'company_snapshots', 'event_sharing_decisions',
+                        'event_sharing_decision_evidence'
                     )
                       AND relrowsecurity
                     """
                 )
             )
         assert role == (False, False, False, False, False)
-        assert enabled_rls_tables == 15
+        assert enabled_rls_tables == 17
         assert _visible_counts(connection) == (0, 0, 0, 0, 0)
         assert _visible_counts(connection, ALPHA_USER_ID, ALPHA_TENANT_ID) == (10, 1, 10, 1, 0)
         assert _visible_counts(connection, BETA_USER_ID, BETA_TENANT_ID) == (1, 1, 0, 0, 0)
@@ -408,6 +409,198 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
         )
         assert _visible_scope_counts(connection, BETA_USER_ID, BETA_TENANT_ID)[2:6] == (
             *shared_scope_counts[2:6],
+        )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO user_role_assignments (
+                    id, user_id, role_id, scope_id, valid_until, created_at, updated_at
+                )
+                SELECT :id, :user_id, roles.id, NULL, NULL,
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM roles WHERE roles.code = 'reviewer'
+                ON CONFLICT DO NOTHING
+                """
+            ),
+            {
+                "id": "e0ad5f0c-8c82-49ae-b31a-3015f44bd247",
+                "user_id": str(BETA_USER_ID),
+            },
+        )
+        beta_private_event_id = "88d374ea-7db5-403c-aafe-4a7c862893ba"
+        _create_scoped_lead(
+            connection,
+            user_id=BETA_USER_ID,
+            tenant_id=BETA_TENANT_ID,
+            scope="organization_private",
+            owner_user_id=None,
+            owner_tenant_id=BETA_TENANT_ID,
+            suffix="organization-beta-admin-test",
+            document_id="17a11817-6324-4d52-8f03-f96a1bbe90f5",
+            mention_id="ad71d3f0-6bef-4444-bf17-6f4c8419ef47",
+            event_id=beta_private_event_id,
+            evidence_id="cb70fab8-9c9f-47a9-8588-3a87e68b3e38",
+        )
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM events WHERE id = :id"),
+                {"id": beta_private_event_id},
+            )
+            == 0
+        )
+        with pytest.raises(DBAPIError):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO event_evidence (
+                            id, event_id, raw_document_id, source_event_evidence_id,
+                            owner_user_id, owner_tenant_id, visibility_scope,
+                            evidence_excerpt, span_hash, support_type, display_allowed,
+                            created_at, updated_at
+                        ) VALUES (
+                            :id, :event_id, :raw_document_id, NULL,
+                            NULL, :owner_tenant_id, 'organization_private',
+                            'cross-tenant attachment must fail', :span_hash, 'supports', FALSE,
+                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {
+                        "id": "d46870e9-44c8-4ed3-8cd2-e3f1befa0b4d",
+                        "event_id": beta_private_event_id,
+                        "raw_document_id": "e2fc5bea-0e37-48ef-8688-359657f45775",
+                        "owner_tenant_id": str(ALPHA_TENANT_ID),
+                        "span_hash": "8" * 64,
+                    },
+                )
+
+        shared_event_id = "8ec6df70-2dbc-46b7-b180-775b8af0a580"
+        shared_event_insert = text(
+            """
+            INSERT INTO events (
+                id, company_id, visibility_scope, owner_user_id, owner_tenant_id,
+                event_type, event_subtype, status, direction, materiality_score,
+                risk_severity, confidence_score, source_quality, title, summary,
+                facts, uncertainties, occurred_at, published_at, published_on,
+                observed_at, fingerprint_version, event_fingerprint,
+                publication_route, publication_policy_version, publication_reasons,
+                created_at, updated_at
+            ) VALUES (
+                :id, :company_id, 'platform_shared', NULL, NULL,
+                'information_quality', 'sharing_rls_test', 'published', 'neutral', 10,
+                'low', 0.900, 'A', 'RLS shared fact', 'RLS shared fact',
+                CAST('[]' AS JSON), CAST('[]' AS JSON), NULL, NULL, NULL,
+                CURRENT_TIMESTAMP, 'sharing-rls-v1', :fingerprint,
+                'human_promoted', 'controlled-promotion-v1', CAST('[]' AS JSON),
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """
+        )
+        shared_event_parameters = {
+            "id": shared_event_id,
+            "company_id": str(demo_uuid("company-示例星河科技一号有限公司")),
+            "fingerprint": "7" * 64,
+        }
+        with pytest.raises(DBAPIError):
+            with connection.begin_nested():
+                connection.execute(shared_event_insert, shared_event_parameters)
+
+        connection.execute(
+            text(
+                """
+                INSERT INTO user_role_assignments (
+                    id, user_id, role_id, scope_id, valid_until, created_at, updated_at
+                )
+                SELECT :id, :user_id, roles.id, NULL, NULL,
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM roles WHERE roles.code = 'platform_admin'
+                ON CONFLICT DO NOTHING
+                """
+            ),
+            {
+                "id": "8dce4c28-92df-491b-8d65-29304b1995fc",
+                "user_id": str(ALPHA_USER_ID),
+            },
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM events WHERE id = :id"),
+                {"id": beta_private_event_id},
+            )
+            == 1
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM events WHERE id = :id"),
+                {"id": "41508868-cf3f-4b6c-84ea-7df06ca21e0f"},
+            )
+            == 1
+        )
+        connection.execute(shared_event_insert, shared_event_parameters)
+        audit_id = "4ee61a7f-bb2d-4aeb-a0db-f7dd91b31af5"
+        connection.execute(
+            text(
+                """
+                INSERT INTO event_sharing_decisions (
+                    id, source_event_id, shared_event_id, actor_user_id,
+                    actor_tenant_id, action, reason, shared_title, shared_summary,
+                    policy_version, idempotency_key, created_at
+                ) VALUES (
+                    :id, NULL, :shared_event_id, :actor_user_id,
+                    :actor_tenant_id, 'retract', 'RLS append-only test',
+                    'RLS shared fact', 'RLS shared fact',
+                    'controlled-promotion-v1', :idempotency_key, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": audit_id,
+                "shared_event_id": shared_event_id,
+                "actor_user_id": str(ALPHA_USER_ID),
+                "actor_tenant_id": str(ALPHA_TENANT_ID),
+                "idempotency_key": "8" * 64,
+            },
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM event_sharing_decisions WHERE id = :id"),
+                {"id": audit_id},
+            )
+            == 1
+        )
+        update_result = connection.execute(
+            text("UPDATE event_sharing_decisions SET reason = 'tampered' WHERE id = :id"),
+            {"id": audit_id},
+        )
+        assert update_result.rowcount == 0
+        with pytest.raises(DBAPIError):
+            with connection.begin_nested():
+                connection.execute(
+                    text("DELETE FROM event_sharing_decisions WHERE id = :id"),
+                    {"id": audit_id},
+                )
+        assert (
+            connection.scalar(
+                text("SELECT reason FROM event_sharing_decisions WHERE id = :id"),
+                {"id": audit_id},
+            )
+            == "RLS append-only test"
         )
     finally:
         transaction.rollback()

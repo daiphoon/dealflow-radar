@@ -19,7 +19,7 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     command.upgrade(config, "head")
     command.check(config)
     engine = create_engine(database_url)
-    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 20
+    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 22
     assert "heartbeat_at" in {
         column["name"] for column in inspect(engine).get_columns("refresh_jobs")
     }
@@ -99,6 +99,28 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
         "verification_status",
         "checked_at",
     } <= identity_columns
+    evidence_columns = {
+        column["name"]: column for column in inspect(engine).get_columns("event_evidence")
+    }
+    assert evidence_columns["raw_document_id"]["nullable"] is True
+    assert {
+        "source_event_evidence_id",
+        "display_source_name",
+        "display_canonical_url",
+        "display_url_health_status",
+        "display_license_status",
+        "display_allowed",
+    } <= evidence_columns.keys()
+    assert {
+        "event_sharing_decisions",
+        "event_sharing_decision_evidence",
+    } <= set(inspect(engine).get_table_names())
+    assert "ck_event_evidence_single_origin" in {
+        constraint["name"] for constraint in inspect(engine).get_check_constraints("event_evidence")
+    }
+    assert "uq_event_sharing_source_outcome" in {
+        index["name"] for index in inspect(engine).get_indexes("event_sharing_decisions")
+    }
 
     command.downgrade(config, "0007")
     assert "visibility_scope" not in {
@@ -151,3 +173,10 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "CREATE POLICY events_scope_read" in ddl
     assert "CREATE POLICY raw_documents_scope_read" in ddl
     assert "CREATE POLICY companies_scope_read" in ddl
+    assert "CREATE TABLE event_sharing_decisions" in ddl
+    assert "CREATE TABLE event_sharing_decision_evidence" in ddl
+    assert "event_sharing_decisions_platform_admin_insert" in ddl
+    assert "ck_event_evidence_single_origin" in ddl
+    assert "uq_event_sharing_source_outcome" in ddl
+    assert "events_platform_admin_read" in ddl
+    assert "roles.code IN ('platform_admin')" in ddl

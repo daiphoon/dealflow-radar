@@ -36,6 +36,7 @@ export type Evidence = {
   url_checked_at: string | null;
   final_url: string | null;
   visibility_scope: string;
+  link_display_allowed: boolean;
 };
 
 export type Event = {
@@ -81,6 +82,31 @@ export type ReviewWorkbenchItem = {
   match_confidence: string | null;
   resolution_status: string | null;
   identity_candidates: IdentityCandidate[];
+};
+
+export type SharingDecision = {
+  id: string;
+  action: string;
+  reason: string;
+  actor_user_id: string;
+  created_at: string;
+  shared_event_id: string | null;
+};
+
+export type SharingCandidate = {
+  source_event_id: string;
+  company_id: string;
+  company_legal_name: string;
+  company_credit_code: string | null;
+  source_scope: string;
+  owner_type: string;
+  owner_id: string;
+  owner_name: string;
+  identity_ambiguous: boolean;
+  shared_event_id: string | null;
+  shared_event_status: string | null;
+  event: Event;
+  decisions: SharingDecision[];
 };
 
 export type IdentityCandidate = {
@@ -179,6 +205,10 @@ export function getReviewWorkbench(): Promise<ReviewWorkbenchItem[]> {
   return getJson("/api/v1/reviews/workbench");
 }
 
+export function getSharingCandidates(): Promise<SharingCandidate[]> {
+  return getJson("/api/v1/sharing-candidates");
+}
+
 export function decideReview(
   reviewId: string,
   decision: "approve" | "reject",
@@ -197,6 +227,32 @@ export function resolveIdentityReview(
 ): Promise<unknown> {
   return postJson(`/api/v1/reviews/${encodeURIComponent(reviewId)}/identity-resolution`, {
     verification_id: verificationId,
+    reason,
+  });
+}
+
+export function promoteSharingCandidate(
+  sourceEventId: string,
+  payload: {
+    title: string;
+    summary: string;
+    reason: string;
+    evidence_ids: string[];
+    confirm_evidence_support: boolean;
+    confirm_unchecked_links: boolean;
+  },
+): Promise<unknown> {
+  return postJson(`/api/v1/events/${encodeURIComponent(sourceEventId)}/sharing/promotion`, payload);
+}
+
+export function rejectSharingCandidate(sourceEventId: string, reason: string): Promise<unknown> {
+  return postJson(`/api/v1/events/${encodeURIComponent(sourceEventId)}/sharing/rejection`, {
+    reason,
+  });
+}
+
+export function retractSharedEvent(sharedEventId: string, reason: string): Promise<unknown> {
+  return postJson(`/api/v1/shared-events/${encodeURIComponent(sharedEventId)}/retraction`, {
     reason,
   });
 }

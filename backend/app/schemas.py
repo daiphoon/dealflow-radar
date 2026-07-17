@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,6 +23,7 @@ class EvidenceOut(BaseModel):
     url_checked_at: datetime | None
     final_url: str | None
     visibility_scope: str
+    link_display_allowed: bool
 
 
 class EventOut(BaseModel):
@@ -160,6 +162,57 @@ class ReviewWorkbenchOut(BaseModel):
     match_confidence: Decimal | None
     resolution_status: str | None
     identity_candidates: list[IdentityCandidateOut] = Field(default_factory=list)
+
+
+class SharingDecisionOut(BaseModel):
+    id: UUID
+    action: str
+    reason: str
+    actor_user_id: UUID
+    created_at: datetime
+    shared_event_id: UUID | None
+
+
+class SharingCandidateOut(BaseModel):
+    source_event_id: UUID
+    company_id: UUID
+    company_legal_name: str
+    company_credit_code: str | None
+    source_scope: str
+    owner_type: str
+    owner_id: UUID
+    owner_name: str
+    identity_ambiguous: bool
+    shared_event_id: UUID | None
+    shared_event_status: str | None
+    event: EventOut
+    decisions: list[SharingDecisionOut]
+
+
+class SharingPromotionIn(BaseModel):
+    title: str = Field(min_length=3, max_length=200)
+    summary: str = Field(min_length=3, max_length=2000)
+    reason: str = Field(min_length=3, max_length=1000)
+    evidence_ids: list[UUID] = Field(min_length=1, max_length=20)
+    confirm_evidence_support: bool
+    confirm_unchecked_links: bool = False
+
+
+class SharingRejectionIn(BaseModel):
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class SharingRetractionIn(BaseModel):
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class SharingActionOut(BaseModel):
+    action: Literal["promote", "reject", "retract"]
+    decision_id: UUID
+    source_event_id: UUID | None
+    shared_event_id: UUID | None
+    shared_event_status: str | None
+    reused_shared_event: bool = False
 
 
 class IngestResult(BaseModel):
