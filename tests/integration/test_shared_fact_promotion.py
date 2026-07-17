@@ -355,6 +355,15 @@ def test_controlled_promotion_deduplication_isolation_and_retraction(
         f"/api/v1/companies/{SHARED_COMPANY_ID}", headers=NO_ACCESS_HEADERS
     ).json()
     assert all(item["id"] != str(shared_event_id) for item in after_retraction["events"])
+    candidate_after_retraction = next(
+        item
+        for item in client.get("/api/v1/sharing-candidates", headers=ALPHA_HEADERS).json()
+        if item["source_event_id"] == str(alpha_event_id)
+    )
+    assert [decision["action"] for decision in candidate_after_retraction["decisions"]] == [
+        "promote",
+        "retract",
+    ]
     with migrated_app.state.session_factory() as session:
         assert session.get(Event, alpha_event_id) is not None
         assert session.get(RawDocument, alpha_document_id) is not None

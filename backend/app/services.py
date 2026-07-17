@@ -7,7 +7,7 @@ from decimal import Decimal
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1913,10 +1913,18 @@ def list_sharing_candidates(session: Session, user: User) -> list[SharingCandida
         if owner_id is None:
             continue
         shared_event = _shared_event_for_source(session, event)
+        decision_scope = [EventSharingDecision.source_event_id == event.id]
+        if shared_event is not None:
+            decision_scope.append(
+                and_(
+                    EventSharingDecision.action == "retract",
+                    EventSharingDecision.shared_event_id == shared_event.id,
+                )
+            )
         decisions = list(
             session.scalars(
                 select(EventSharingDecision)
-                .where(EventSharingDecision.source_event_id == event.id)
+                .where(or_(*decision_scope))
                 .order_by(EventSharingDecision.created_at)
             )
         )
