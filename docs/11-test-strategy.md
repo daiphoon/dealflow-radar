@@ -64,3 +64,5 @@ npm run build
 当前自动测试覆盖严格事件 Schema、Mock 合约、空库迁移往返、PostgreSQL DDL/RLS 编译、文档/事件幂等、历史人工审核发布、证据与快照、基金隔离、同步查询零 Provider 调用、配置化 TTL/冷却和刷新任务合并。双通道与晋升测试额外覆盖信用代码/全称/已核实别名精确搜索、无结果零写入、无基金共享详情、私有别名/文档/提及不参与搜索、个人与机构未确认线索隔离、基金投资叠加、独立共享事实、同源及跨机构去重、资格闸门、未检查链接警告、撤回、审计和私有原文保留。真实 PostgreSQL RLS 测试默认跳过，显式提供受限账户 URL 后验证账户非所有者/非超级用户/无 `BYPASSRLS`、17 张表启用 RLS，以及无上下文、跨租户、伪造租户上下文、跨基金、无授权、跨 owner、普通审核员共享写入拒绝和审计不可变；测试数据在同一事务中回滚，可重复执行。
 
 GitHub CI 使用单个、10 分钟上限的 Ubuntu Job 和临时 PostgreSQL 16 服务，在 Pull Request 与 `main` 推送时运行 Ruff、格式检查、SQLite 迁移升级/漂移/降级、完整 Pytest（含受限账户 RLS）、TypeScript 和前端生产构建。CI 使用固定虚构数据和临时数据库凭据，不读取仓库 Secret，业务外部调用开关全部关闭。
+
+受控来源监测额外覆盖：HTTPS/域名允许列表、localhost/私网/元数据地址、DNS rebinding、实际对端不匹配、跨域及超限重定向、robots.txt、MIME/可执行文件、超时/重试/大小上限、ETag/304/内容哈希、列表路径、RSS/Sitemap、候选幂等与版本、零网络 dry-run、双开关、RLS 和跨 tenant 负向访问。真实网站验证必须人工显式开启且不进入 CI；CI 只使用 `httpx.MockTransport` 和本地 fixture，付费调用、模型 Token 与自动发布均为 0。

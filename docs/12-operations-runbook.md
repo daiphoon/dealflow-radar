@@ -68,6 +68,12 @@ V1 只接收不超过 1 MiB、最多 500 条且许可为 `public` 的 JSON。不
 
 完成私有验收后关闭前后端并取消该开关。当前 Header 身份可被伪造，禁止将工作台暴露到公网、局域网共享地址或多人环境；生产部署必须先实现正式认证和会话保护。
 
+### 受控可信来源监测 V1（仅本机受控环境）
+
+先以平台管理员打开 `/monitoring` 登记已核验公司、来源名称、类型、根域名、HTTPS 起始 URL、访问依据、许可、频率和保留策略。列表页应先用 dry-run，并在实样中确认内容链接路径；如导航链接过多，设置明确的列表内容路径前缀。dry-run 入队后以四个业务安全开关均关闭的 Worker 处理，核对请求、字节、Token 和费用全部为 0。
+
+真实免费 HTTP 检查仅在一次性受控窗口中临时设置 `EXTERNAL_CALLS_ENABLED=true` 和 `TRUSTED_SOURCE_CALLS_ENABLED=true`，同时保持 `PAID_API_CALLS_ENABLED=false`、`AUTO_REFRESH_ENABLED=false`、`AUTO_PUBLISH_ENABLED=false`。每次 Worker 只领取一个任务；运行后核对 `source_check_runs`、`usage_ledger`、robots、失败状态、候选公司归属和去重结果，再立即恢复双开关为 false。404、robots 拒绝、DNS/对端异常、MIME、超时或大小超限不得手工改成成功；候选只可人工标记并交给现有研究导入，不得直接写事件或共享层。
+
 ## 4. 常见事件处置
 
 | 事件 | 立即动作 | 恢复条件 |

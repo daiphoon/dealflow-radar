@@ -116,3 +116,12 @@
 - 实际命令：`uv run ruff check .`；`uv run ruff format --check .`；`uv run pytest -q`；SQLite 空库迁移升级、漂移检查和降级；临时 PostgreSQL 16 空库升级至 `0010`、降级至 `0009`、受限应用账户 17 表 RLS 负向测试；`npm audit --audit-level=high`、`npm run typecheck`、`npm run build`；隔离恢复的真实影子验证库上执行 3 条晋升、1 条拒绝、1 条撤回和个人/机构/其他机构 API 检查；浏览器完成管理员晋升、个人详情和撤回闭环。
 - 测试结果：私有候选批准后生成独立共享事件，原候选、owner、导入和私有原文不变；同源重复批准幂等，两个机构相同事实复用一个共享事件；共享证据不带私有 `raw_document_id`；身份歧义、严重负面、无展示证据和失效链接均被拒绝，未检查链接需管理员确认并显示警告；个人用户只见共享事实，其他机构不见来源底稿，基金投资叠加仍正常；撤回后个人不再看到事实且审计和私有来源保留。真实验证晋升法奥机器人、苏州博腾生物制药和上海沛塬电子三条低风险事件，随后撤回法奥机器人用于回归；武汉合生低重要性“拟支持”记录被人工拒绝。里程碑期间业务外部调用、付费调用、Token、估算费用和自动发布均为 0。
 - 未解决阻塞：链接健康仍以已有检查状态或管理员确认处理，尚未实现完整自动健康检查或正文语义自动核验；当前仍使用受控 Demo 身份头，平台管理员角色不代表生产认证；并发晋升依靠数据库唯一约束防重但尚未做压力测试；FastAPI TestClient 上游弃用警告仍存在，不影响当前结果。
+
+## 2026-07-18｜受控官方来源监测与候选文档队列 V1
+
+- 日期：2026-07-18
+- 任务：为已核验公司增加管理员显式登记可信官网、政府页、RSS、Sitemap、列表页和单页的受控后台监测；实现独立外部访问开关、请求和下载上限、SSRF/DNS/重定向/robots.txt/MIME 防护、内容哈希与条件请求、机构私有候选队列、人工分类和现有研究导入交接；不自动创建事件、共享事实或发布内容。
+- 关键文件：`migrations/versions/0011_add_trusted_source_monitoring.py`、`migrations/versions/0012_add_trusted_source_list_path_prefix.py`、`backend/app/source_fetcher.py`、`backend/app/source_monitoring.py`、`backend/app/main.py`、`scripts/run_source_monitor_worker.py`、`frontend/app/monitoring/`、`tests/unit/test_source_fetcher.py`、`tests/integration/test_trusted_source_monitoring.py`、`tests/integration/test_postgres_rls.py`、`.env.example`、`.github/workflows/ci.yml` 和受影响文档。
+- 实际命令：`uv run --frozen ruff check backend migrations scripts tests`；`uv run --frozen ruff format --check backend migrations scripts tests`；`uv run --frozen pytest -q`；SQLite 空库 `alembic upgrade head`、`alembic check` 和 `alembic downgrade base`；隔离 PostgreSQL 16 的迁移往返、应用角色 RLS 负向测试；`npm audit --audit-level=high`、`npm run typecheck`、`npm run build`；受限试运行库中的单来源 dry-run、真实免费 HTTP 小批量检查、重复检查、404、人工分类、个人/机构/其他租户 API 和浏览器冒烟验证；`git diff --check`。
+- 测试结果：Ruff 和格式检查通过；Pytest 122 项通过、2 项需显式 PostgreSQL 环境的测试按预期跳过，仅有 FastAPI TestClient 上游弃用警告；SQLite 从空库升级至 `0012`、Schema 漂移检查和完整降级通过；此前隔离 PostgreSQL 迁移、应用角色 20 张受保护表的 RLS 负向测试通过；TypeScript、Next.js 生产构建和依赖审计通过，依赖审计 0 个已知漏洞。真实受控验证登记 5 个来源并执行 15 次运行，审计 90 次免费 HTTP 请求、下载 9,556,309 字节，生成 26 条候选，其中 16 条待处理、1 条值得研究、9 条无关；重复检查未生成重复候选，失效来源仅记录失败，个人和其他租户不能读取候选；共享事件数量未变化，业务模型 Token、付费调用、估算费用和自动发布均为 0。浏览器完成来源配置、dry-run、真实检查入队、路径范围修正、候选分类和无权限页面验证，控制台无错误。
+- 未解决阻塞：短期真实运行未观察到页面内容变化，变化版本由确定性测试覆盖；实际来源验证覆盖列表页和单页，RSS 与 Sitemap 仅通过本地夹具验证，尚未验证 Sitemap 索引递归；JavaScript 动态页面可能只能取得有限元数据。当前 Mac 网络代理将部分域名解析到保留测试地址时，SSRF 防护会按设计拒绝访问；受控试运行使用一次性公开解析完成验证，没有放宽代码规则或持久化地址。V1 不包含调度器、正式认证、语义相关性判断、自动事件生成或高并发压力验证。

@@ -21,6 +21,7 @@ jobs:
     env:
       APP_MODE: demo
       EXTERNAL_CALLS_ENABLED: "false"
+      TRUSTED_SOURCE_CALLS_ENABLED: "false"
       PAID_API_CALLS_ENABLED: "false"
       AUTO_REFRESH_ENABLED: "false"
       AUTO_PUBLISH_ENABLED: "false"

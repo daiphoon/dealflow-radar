@@ -12,6 +12,9 @@ from backend.app.database import build_engine, build_session_factory, set_reques
 from backend.app.models import ReviewQueue, User
 from backend.app.providers import MockResearchProvider
 from backend.app.schemas import (
+    CandidateDocumentDecisionIn,
+    CandidateDocumentDecisionOut,
+    CandidateDocumentOut,
     CompanyDetail,
     CompanyListItem,
     CompanySearchResult,
@@ -27,6 +30,12 @@ from backend.app.schemas import (
     SharingPromotionIn,
     SharingRejectionIn,
     SharingRetractionIn,
+    SourceCheckBatchRequest,
+    SourceCheckRequest,
+    SourceCheckRunOut,
+    TrustedSourceCreate,
+    TrustedSourceOut,
+    TrustedSourceUpdate,
 )
 from backend.app.services import (
     AccessDeniedError,
@@ -45,6 +54,21 @@ from backend.app.services import (
     retract_shared_event,
     search_companies,
     user_has_role,
+)
+from backend.app.source_monitoring import (
+    SourceMonitoringAccessError,
+    SourceMonitoringConflictError,
+    SourceMonitoringNotFoundError,
+    SourceMonitoringValidationError,
+    create_trusted_source,
+    decide_candidate_document,
+    list_candidate_documents,
+    list_source_check_runs,
+    list_trusted_sources,
+    queue_company_source_checks,
+    queue_source_check,
+    queue_source_check_batch,
+    update_trusted_source,
 )
 
 
@@ -295,6 +319,177 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except NotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @app.post("/api/v1/trusted-sources", response_model=TrustedSourceOut)
+    def trusted_source_create(
+        payload: TrustedSourceCreate,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> TrustedSourceOut:
+        try:
+            return create_trusted_source(session, user, payload)
+        except SourceMonitoringAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except SourceMonitoringNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except SourceMonitoringConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except SourceMonitoringValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.get("/api/v1/trusted-sources", response_model=list[TrustedSourceOut])
+    def trusted_source_list(
+        company_id: UUID | None = Query(default=None),
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> list[TrustedSourceOut]:
+        try:
+            return list_trusted_sources(session, user, company_id)
+        except SourceMonitoringAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+
+    @app.patch("/api/v1/trusted-sources/{source_id}", response_model=TrustedSourceOut)
+    def trusted_source_update(
+        source_id: UUID,
+        payload: TrustedSourceUpdate,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> TrustedSourceOut:
+        try:
+            return update_trusted_source(session, user, source_id, payload)
+        except SourceMonitoringAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except SourceMonitoringNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except SourceMonitoringValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post(
+        "/api/v1/trusted-sources/{source_id}/runs",
+        response_model=SourceCheckRunOut,
+    )
+    def trusted_source_run_create(
+        source_id: UUID,
+        payload: SourceCheckRequest,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> SourceCheckRunOut:
+        try:
+            return queue_source_check(
+                session,
+                user,
+                source_id,
+                app.state.settings.source_monitoring_policy,
+                dry_run=payload.dry_run,
+            )
+        except SourceMonitoringAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except SourceMonitoringNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except SourceMonitoringValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post(
+        "/api/v1/companies/{company_id}/trusted-source-runs",
+        response_model=list[SourceCheckRunOut],
+    )
+    def company_trusted_source_runs(
+        company_id: UUID,
+        payload: SourceCheckRequest,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> list[SourceCheckRunOut]:
+        try:
+            return queue_company_source_checks(
+                session,
+                user,
+                company_id,
+                app.state.settings.source_monitoring_policy,
+                dry_run=payload.dry_run,
+            )
+        except SourceMonitoringAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except SourceMonitoringNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @app.post(
+        "/api/v1/trusted-source-runs/batch",
+        response_model=list[SourceCheckRunOut],
+    )
+    def trusted_source_run_batch(
+        payload: SourceCheckBatchRequest,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> list[SourceCheckRunOut]:
+        try:
+            return queue_source_check_batch(
+                session,
+                user,
+                payload.source_ids,
+                app.state.settings.source_monitoring_policy,
+                dry_run=payload.dry_run,
+            )
+        except SourceMonitoringAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except SourceMonitoringNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except SourceMonitoringValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.get("/api/v1/trusted-source-runs", response_model=list[SourceCheckRunOut])
+    def trusted_source_run_list(
+        company_id: UUID | None = Query(default=None),
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> list[SourceCheckRunOut]:
+        try:
+            return list_source_check_runs(session, user, company_id)
+        except SourceMonitoringAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+
+    @app.get("/api/v1/candidate-documents", response_model=list[CandidateDocumentOut])
+    def candidate_document_list(
+        company_id: UUID | None = Query(default=None),
+        processing_status: str | None = Query(default=None, max_length=32),
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> list[CandidateDocumentOut]:
+        try:
+            return list_candidate_documents(
+                session,
+                user,
+                company_id=company_id,
+                processing_status=processing_status,
+            )
+        except SourceMonitoringAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except SourceMonitoringValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post(
+        "/api/v1/candidate-documents/{candidate_id}/decision",
+        response_model=CandidateDocumentDecisionOut,
+    )
+    def candidate_document_decision(
+        candidate_id: UUID,
+        payload: CandidateDocumentDecisionIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> CandidateDocumentDecisionOut:
+        try:
+            return decide_candidate_document(
+                session,
+                user,
+                candidate_id,
+                payload.decision,
+                payload.reason,
+            )
+        except SourceMonitoringAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except SourceMonitoringNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except SourceMonitoringConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
     return app
 

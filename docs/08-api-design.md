@@ -39,6 +39,18 @@
 
 `POST /refresh` 的响应明确区分 `fresh_noop`、`queued`、`merged`、`cooldown_deferred`、`budget_deferred`、`external_disabled`。`dry_run=true` 时只返回计划 Provider、搜索数、Token 上界和预计费用，不产生外部调用。
 
+## 受控来源运营 API
+
+以下接口仅限当前 tenant 的 `platform_admin`，个人用户和普通机构用户返回统一权限错误；所有检查都只入队，不在 API 请求内联网：
+
+- `POST/GET/PATCH /api/v1/trusted-sources`：登记、查看、启停来源及维护列表内容路径；
+- `POST /api/v1/trusted-sources/{id}/runs`：单来源 dry-run 或真实检查入队；
+- `POST /api/v1/companies/{id}/trusted-source-runs` 与 `POST /api/v1/trusted-source-runs/batch`：受限小批量入队；
+- `GET /api/v1/trusted-source-runs`：读取请求、字节、变化、robots、错误和费用审计；
+- `GET /api/v1/candidate-documents` 与 `POST /api/v1/candidate-documents/{id}/decision`：查看候选并标记值得研究、无关、重复或来源失效。
+
+候选决定只生成既有人工研究导入所需的结构化提示，不自动创建 `raw_documents`、`events` 或平台共享事实。
+
 按需缓存 V1 的 `freshness_status` 由当前快照 `last_checked_at` 与配置 TTL 动态计算。首次过期详情请求返回 `stale` 并完成入队；已有活动任务时返回 `refreshing`。`AUTO_REFRESH_ENABLED=false` 时只返回状态，不创建任务；无论开关如何，同步请求都不调用 Provider。
 
 ## 3. 双通道搜索与详情契约

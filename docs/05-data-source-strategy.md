@@ -40,6 +40,12 @@
 | `KimiOpenPlatformProvider` | 预留 | 正式 API 文档、账号授权、价格和数据条款确认 |
 | `LicensedBusinessDataProvider` | 预留 | 单独合同允许 API 调用、缓存和目标用途 |
 | `OfficialIdentityProvider` | 已实现 V1 边界与本机导入 | 当前只导入已核对的政府/GSXT JSON；自动查询要求正式 API 授权 |
+
+## 受控可信来源监测 V1
+
+V1 不是通用爬虫或搜索引擎。平台管理员先把已核验公司的官网、政府页、RSS/Atom、Sitemap、列表页或单页登记为 `trusted_sources`，后台 Worker 才能访问；同步搜索和详情请求永不联网。列表页可明确设置内容路径前缀，以排除同域导航和无关栏目。
+
+检查结果先进入 tenant 私有的 `candidate_documents`。许可不明时只保存 URL、标题、日期、哈希和定位元数据，不默认保存全文；`public_access` 仅表示无需登录可访问，不代表允许商业再分发。候选必须经人工判断并进入既有研究导入、证据审核和共享事实晋升流程，监测本身不创建事件、不调用 LLM、不自动发布。
 | `OfficialPublicDataProvider` | 预留 | 非工商身份的官方接口或合法下载路径、频率和保留边界确认 |
 | `DeepSeekLLMProvider` | 第 3 阶段候选 | API 能力、模型名、Schema 支持、价格和预算确认 |
 
