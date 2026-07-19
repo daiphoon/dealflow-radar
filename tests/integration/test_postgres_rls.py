@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
-from uuid import UUID
+from dataclasses import replace
+from uuid import UUID, uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import Connection, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
+from backend.app.config import Settings
 from backend.app.demo import (
     ALPHA_TENANT_ID,
     ALPHA_USER_ID,
@@ -16,6 +19,7 @@ from backend.app.demo import (
     NO_ACCESS_USER_ID,
     demo_uuid,
 )
+from backend.app.main import create_app
 
 POSTGRES_RLS_DATABASE_URL = os.getenv("POSTGRES_RLS_DATABASE_URL")
 
@@ -812,3 +816,192 @@ def test_trusted_source_monitoring_rls_is_platform_admin_and_tenant_scoped() -> 
         transaction.rollback()
         connection.close()
         engine.dispose()
+
+
+def test_candidate_research_import_restores_rls_context_after_commit() -> None:
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    suffix = uuid4().hex
+    source_url = f"https://example.com/postgres-rls-candidate-handoff-{suffix}"
+    settings = replace(
+        Settings.from_env(),
+        database_url=POSTGRES_RLS_DATABASE_URL,
+        external_calls_enabled=False,
+        paid_api_calls_enabled=False,
+        auto_refresh_enabled=False,
+        trusted_source_calls_enabled=False,
+        source_monitor_scheduler_enabled=False,
+    )
+    engine = create_engine(POSTGRES_RLS_DATABASE_URL, pool_pre_ping=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO user_role_assignments (
+                    id, user_id, role_id, scope_id, valid_until, created_at, updated_at
+                )
+                SELECT :id, :user_id, roles.id, NULL, NULL,
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM roles WHERE roles.code = 'platform_admin'
+                ON CONFLICT DO NOTHING
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "user_id": str(ALPHA_USER_ID),
+            },
+        )
+
+    with TestClient(create_app(settings)) as client:
+        headers = {"X-Demo-User-Id": str(ALPHA_USER_ID)}
+        source_response = client.post(
+            "/api/v1/trusted-sources",
+            headers=headers,
+            json={
+                "company_id": str(demo_uuid("company-示例星河科技一号有限公司")),
+                "name": f"PostgreSQL RLS 候选交接测试来源 {suffix}",
+                "source_type": "single_page",
+                "root_domain": "example.com",
+                "start_url": source_url,
+                "access_basis": "确定性 PostgreSQL 交接测试",
+                "license_status": "permission_confirmed",
+                "content_retention_policy": "minimal_excerpt",
+            },
+        )
+        assert source_response.status_code == 200, source_response.text
+        source_id = source_response.json()["id"]
+
+        run_id = str(uuid4())
+        candidate_id = str(uuid4())
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "SELECT set_config('app.current_user_id', :user_id, true), "
+                    "set_config('app.current_tenant_id', :tenant_id, true)"
+                ),
+                {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO source_check_runs (
+                        id, tenant_id, company_id, trusted_source_id, requested_by,
+                        status, dry_run, visibility_scope, policy_version, idempotency_key,
+                        max_requests, max_download_bytes, max_response_bytes,
+                        timeout_seconds, retry_limit, max_redirects, request_count,
+                        downloaded_bytes, new_count, changed_count, unchanged_count,
+                        duplicate_count, failure_count, external_calls, paid_api_calls,
+                        input_tokens, output_tokens, estimated_cost, request_log,
+                        created_at, updated_at
+                    ) VALUES (
+                        :id, :tenant_id, :company_id, :source_id, :user_id,
+                        'completed', FALSE, 'organization_private', 'trusted-source-v1',
+                        :idempotency_key, 10, 5000000, 1000000, 10, 1, 3,
+                        0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        CAST('[]' AS JSON), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    )
+                    """
+                ),
+                {
+                    "id": run_id,
+                    "tenant_id": str(ALPHA_TENANT_ID),
+                    "company_id": str(demo_uuid("company-示例星河科技一号有限公司")),
+                    "source_id": source_id,
+                    "user_id": str(ALPHA_USER_ID),
+                    "idempotency_key": suffix * 2,
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO candidate_documents (
+                        id, tenant_id, company_id, trusted_source_id, discovery_run_id,
+                        canonical_url, title, first_discovered_at, last_observed_at,
+                        content_hash, change_type, link_health_status, http_status,
+                        excerpt, license_status, processing_status,
+                        identity_status_at_discovery, visibility_scope, document_metadata,
+                        handoff_payload, processed_by, processed_at, decision_reason,
+                        created_at, updated_at
+                    ) VALUES (
+                        :id, :tenant_id, :company_id, :source_id, :run_id,
+                        :canonical_url,
+                        'PostgreSQL RLS 候选交接', CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP, :content_hash, 'new', 'healthy', 200,
+                        '可复核的候选摘录', 'permission_confirmed',
+                        'worth_research', 'verified', 'organization_private',
+                        CAST('{}' AS JSON), CAST('{}' AS JSON), :user_id,
+                        CURRENT_TIMESTAMP, '值得研究', CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP
+                    )
+                    """
+                ),
+                {
+                    "id": candidate_id,
+                    "tenant_id": str(ALPHA_TENANT_ID),
+                    "company_id": str(demo_uuid("company-示例星河科技一号有限公司")),
+                    "source_id": source_id,
+                    "run_id": run_id,
+                    "canonical_url": source_url,
+                    "content_hash": suffix[::-1] * 2,
+                    "user_id": str(ALPHA_USER_ID),
+                },
+            )
+
+        payload = {
+            "title": "PostgreSQL RLS 候选交接",
+            "evidence_excerpt": "可复核的候选摘录",
+            "event_type": "information_quality",
+            "event_subtype": "candidate_handoff",
+            "direction": "neutral",
+            "materiality_score": 20,
+            "risk_severity": "none",
+            "confidence_score": 0.9,
+            "source_quality": "A",
+            "fact_name": "handoff_status",
+            "fact_value": "verified",
+            "uncertainties": [],
+            "research_reason": "验证提交后 RLS 上下文恢复",
+        }
+        first = client.post(
+            f"/api/v1/candidate-documents/{candidate_id}/research-import",
+            headers=headers,
+            json=payload,
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["reused"] is False
+        repeated = client.post(
+            f"/api/v1/candidate-documents/{candidate_id}/research-import",
+            headers=headers,
+            json=payload,
+        )
+        assert repeated.status_code == 200
+        assert repeated.json()["reused"] is True
+        assert repeated.json()["private_event_id"] == first.json()["private_event_id"]
+
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            connection.execute(
+                text(
+                    "SELECT set_config('app.current_user_id', :user_id, true), "
+                    "set_config('app.current_tenant_id', :tenant_id, true)"
+                ),
+                {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+            )
+            lineage = connection.execute(
+                text(
+                    "SELECT count(*), min(owner_tenant_id::text) "
+                    "FROM raw_documents WHERE candidate_document_id = :candidate_id"
+                ),
+                {"candidate_id": candidate_id},
+            ).one()
+            assert lineage == (1, str(ALPHA_TENANT_ID))
+        finally:
+            transaction.rollback()
+    engine.dispose()

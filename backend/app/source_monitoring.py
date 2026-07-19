@@ -15,21 +15,39 @@ from backend.app.models import (
     ORGANIZATION_PRIVATE_SCOPE,
     CandidateDocument,
     Company,
+    Event,
+    EventEvidence,
+    RawDocument,
+    ResearchImport,
     SourceCheckRun,
     TrustedSource,
     UsageLedger,
     User,
     utc_now,
 )
+from backend.app.providers import (
+    CandidateResearchImportProvider,
+    CompanyIdentityEvidence,
+    DocumentVerification,
+    ManualResearchImportBatch,
+    ManualResearchRecord,
+)
 from backend.app.schemas import (
     CandidateDocumentDecisionOut,
     CandidateDocumentOut,
+    CandidateResearchImportIn,
+    CandidateResearchImportOut,
     SourceCheckRunOut,
     TrustedSourceCreate,
     TrustedSourceOut,
     TrustedSourceUpdate,
 )
-from backend.app.services import user_has_role
+from backend.app.services import (
+    AccessDeniedError,
+    ImportConflictError,
+    import_manual_research,
+    user_has_role,
+)
 from backend.app.source_fetcher import (
     FetchBatchResult,
     SourceFetchError,
@@ -95,6 +113,34 @@ class SourceWorkerResult:
             "external_calls": self.external_calls,
             "estimated_cost": str(self.estimated_cost),
             "error_code": self.error_code,
+        }
+
+
+@dataclass(frozen=True)
+class SourceScheduleResult:
+    status: str
+    due_count: int
+    queued_count: int
+    deferred_count: int
+    source_ids: tuple[UUID, ...]
+    external_calls: int = 0
+    paid_api_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    estimated_cost: Decimal = Decimal("0")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "due_count": self.due_count,
+            "queued_count": self.queued_count,
+            "deferred_count": self.deferred_count,
+            "source_ids": [str(source_id) for source_id in self.source_ids],
+            "external_calls": self.external_calls,
+            "paid_api_calls": self.paid_api_calls,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "estimated_cost": str(self.estimated_cost),
         }
 
 
@@ -170,6 +216,8 @@ def _run_out(run: SourceCheckRun, source: TrustedSource) -> SourceCheckRunOut:
         company_id=run.company_id,
         trusted_source_id=run.trusted_source_id,
         source_name=source.name,
+        trigger_type=run.trigger_type,
+        scheduled_for=run.scheduled_for,
         status=run.status,
         dry_run=run.dry_run,
         policy_version=run.policy_version,
@@ -216,6 +264,7 @@ def _candidate_out(
         http_status=candidate.http_status,
         excerpt=candidate.excerpt,
         license_status=candidate.license_status,
+        current_source_license_status=source.license_status,
         processing_status=candidate.processing_status,
         identity_status_at_discovery=candidate.identity_status_at_discovery,
         visibility_scope=candidate.visibility_scope,
@@ -321,6 +370,25 @@ def update_trusted_source(
         raise SourceMonitoringNotFoundError("trusted source not found")
     if not payload.model_fields_set:
         raise SourceMonitoringValidationError("source update is empty")
+    next_license_status = (
+        payload.license_status
+        if "license_status" in payload.model_fields_set
+        else source.license_status
+    )
+    next_retention_policy = (
+        payload.content_retention_policy
+        if "content_retention_policy" in payload.model_fields_set
+        else source.content_retention_policy
+    )
+    if next_license_status is None or next_retention_policy is None:
+        raise SourceMonitoringValidationError("license and retention values cannot be null")
+    if (
+        next_license_status in {"unclear", "restricted"}
+        and next_retention_policy != "metadata_only"
+    ):
+        raise SourceMonitoringValidationError(
+            "unclear or restricted sources must use metadata-only retention"
+        )
     if "enabled" in payload.model_fields_set:
         if payload.enabled is None:
             raise SourceMonitoringValidationError("enabled cannot be null")
@@ -343,6 +411,18 @@ def update_trusted_source(
             source.last_etag = None
             source.last_modified = None
             source.last_content_hash = None
+    if "access_basis" in payload.model_fields_set:
+        if payload.access_basis is None:
+            raise SourceMonitoringValidationError("access basis cannot be null")
+        source.access_basis = payload.access_basis.strip()
+    if "license_status" in payload.model_fields_set:
+        if payload.license_status is None:
+            raise SourceMonitoringValidationError("license status cannot be null")
+        source.license_status = payload.license_status
+    if "content_retention_policy" in payload.model_fields_set:
+        if payload.content_retention_policy is None:
+            raise SourceMonitoringValidationError("content retention policy cannot be null")
+        source.content_retention_policy = payload.content_retention_policy
     source.updated_by = user.id
     company = session.get(Company, source.company_id)
     if company is None:
@@ -367,6 +447,9 @@ def queue_source_check(
     policy: SourceMonitoringPolicy,
     *,
     dry_run: bool,
+    trigger_type: str = "manual",
+    scheduled_for: datetime | None = None,
+    idempotency_key: str | None = None,
 ) -> SourceCheckRunOut:
     _require_platform_admin(session, user)
     source = session.scalar(
@@ -379,9 +462,17 @@ def queue_source_check(
         raise SourceMonitoringNotFoundError("trusted source not found")
     if not source.enabled:
         raise SourceMonitoringValidationError("trusted source is disabled")
+    if trigger_type not in {"manual", "scheduled"}:
+        raise SourceMonitoringValidationError("unsupported source check trigger")
     existing = _active_run(session, source.id)
     if existing is not None:
         return _run_out(existing, source)
+    if idempotency_key is not None:
+        existing = session.scalar(
+            select(SourceCheckRun).where(SourceCheckRun.idempotency_key == idempotency_key)
+        )
+        if existing is not None:
+            return _run_out(existing, source)
     run_id = uuid4()
     run = SourceCheckRun(
         id=run_id,
@@ -389,11 +480,13 @@ def queue_source_check(
         company_id=source.company_id,
         trusted_source_id=source.id,
         requested_by=user.id,
+        trigger_type=trigger_type,
+        scheduled_for=scheduled_for,
         status="queued",
         dry_run=dry_run,
         visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
         policy_version=policy.version,
-        idempotency_key=_sha256(f"trusted-source-run:{run_id}"),
+        idempotency_key=idempotency_key or _sha256(f"trusted-source-run:{run_id}"),
         max_requests=policy.max_requests_per_run,
         max_download_bytes=policy.max_download_bytes_per_run,
         max_response_bytes=policy.max_response_bytes,
@@ -449,6 +542,136 @@ def queue_source_check_batch(
         queue_source_check(session, user, source_id, policy, dry_run=dry_run)
         for source_id in source_ids
     ]
+
+
+def _source_due_at(source: TrustedSource, policy: SourceMonitoringPolicy) -> datetime:
+    if source.last_checked_at is None:
+        return _as_utc(source.created_at)
+    backoff_multiplier = min(
+        2 ** max(source.consecutive_failures, 0),
+        policy.failure_backoff_max_multiplier,
+    )
+    return _as_utc(source.last_checked_at) + timedelta(
+        minutes=source.check_frequency_minutes * backoff_multiplier
+    )
+
+
+def queue_due_source_checks(
+    session: Session,
+    user: User,
+    settings: Settings,
+    *,
+    now: datetime | None = None,
+    dry_run: bool = True,
+) -> SourceScheduleResult:
+    _require_platform_admin(session, user)
+    checked_at = _as_utc(now or utc_now())
+    if not dry_run:
+        if settings.paid_api_calls_enabled or settings.publication_policy.enabled:
+            raise SourceMonitoringValidationError(
+                "paid API calls and automatic publication must remain disabled"
+            )
+        if not all(
+            (
+                settings.auto_refresh_enabled,
+                settings.source_monitor_scheduler_enabled,
+                settings.external_calls_enabled,
+                settings.trusted_source_calls_enabled,
+            )
+        ):
+            raise SourceMonitoringValidationError(
+                "AUTO_REFRESH_ENABLED, SOURCE_MONITOR_SCHEDULER_ENABLED, "
+                "EXTERNAL_CALLS_ENABLED and TRUSTED_SOURCE_CALLS_ENABLED are required"
+            )
+
+    _set_worker_context(session, user)
+    sources = list(
+        session.scalars(
+            select(TrustedSource).where(
+                TrustedSource.tenant_id == user.tenant_id,
+                TrustedSource.enabled.is_(True),
+            )
+        )
+    )
+    active_source_ids = set(
+        session.scalars(
+            select(SourceCheckRun.trusted_source_id).where(
+                SourceCheckRun.tenant_id == user.tenant_id,
+                SourceCheckRun.status.in_(["queued", "running"]),
+            )
+        )
+    )
+    due_sources = sorted(
+        (
+            (source, _source_due_at(source, settings.source_monitoring_policy))
+            for source in sources
+            if source.id not in active_source_ids
+            and _source_due_at(source, settings.source_monitoring_policy) <= checked_at
+        ),
+        key=lambda item: (item[1], str(item[0].id)),
+    )
+    max_sources = settings.source_monitoring_policy.scheduler_max_sources_per_run
+    selected = due_sources[:max_sources]
+    deferred_count = max(0, len(due_sources) - len(selected))
+    if dry_run:
+        session.rollback()
+        return SourceScheduleResult(
+            status="dry_run",
+            due_count=len(due_sources),
+            queued_count=0,
+            deferred_count=deferred_count,
+            source_ids=tuple(source.id for source, _ in selected),
+        )
+
+    queued_runs: list[SourceCheckRunOut] = []
+    for source, scheduled_for in selected:
+        queued_runs.append(
+            queue_source_check(
+                session,
+                user,
+                source.id,
+                settings.source_monitoring_policy,
+                dry_run=False,
+                trigger_type="scheduled",
+                scheduled_for=scheduled_for,
+                idempotency_key=_sha256(
+                    f"trusted-source-scheduled:{source.id}:{scheduled_for.isoformat()}"
+                ),
+            )
+        )
+    if queued_runs:
+        session.add(
+            UsageLedger(
+                tenant_id=user.tenant_id,
+                provider="trusted_source_scheduler",
+                operation="trusted_source_schedule",
+                external_calls=0,
+                input_tokens=0,
+                output_tokens=0,
+                estimated_cost=Decimal("0"),
+                metrics={
+                    "scheduled_at": checked_at.isoformat(),
+                    "due_count": len(due_sources),
+                    "queued_count": len(queued_runs),
+                    "deferred_count": deferred_count,
+                    "source_ids": [str(item.trusted_source_id) for item in queued_runs],
+                    "auto_publish": 0,
+                    "paid_api_calls": 0,
+                },
+                idempotency_key=_sha256(
+                    "trusted-source-schedule:"
+                    + ":".join(sorted(str(item.id) for item in queued_runs))
+                ),
+            )
+        )
+        session.commit()
+    return SourceScheduleResult(
+        status="queued" if queued_runs else "idle",
+        due_count=len(due_sources),
+        queued_count=len(queued_runs),
+        deferred_count=deferred_count,
+        source_ids=tuple(item.trusted_source_id for item in queued_runs),
+    )
 
 
 def list_source_check_runs(
@@ -556,6 +779,178 @@ def decide_candidate_document(
         processing_status=candidate.processing_status,
         handoff_payload=candidate.handoff_payload,
     )
+
+
+def _candidate_research_import_out(
+    session: Session,
+    candidate: CandidateDocument,
+    *,
+    reused: bool,
+) -> CandidateResearchImportOut | None:
+    document = session.scalar(
+        select(RawDocument).where(
+            RawDocument.candidate_document_id == candidate.id,
+            RawDocument.visibility_scope == ORGANIZATION_PRIVATE_SCOPE,
+            RawDocument.owner_tenant_id == candidate.tenant_id,
+        )
+    )
+    if document is None or document.research_import_id is None:
+        return None
+    evidence = session.scalar(
+        select(EventEvidence).where(
+            EventEvidence.raw_document_id == document.id,
+            EventEvidence.visibility_scope == ORGANIZATION_PRIVATE_SCOPE,
+            EventEvidence.owner_tenant_id == candidate.tenant_id,
+        )
+    )
+    if evidence is None:
+        raise SourceMonitoringConflictError("candidate research lineage is incomplete")
+    event = session.get(Event, evidence.event_id)
+    research_import = session.get(ResearchImport, document.research_import_id)
+    if (
+        event is None
+        or research_import is None
+        or event.visibility_scope != ORGANIZATION_PRIVATE_SCOPE
+        or event.owner_tenant_id != candidate.tenant_id
+        or research_import.tenant_id != candidate.tenant_id
+    ):
+        raise SourceMonitoringConflictError("candidate research lineage is invalid")
+    return CandidateResearchImportOut(
+        candidate_id=candidate.id,
+        research_import_id=research_import.id,
+        raw_document_id=document.id,
+        private_event_id=event.id,
+        status=research_import.status,
+        reused=reused,
+        auto_published=False,
+        shared_fact_created=False,
+        external_calls=0,
+    )
+
+
+def import_candidate_research(
+    session: Session,
+    user: User,
+    candidate_id: UUID,
+    payload: CandidateResearchImportIn,
+    settings: Settings,
+) -> CandidateResearchImportOut:
+    _require_platform_admin(session, user)
+    if not user_has_role(session, user.id, "institution_admin"):
+        raise SourceMonitoringAccessError("institution administrator role required")
+    if settings.publication_policy.enabled:
+        raise SourceMonitoringValidationError("automatic publication must remain disabled")
+    candidate = session.scalar(
+        select(CandidateDocument).where(
+            CandidateDocument.id == candidate_id,
+            CandidateDocument.tenant_id == user.tenant_id,
+        )
+    )
+    if candidate is None:
+        raise SourceMonitoringNotFoundError("candidate document not found")
+    existing = _candidate_research_import_out(session, candidate, reused=True)
+    if existing is not None:
+        return existing
+    if candidate.processing_status != "worth_research":
+        raise SourceMonitoringConflictError("candidate is not marked worth researching")
+    if candidate.identity_status_at_discovery != "verified":
+        raise SourceMonitoringValidationError("candidate company identity was unresolved")
+    if candidate.link_health_status == "broken":
+        raise SourceMonitoringValidationError("broken candidate source cannot enter research")
+    company = session.get(Company, candidate.company_id)
+    source = session.get(TrustedSource, candidate.trusted_source_id)
+    if company is None or source is None:
+        raise SourceMonitoringNotFoundError("candidate lineage is incomplete")
+    if company.identity_status != "verified":
+        raise SourceMonitoringValidationError("company identity is not currently verified")
+    if source.tenant_id != user.tenant_id or source.company_id != company.id:
+        raise SourceMonitoringNotFoundError("candidate source is outside the current tenant")
+    if source.license_status in {"unclear", "restricted"}:
+        raise SourceMonitoringValidationError(
+            "candidate source license must be clarified before research import"
+        )
+
+    published_at = _as_utc(candidate.published_at) if candidate.published_at is not None else None
+    batch = ManualResearchImportBatch(
+        schema_version="1.0",
+        batch_id=f"candidate-{candidate.id}",
+        queried_at=_as_utc(candidate.processed_at or utc_now()),
+        research_tool="trusted_source_monitoring",
+        agent_name="受控候选研究交接",
+        original_query=f"复核候选文档 {candidate.id}：{candidate.title}",
+        target_company_hint=company.legal_name,
+        license_status=source.license_status,
+        records=[
+            ManualResearchRecord(
+                external_record_id=f"candidate-{candidate.id}-{candidate.content_hash[:12]}",
+                company_identity_evidence=CompanyIdentityEvidence(
+                    legal_name=company.legal_name,
+                    credit_code=company.credit_code,
+                    registered_region=company.registered_region,
+                    official_website=company.official_website,
+                ),
+                source_code=f"trusted_source_{source.id.hex}",
+                source_name=source.name,
+                canonical_url=candidate.canonical_url,
+                source_published_at=published_at,
+                occurred_at=payload.occurred_at,
+                title=payload.title,
+                evidence_excerpt=payload.evidence_excerpt,
+                event_type=payload.event_type,
+                event_subtype=payload.event_subtype,
+                direction=payload.direction,
+                materiality_score=payload.materiality_score,
+                risk_severity=payload.risk_severity,
+                confidence_score=payload.confidence_score,
+                source_quality=payload.source_quality,
+                facts=[
+                    {
+                        "name": payload.fact_name,
+                        "value": payload.fact_value,
+                        "unit": payload.fact_unit,
+                    }
+                ],
+                uncertainties=payload.uncertainties,
+                requires_human_review=True,
+            )
+        ],
+    )
+    verification = DocumentVerification(
+        status=candidate.link_health_status,
+        checked_at=_as_utc(candidate.last_observed_at),
+        http_status=candidate.http_status,
+        final_url=candidate.canonical_url,
+        reason="trusted_source_monitoring_observation",
+        external_calls=0,
+    )
+    provider = CandidateResearchImportProvider(candidate.id, batch)
+    candidate.handoff_payload = {
+        **candidate.handoff_payload,
+        "research_reason": payload.research_reason,
+    }
+    try:
+        import_manual_research(
+            session,
+            user,
+            provider,
+            settings.publication_policy,
+            candidate_document=candidate,
+            verification_overrides={candidate.canonical_url: verification},
+        )
+    except AccessDeniedError as error:
+        raise SourceMonitoringAccessError(str(error)) from error
+    except ImportConflictError as error:
+        raise SourceMonitoringConflictError(str(error)) from error
+    # The reused import service commits atomically. PostgreSQL transaction-local
+    # RLS context must be restored before reading the committed lineage.
+    _set_worker_context(session, user)
+    candidate = session.get(CandidateDocument, candidate.id)
+    if candidate is None:
+        raise SourceMonitoringConflictError("candidate disappeared after research import")
+    output = _candidate_research_import_out(session, candidate, reused=False)
+    if output is None:
+        raise SourceMonitoringConflictError("candidate research import did not create lineage")
+    return output
 
 
 def _set_worker_context(session: Session, user: User) -> None:

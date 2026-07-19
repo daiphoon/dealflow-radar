@@ -233,6 +233,11 @@ class TrustedSourceCreate(BaseModel):
 class TrustedSourceUpdate(BaseModel):
     enabled: bool | None = None
     list_path_prefix: str | None = Field(default=None, min_length=2, max_length=500)
+    access_basis: str | None = Field(default=None, min_length=3, max_length=2000)
+    license_status: (
+        Literal["public_access", "permission_confirmed", "unclear", "restricted"] | None
+    ) = None
+    content_retention_policy: Literal["metadata_only", "minimal_excerpt"] | None = None
 
 
 class TrustedSourceOut(BaseModel):
@@ -274,6 +279,8 @@ class SourceCheckRunOut(BaseModel):
     company_id: UUID
     trusted_source_id: UUID
     source_name: str
+    trigger_type: str
+    scheduled_for: datetime | None
     status: str
     dry_run: bool
     policy_version: str
@@ -314,6 +321,7 @@ class CandidateDocumentOut(BaseModel):
     http_status: int | None
     excerpt: str | None
     license_status: str
+    current_source_license_status: str
     processing_status: str
     identity_status_at_discovery: str
     visibility_scope: str
@@ -333,6 +341,46 @@ class CandidateDocumentDecisionOut(BaseModel):
     handoff_payload: dict[str, object]
     event_created: bool = False
     shared_fact_created: bool = False
+
+
+class CandidateResearchImportIn(BaseModel):
+    title: str = Field(min_length=3, max_length=200)
+    evidence_excerpt: str = Field(min_length=3, max_length=1000)
+    event_type: Literal[
+        "financial_operation",
+        "financing_cap_table",
+        "contract_commercial",
+        "product_technology",
+        "governance_people",
+        "legal_compliance",
+        "capacity_assets",
+        "exit_liquidity",
+        "information_quality",
+    ]
+    event_subtype: str = Field(min_length=2, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    direction: Literal["positive", "negative", "neutral", "mixed", "unknown"]
+    materiality_score: int = Field(ge=0, le=100)
+    risk_severity: Literal["none", "low", "moderate", "high", "critical"]
+    confidence_score: float = Field(ge=0, le=1)
+    source_quality: Literal["A", "B", "C", "D"]
+    fact_name: str = Field(min_length=2, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    fact_value: str = Field(min_length=1, max_length=500)
+    fact_unit: str | None = Field(default=None, max_length=40)
+    occurred_at: datetime | None = None
+    uncertainties: list[str] = Field(default_factory=list, max_length=20)
+    research_reason: str = Field(min_length=3, max_length=1000)
+
+
+class CandidateResearchImportOut(BaseModel):
+    candidate_id: UUID
+    research_import_id: UUID
+    raw_document_id: UUID
+    private_event_id: UUID
+    status: str
+    reused: bool
+    auto_published: bool = False
+    shared_fact_created: bool = False
+    external_calls: int = 0
 
 
 class IngestResult(BaseModel):

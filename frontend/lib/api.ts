@@ -183,6 +183,8 @@ export type SourceCheckRun = {
   company_id: string;
   trusted_source_id: string;
   source_name: string;
+  trigger_type: string;
+  scheduled_for: string | null;
   status: string;
   dry_run: boolean;
   policy_version: string;
@@ -223,12 +225,25 @@ export type CandidateDocument = {
   http_status: number | null;
   excerpt: string | null;
   license_status: string;
+  current_source_license_status: string;
   processing_status: string;
   identity_status_at_discovery: string;
   visibility_scope: string;
   handoff_payload: Record<string, unknown>;
   processed_at: string | null;
   decision_reason: string | null;
+};
+
+export type CandidateResearchImport = {
+  candidate_id: string;
+  research_import_id: string;
+  raw_document_id: string;
+  private_event_id: string;
+  status: string;
+  reused: boolean;
+  auto_published: false;
+  shared_fact_created: false;
+  external_calls: 0;
 };
 
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -374,7 +389,13 @@ export function createTrustedSource(payload: {
 
 export function updateTrustedSource(
   sourceId: string,
-  payload: { enabled?: boolean; list_path_prefix?: string | null },
+  payload: {
+    enabled?: boolean;
+    list_path_prefix?: string | null;
+    access_basis?: string;
+    license_status?: string;
+    content_retention_policy?: string;
+  },
 ): Promise<TrustedSource> {
   return patchJson(`/api/v1/trusted-sources/${encodeURIComponent(sourceId)}`, payload);
 }
@@ -405,4 +426,30 @@ export function decideCandidateDocument(
     decision,
     reason,
   });
+}
+
+export function importCandidateResearch(
+  candidateId: string,
+  payload: {
+    title: string;
+    evidence_excerpt: string;
+    event_type: string;
+    event_subtype: string;
+    direction: string;
+    materiality_score: number;
+    risk_severity: string;
+    confidence_score: number;
+    source_quality: string;
+    fact_name: string;
+    fact_value: string;
+    fact_unit: string | null;
+    occurred_at: string | null;
+    uncertainties: string[];
+    research_reason: string;
+  },
+): Promise<CandidateResearchImport> {
+  return postJson(
+    `/api/v1/candidate-documents/${encodeURIComponent(candidateId)}/research-import`,
+    payload,
+  );
 }

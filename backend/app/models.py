@@ -336,7 +336,23 @@ class RawDocument(TimestampMixin, Base):
             postgresql_where=text("visibility_scope = 'system_restricted'"),
             sqlite_where=text("visibility_scope = 'system_restricted'"),
         ),
+        Index(
+            "uq_raw_document_candidate_handoff",
+            "candidate_document_id",
+            unique=True,
+        ),
         CheckConstraint(SCOPED_OWNER_CHECK, name="ck_raw_document_scope_owner"),
+        CheckConstraint(
+            "candidate_document_id IS NULL OR ("
+            "visibility_scope = 'organization_private' "
+            "AND owner_user_id IS NULL AND owner_tenant_id IS NOT NULL)",
+            name="ck_raw_document_candidate_scope",
+        ),
+        ForeignKeyConstraint(
+            ["candidate_document_id", "owner_tenant_id"],
+            ["candidate_documents.id", "candidate_documents.tenant_id"],
+            name="fk_raw_document_candidate_owner",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
@@ -344,6 +360,7 @@ class RawDocument(TimestampMixin, Base):
     research_import_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("research_imports.id", ondelete="SET NULL"), index=True
     )
+    candidate_document_id: Mapped[UUID | None] = mapped_column(Uuid)
     owner_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
@@ -503,6 +520,10 @@ class SourceCheckRun(TimestampMixin, Base):
             name="ck_source_check_run_status",
         ),
         CheckConstraint(
+            "trigger_type IN ('manual', 'scheduled')",
+            name="ck_source_check_run_trigger_type",
+        ),
+        CheckConstraint(
             "visibility_scope = 'organization_private'",
             name="ck_source_check_run_scope",
         ),
@@ -539,6 +560,8 @@ class SourceCheckRun(TimestampMixin, Base):
     company_id: Mapped[UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
     trusted_source_id: Mapped[UUID] = mapped_column(Uuid)
     requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    trigger_type: Mapped[str] = mapped_column(String(32), default="manual", server_default="manual")
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), default="queued")
     dry_run: Mapped[bool] = mapped_column(Boolean, default=True)
     visibility_scope: Mapped[str] = mapped_column(String(32), default=ORGANIZATION_PRIVATE_SCOPE)
@@ -580,6 +603,11 @@ class CandidateDocument(TimestampMixin, Base):
             "canonical_url",
             "content_hash",
             name="uq_candidate_document_source_url_hash",
+        ),
+        UniqueConstraint(
+            "id",
+            "tenant_id",
+            name="uq_candidate_document_owner_lineage",
         ),
         CheckConstraint(
             "change_type IN ('new', 'changed')",

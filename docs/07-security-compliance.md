@@ -6,6 +6,10 @@
 
 Worker 遵守 robots.txt，使用明确 User-Agent，不登录、不提交表单、不保留 Cookie；按运行限制请求数、总下载字节、单响应大小、超时、重试、重定向和域名访问间隔，并只接受预期 HTML/XML/Feed MIME。可执行文件、归档和非预期二进制内容安全失败。来源、运行和候选保持 tenant 私有，个人及其他 tenant 不可通过 API、数量或字段读取；成为共享事实仍需走独立人工晋升流程。
 
+到期调度器默认 dry-run，实际入队要求总外部调用、可信来源、自动刷新和独立调度四个开关同时显式开启，且付费调用和自动发布必须保持关闭。调度幂等键包含来源和应检查时间，连续失败只延长下次到期时间，不放宽网络安全规则。
+
+候选研究交接同时要求本 tenant 的 `platform_admin` 和 `institution_admin`；入参不能改写候选的公司、来源、URL 或 owner。数据库通过 `(candidate_document_id, owner_tenant_id)` 复合外键和每候选唯一交接约束，阻止跨 tenant 关联和重复私有底稿。原候选和来源不变，新文档、提及、事件与证据均为 `organization_private`；共享仍需独立审核。
+
 ## 授权商业工商数据边界
 
 天眼查身份 V1 是已授权商业聚合数据，不是政府登记机关来源。数据库和界面必须保留 `licensed_business_data` 标识，不得显示为“政府官方来源”。真实调用只在 `EXTERNAL_CALLS_ENABLED` 与 `TIANYANCHA_IDENTITY_CALLS_ENABLED` 双开关的一次性本机窗口中运行，固定 Core 端点和批准工具，不跟随重定向；同步用户请求、自动刷新和自动发布均不得触发。
