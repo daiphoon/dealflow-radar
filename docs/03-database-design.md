@@ -126,6 +126,8 @@ erDiagram
 
 `company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence` 和 `company_snapshots` 已使用 `platform_shared`、`personal_private`、`organization_private` 和 `system_restricted`，并以数据库检查约束保证 owner 组合合法。`companies`、`funds` 和 `investments` 中原有的 `public`、`tenant`、`fund` 值暂时保留为兼容映射；公司 `public` 仍要求登录和应用授权，不表示匿名互联网公开。
 
+全局目录公司由 `companies.tenant_id IS NULL AND visibility_scope = 'public'` 表示。显式身份确认造成法定名称变更时，原工商全称写入 `company_aliases`，类型为 `former_legal_name`、核验状态为 `verified`、作用域为 `platform_shared` 且两个 owner 均为空；租户级公司的相同记录仍为 `organization_private`。V1 复用现有索引和约束，不批量提升历史别名，也不把内部代号或品牌名自动加入共享索引。
+
 平台共享记录不得有个人或机构访问所有者；个人私有记录必须有 `owner_user_id`；机构私有记录必须有 `owner_organization_id`，过渡期使用 `owner_tenant_id`；同一记录不能同时归个人和机构。来源用户、来源租户和导入批次属于数据血缘，不等同于访问 owner。事件、证据引用和原始文档分别判断作用域、许可和展示范围。访问条件同时校验登录状态、有效权益、记录作用域、owner、机构关系、资源授权和动作权限。详细规则见[安全合规](07-security-compliance.md)和 [ADR-0009](DECISIONS/ADR-0009-dual-channel-access-and-data-scope.md)。
 
 ## 10. 数据血缘图

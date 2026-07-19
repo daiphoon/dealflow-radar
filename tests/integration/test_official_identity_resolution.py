@@ -11,8 +11,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
-from backend.app.demo import ALPHA_USER_ID, BETA_USER_ID
+from backend.app.demo import (
+    ALPHA_TENANT_ID,
+    ALPHA_USER_ID,
+    BETA_USER_ID,
+    MOCK_SOURCE_ID,
+    NO_ACCESS_USER_ID,
+)
 from backend.app.models import (
+    ORGANIZATION_PRIVATE_SCOPE,
+    PLATFORM_SHARED_SCOPE,
     Company,
     CompanyAlias,
     CompanySnapshot,
@@ -32,6 +40,7 @@ from backend.app.providers import (
 )
 from backend.app.services import (
     AccessDeniedError,
+    _record_former_legal_name,
     import_manual_research,
     import_official_identities,
     resolve_identity_review,
@@ -404,6 +413,20 @@ def test_identity_selection_reroutes_original_record_without_external_call(
         assert resolved.status_code == 200
         assert resolved.json()["publication_route"] == "unconfirmed_lead"
         assert resolved.json()["review_status"] == "approved"
+        resolved_company_id = resolved.json()["company_id"]
+
+        for headers in (
+            {"X-Demo-User-Id": str(NO_ACCESS_USER_ID)},
+            {"X-Demo-User-Id": str(BETA_USER_ID)},
+        ):
+            for query in (legal_name, official_legal_name, "91310000MA1K000006"):
+                search = client.get(
+                    "/api/v1/companies/search",
+                    headers=headers,
+                    params={"q": query},
+                )
+                assert search.status_code == 200
+                assert [item["id"] for item in search.json()] == [resolved_company_id]
 
         repeated = client.post(
             f"/api/v1/reviews/{review_id}/identity-resolution",
@@ -445,6 +468,10 @@ def test_identity_selection_reroutes_original_record_without_external_call(
         assert mention.candidate_company_id is not None
         assert company is not None and company.legal_name == official_legal_name
         assert former_name is not None and former_name.alias == legal_name
+        assert former_name.verification_status == "verified"
+        assert former_name.visibility_scope == PLATFORM_SHARED_SCOPE
+        assert former_name.owner_user_id is None
+        assert former_name.owner_tenant_id is None
         assert event is not None and event.status == "candidate"
         assert event.publication_route == "unconfirmed_lead"
         assert "source_url_unchecked" in event.publication_reasons
@@ -455,6 +482,37 @@ def test_identity_selection_reroutes_original_record_without_external_call(
         assert ledger is not None and ledger.external_calls == 0
         assert session.scalar(select(func.count()).select_from(EventEvidence)) == 1
         assert session.scalar(select(func.count()).select_from(CompanySnapshot)) == 0
+
+
+def test_tenant_owned_company_former_name_remains_organization_private(
+    migrated_app: FastAPI,
+) -> None:
+    with migrated_app.state.session_factory() as session:
+        company = Company(
+            tenant_id=ALPHA_TENANT_ID,
+            credit_code="PRIVATE-FORMER-NAME-CODE",
+            legal_name="机构私有公司新名称",
+            registered_region="虚构地区",
+            identity_status="verified",
+            visibility_scope="tenant",
+        )
+        session.add(company)
+        session.flush()
+
+        _record_former_legal_name(
+            session,
+            company,
+            MOCK_SOURCE_ID,
+            "机构私有公司旧名称",
+            ALPHA_TENANT_ID,
+        )
+        session.commit()
+
+        alias = session.scalar(select(CompanyAlias).where(CompanyAlias.company_id == company.id))
+        assert alias is not None
+        assert alias.visibility_scope == ORGANIZATION_PRIVATE_SCOPE
+        assert alias.owner_user_id is None
+        assert alias.owner_tenant_id == ALPHA_TENANT_ID
 
 
 def test_identity_selection_rejects_stale_official_candidate(

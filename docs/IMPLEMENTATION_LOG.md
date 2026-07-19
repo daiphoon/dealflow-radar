@@ -134,3 +134,12 @@
 - 实际命令：Tianyancha Provider、CLI、身份集成和迁移针对性 Pytest；`uv run ruff check backend migrations scripts tests`；`uv run ruff format --check backend migrations scripts tests`；`uv run pytest -q`；SQLite 空库 `alembic upgrade head`、`alembic check` 和 `alembic downgrade base`；隔离 PostgreSQL 16 从 `0012` 升级至 `0013`、Schema 漂移检查、降级与重新升级、空库及真实数据 RLS 负向检查；`npm run typecheck`、`npm run build`、`npm audit --audit-level=high`；10 家真实公司首次、缓存重复和身份歧义补充批次；个人、基金、其他租户和管理员 API 与浏览器验收；私有备份 `pg_restore -l`、Git 忽略和密钥前缀检查；`git diff --check`。
 - 测试结果：针对性测试 33 项通过；默认 Pytest 145 项通过、2 项需显式 PostgreSQL 环境的测试按预期跳过，仅有 FastAPI TestClient 上游弃用警告；Ruff、格式、SQLite 迁移往返、隔离 PostgreSQL 迁移与 RLS、TypeScript、Next.js 生产构建通过，依赖审计 0 个已知漏洞。10 家首次批次发起 20 次免费 API 调用，9 家按信用代码与工商全称精确核验，成都普康唯新因同代码名称变化保守记录冲突；补充消歧查询 1 次外部调用并复用 1 次缓存，重复批次外部调用为 0。数据库只保存必要身份字段和响应哈希，完整响应仅存 Git 忽略的 `700/600` 私有缓存；未新增事件或共享事实。个人和机构路径均读取相同公司 ID，个人与其他租户看不到投资或私有底稿，基金叠加、现有共享事件和审核工作台正常。总计 21 次外部调用、0 次付费调用、0 模型 Token、0 估算费用、0 自动发布；浏览器无横向溢出，未替代人工选择身份冲突。
 - 未解决阻塞：成都普康唯新的名称变化仍需项目负责人在身份工作台人工确认；V1 仅支持管理员私有清单和人工命令，不含调度、工商变更订阅或生产认证；供应商请求在数据库事务开始前失败时，审计只存在于私有缓存和命令错误；FastAPI TestClient 上游弃用警告仍存在，不影响当前结果。
+
+## 2026-07-19｜全局公司身份索引与已核验别名共享 V1
+
+- 日期：2026-07-19
+- 任务：按 ADR-0011 确认公司为跨个人、机构和基金复用的全局主实体；修复显式身份确认发生工商更名时旧法定名称被错误保存为机构私有别名的问题。只将全局目录公司的已核验法定曾用名写入共享身份索引，租户私有公司和其他私有别名继续隔离；不改变事件、证据、原始文档或基金投资作用域。
+- 关键文件：`backend/app/services.py`、`tests/integration/test_official_identity_resolution.py`、`docs/DECISIONS/ADR-0011-global-company-identity-index.md`、ADR 索引及受影响的领域、数据库、安全、实施和测试文档。
+- 实际命令：定向身份与双通道 Pytest；`uv run --frozen ruff check backend migrations scripts tests`；`uv run --frozen ruff format --check backend migrations scripts tests`；`uv run --frozen pytest -q`；SQLite 空库 `alembic upgrade head`、`alembic check` 和 `alembic downgrade base`；一次性 PostgreSQL 16 空库升级、Schema 漂移、受限应用账户 RLS；`npm audit --audit-level=high`、`npm run typecheck`、`npm run build`；隔离恢复普康唯新身份确认前备份，执行身份选择、三类用户精确搜索、公司详情和浏览器冒烟；`git diff --check`。
+- 测试结果：Ruff、格式、SQLite 迁移往返、PostgreSQL Schema/RLS、TypeScript、Next.js 生产构建和依赖审计通过；默认 Pytest 146 项通过、2 项需显式 PostgreSQL 环境的测试按预期跳过，显式 RLS 测试 2 项通过。普康唯新旧工商全称、新工商全称和信用代码对无基金个人、其他机构和影子基金管理员均返回同一 `company_id`；数据库只有一家公司记录。旧法定名称为无 owner 的 `platform_shared` 别名，原候选事件与原文档仍为来源机构私有；个人和其他机构无投资、私有事件或私有线索，影子基金管理员只看到自己的基金叠加与 1 条私有线索。浏览器控制台无错误。本里程碑业务外部调用、付费调用、模型 Token、估算费用和自动发布均为 0。
+- 未解决阻塞：无。历史私有别名不批量晋升；品牌名、内部代号、模糊搜索、法定名称历史时间轴和通用身份纠错界面不在本里程碑。FastAPI TestClient 上游弃用警告仍存在，不影响当前结果。

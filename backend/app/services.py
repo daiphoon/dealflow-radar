@@ -2662,12 +2662,19 @@ def _record_former_legal_name(
     owner_tenant_id: UUID,
 ) -> None:
     normalized_alias = _normalized_identity_text(former_name)
+    is_global_catalog_company = company.tenant_id is None and company.visibility_scope == "public"
+    alias_scope = PLATFORM_SHARED_SCOPE if is_global_catalog_company else ORGANIZATION_PRIVATE_SCOPE
+    owner_condition = (
+        CompanyAlias.owner_tenant_id.is_(None)
+        if is_global_catalog_company
+        else CompanyAlias.owner_tenant_id == owner_tenant_id
+    )
     existing = session.scalar(
         select(CompanyAlias).where(
             CompanyAlias.company_id == company.id,
-            CompanyAlias.visibility_scope == ORGANIZATION_PRIVATE_SCOPE,
+            CompanyAlias.visibility_scope == alias_scope,
             CompanyAlias.owner_user_id.is_(None),
-            CompanyAlias.owner_tenant_id == owner_tenant_id,
+            owner_condition,
             CompanyAlias.normalized_alias == normalized_alias,
             CompanyAlias.alias_type == "former_legal_name",
         )
@@ -2681,9 +2688,9 @@ def _record_former_legal_name(
                 normalized_alias=normalized_alias,
                 alias_type="former_legal_name",
                 verification_status="verified",
-                visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
+                visibility_scope=alias_scope,
                 owner_user_id=None,
-                owner_tenant_id=owner_tenant_id,
+                owner_tenant_id=None if is_global_catalog_company else owner_tenant_id,
             )
         )
 

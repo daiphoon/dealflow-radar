@@ -12,5 +12,6 @@
 | [ADR-0008](ADR-0008-official-identity-verification-and-rerouting.md) | 使用官方工商证据核验主体，身份歧义由人工选择并重新路由原记录 |
 | [ADR-0009](ADR-0009-dual-channel-access-and-data-scope.md) | 采用个人与机构双通道，平台共享事实与个人/机构私有数据按作用域隔离 |
 | [ADR-0010](ADR-0010-licensed-business-identity-verification.md) | 授权商业工商数据可作为独立身份核验依据，但不得冒充政府官方来源或降低事件发布门槛 |
+| [ADR-0011](ADR-0011-global-company-identity-index.md) | 公司主档跨个人、机构和基金全局复用，已核验法定名称进入共享身份索引 |
 
 状态均为“已接受”，适用于 `DEMO / VALIDATION`。改变决定需新增 ADR，不回改历史理由。

@@ -40,6 +40,8 @@ Worker 遵守 robots.txt，使用明确 User-Agent，不登录、不提交表单
 
 同一用户通过 `fund_access_grants` 访问多个基金；同一公司可连接多个个人、机构和基金，但不能借由共享公司页推断其他客户的关注、持仓或私有线索。`fund_access_grants` 只授权基金私有层，不授权平台共享公司档案。
 
+公司主档和基金资产必须分离：已核验全局公司及其当前/曾用法定名称可被所有具备平台访问资格的用户复用，基金只通过 `investments` 叠加私有关系。只有显式身份确认产生的法定曾用名可进入共享索引；租户私有别名、内部代号、品牌名和未核实名称继续受 owner 与 RLS 约束。共享公司身份不提升事件、证据引用或原始文档的作用域。
+
 ## 3. `visibility_scope` 与 RLS
 
 领域作用域为 `platform_shared`、`personal_private`、`organization_private` 和 `system_restricted`。别名、文档、提及、事件、证据引用和快照已使用这些值；公司、基金和投资关系仍保留 `public`、`tenant`、`fund` 兼容值。其中公司 `public` 只表示允许映射到平台共享目录，仍要求登录，不表示匿名互联网公开。
