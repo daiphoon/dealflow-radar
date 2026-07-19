@@ -506,14 +506,17 @@ def _official_identity_source(
     loaded: LoadedOfficialIdentityImport,
 ) -> Source:
     source_payload = loaded.batch.source
+    verification_basis = loaded.batch.verification_basis
+    expected_quality = "A" if verification_basis == "official_government" else "B"
+    expected_license = loaded.batch.license_status
     base_url = source_payload.base_url.rstrip("/")
     source = session.scalar(select(Source).where(Source.code == source_payload.code))
     if source is None:
         source = Source(
             code=source_payload.code,
             name=source_payload.name,
-            source_quality="A",
-            license_status="public",
+            source_quality=expected_quality,
+            license_status=expected_license,
             base_url=base_url,
         )
         session.add(source)
@@ -521,8 +524,8 @@ def _official_identity_source(
         return source
     if (
         source.name != source_payload.name
-        or source.source_quality != "A"
-        or source.license_status != "public"
+        or source.source_quality != expected_quality
+        or source.license_status != expected_license
         or (source.base_url or "").rstrip("/") != base_url
     ):
         raise ImportConflictError(f"source_code conflict: {source_payload.code}")
@@ -533,7 +536,11 @@ def _resolve_official_identity_company(
     session: Session,
     tenant_id: UUID,
     record: OfficialIdentityRecord,
+    verification_basis: str,
 ) -> tuple[Company | None, str, str]:
+    match_prefix = (
+        "official" if verification_basis == "official_government" else "licensed_business"
+    )
     visible_company = or_(Company.tenant_id.is_(None), Company.tenant_id == tenant_id)
     company = session.scalar(
         select(Company).where(visible_company, Company.credit_code == record.credit_code)
@@ -542,17 +549,23 @@ def _resolve_official_identity_company(
         _record_identity_check(company, record.checked_at)
         name_matches = company.legal_name == record.legal_name
         region_matches = _regions_compatible(company.registered_region, record.registered_region)
-        if name_matches and region_matches:
+        if name_matches:
             company.identity_status = "verified"
+            if (
+                company.identity_verification_basis is None
+                or verification_basis == "official_government"
+            ):
+                company.identity_verification_basis = verification_basis
             if company.registered_region is None:
                 company.registered_region = record.registered_region
-            return company, "official_credit_code_exact", "verified"
+            match_rule = f"{match_prefix}_credit_code_exact"
+            if not region_matches:
+                match_rule = f"{match_rule}_registered_region_variation"
+            return company, match_rule, "verified"
         reasons = []
         if not name_matches:
             reasons.append("legal_name")
-        if not region_matches:
-            reasons.append("registered_region")
-        return company, f"official_credit_code_{'_'.join(reasons)}_conflict", "conflict"
+        return company, f"{match_prefix}_credit_code_{'_'.join(reasons)}_conflict", "conflict"
 
     name_candidates = list(
         session.scalars(
@@ -560,18 +573,20 @@ def _resolve_official_identity_company(
         )
     )
     if len(name_candidates) != 1:
-        return None, "official_record_unmatched", "unmatched"
+        return None, f"{match_prefix}_record_unmatched", "unmatched"
     company = name_candidates[0]
     _record_identity_check(company, record.checked_at)
     if company.credit_code is not None and company.credit_code != record.credit_code:
-        return company, "official_legal_name_credit_code_conflict", "conflict"
+        return company, f"{match_prefix}_legal_name_credit_code_conflict", "conflict"
     if not _regions_compatible(company.registered_region, record.registered_region):
-        return company, "official_legal_name_registered_region_conflict", "conflict"
+        return company, f"{match_prefix}_legal_name_registered_region_conflict", "conflict"
     company.credit_code = record.credit_code
     company.identity_status = "verified"
+    if company.identity_verification_basis is None or verification_basis == "official_government":
+        company.identity_verification_basis = verification_basis
     if company.registered_region is None:
         company.registered_region = record.registered_region
-    return company, "official_legal_name_exact_credit_code_enriched", "verified"
+    return company, f"{match_prefix}_legal_name_exact_credit_code_enriched", "verified"
 
 
 def _official_identity_counts(
@@ -676,6 +691,7 @@ def import_official_identities(
                 session,
                 user.tenant_id,
                 record,
+                batch.verification_basis,
             )
             if verification_status == "verified":
                 verified_count += 1
@@ -698,7 +714,7 @@ def import_official_identities(
                 visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
                 owner_user_id=None,
                 owner_tenant_id=user.tenant_id,
-                external_record_id=f"official-identity:{source_record_key[:40]}",
+                external_record_id=f"identity-verification:{source_record_key[:40]}",
                 canonical_url=record.canonical_url,
                 title=f"工商身份核验：{record.legal_name}",
                 published_at=None,
@@ -706,7 +722,7 @@ def import_official_identities(
                 observed_at=record.checked_at,
                 content_hash=content_hash,
                 document_dedupe_key=_sha256(f"{source.id}:{source_record_key}"),
-                license_status="public",
+                license_status=batch.license_status,
                 payload=record_payload,
             )
             session.add(document)
@@ -722,6 +738,7 @@ def import_official_identities(
                     registered_region=record.registered_region,
                     registration_status=record.registration_status,
                     verification_status=verification_status,
+                    verification_basis=batch.verification_basis,
                     match_rule=match_rule,
                     checked_at=record.checked_at,
                 )
@@ -745,6 +762,8 @@ def import_official_identities(
                     "verified_records": verified_count,
                     "conflict_records": conflict_count,
                     "unmatched_records": unmatched_count,
+                    "verification_basis": batch.verification_basis,
+                    "cache_hits": int(getattr(provider, "cache_hits", 0)),
                 },
                 idempotency_key=_sha256(f"official-identity-import:{research_import.id}"),
             )
@@ -1708,6 +1727,7 @@ def _identity_candidates_for_mention(
         identity_payload = {}
     evidence_credit_code = identity_payload.get("credit_code")
     evidence_legal_name = identity_payload.get("legal_name")
+    evidence_website = identity_payload.get("official_website")
     cutoff = utc_now() - timedelta(days=identity_policy.verification_ttl_days)
     rows = session.execute(
         select(OfficialIdentityVerification, Company, RawDocument, Source)
@@ -1738,6 +1758,9 @@ def _identity_candidates_for_mention(
                 _normalized_identity_text(verification.query_text) == normalized_mention,
                 evidence_credit_code == verification.credit_code,
                 evidence_legal_name == verification.legal_name,
+                isinstance(evidence_website, str)
+                and _normalized_web_host(evidence_website)
+                == _normalized_web_host(company.official_website),
             ]
         )
         if not associated or company.id in seen_company_ids:
@@ -1752,6 +1775,7 @@ def _identity_candidates_for_mention(
                 registered_region=verification.registered_region,
                 registration_status=verification.registration_status,
                 verification_status=verification.verification_status,
+                verification_basis=verification.verification_basis,
                 match_rule=verification.match_rule,
                 checked_at=checked_at,
                 source_name=source.name,
@@ -2572,6 +2596,7 @@ def get_company_detail(
         registered_region=company.registered_region,
         official_website=company.official_website,
         identity_status=company.identity_status,
+        identity_verification_basis=company.identity_verification_basis,
         data_as_of=snapshot.data_as_of if snapshot else None,
         last_checked_at=snapshot.last_checked_at if snapshot else None,
         freshness_status=freshness_status,
@@ -2701,17 +2726,17 @@ def resolve_identity_review(
             None,
         )
         if selected is None:
-            raise AccessDeniedError("official identity candidate is missing, stale, or unrelated")
+            raise AccessDeniedError("identity candidate is missing, stale, or unrelated")
         verification = session.get(OfficialIdentityVerification, verification_id)
         if verification is None or verification.company_id is None:
-            raise AccessDeniedError("official identity candidate is unavailable")
+            raise AccessDeniedError("identity candidate is unavailable")
         company = session.get(Company, verification.company_id)
         identity_document = session.get(RawDocument, verification.raw_document_id)
         source_document = session.get(RawDocument, mention.raw_document_id)
         if company is None or identity_document is None or source_document is None:
             raise NotFoundError("identity resolution evidence not found")
         if company.credit_code is not None and company.credit_code != verification.credit_code:
-            raise AccessDeniedError("selected company credit code conflicts with official evidence")
+            raise AccessDeniedError("selected company credit code conflicts with identity evidence")
 
         former_name = company.legal_name
         if former_name != verification.legal_name:
@@ -2727,10 +2752,11 @@ def resolve_identity_review(
         if verification.registered_region is not None:
             company.registered_region = verification.registered_region
         company.identity_status = "verified"
+        company.identity_verification_basis = verification.verification_basis
         _record_identity_check(company, verification.checked_at)
 
         mention.candidate_company_id = company.id
-        mention.match_rule = f"official_identity_selected:{resolved_identity_policy.version}"
+        mention.match_rule = f"identity_verification_selected:{resolved_identity_policy.version}"
         mention.match_confidence = Decimal("1.000")
         mention.resolution_status = "verified"
         review.status = "approved"
@@ -2791,6 +2817,7 @@ def resolve_identity_review(
                     "review_id": str(review.id),
                     "entity_mention_id": str(mention.id),
                     "verification_id": str(verification.id),
+                    "verification_basis": verification.verification_basis,
                     "event_id": str(event.id),
                     "publication_route": publication_route,
                     "identity_policy_version": resolved_identity_policy.version,

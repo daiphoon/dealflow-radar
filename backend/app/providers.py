@@ -12,7 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.app.event_schema import Direction, EventType, Fact, RiskSeverity, SourceQuality
 
@@ -54,7 +54,22 @@ def _validate_official_identity_url(value: str) -> str:
     return value
 
 
-def _validate_unified_credit_code(value: str) -> str:
+def _validate_identity_https_url(value: str) -> str:
+    _validate_public_http_url(value)
+    if urlsplit(value).scheme != "https":
+        raise ValueError("identity URL must use HTTPS")
+    return value
+
+
+def _validate_tianyancha_identity_url(value: str) -> str:
+    _validate_identity_https_url(value)
+    host = (urlsplit(value).hostname or "").lower().rstrip(".")
+    if host != "www.tianyancha.com":
+        raise ValueError("licensed identity URL must use the approved Tianyancha domain")
+    return value
+
+
+def validate_unified_credit_code(value: str) -> str:
     if len(value) != 18 or any(character not in UNIFIED_CREDIT_CODE_CHARSET for character in value):
         raise ValueError("credit_code must use the unified social credit code character set")
     total = sum(
@@ -254,7 +269,7 @@ class OfficialIdentitySource(BaseModel):
     @field_validator("base_url")
     @classmethod
     def validate_base_url(cls, value: str) -> str:
-        return _validate_official_identity_url(value)
+        return _validate_identity_https_url(value)
 
 
 class OfficialIdentityRecord(BaseModel):
@@ -268,22 +283,61 @@ class OfficialIdentityRecord(BaseModel):
     registration_status: str = Field(min_length=1, max_length=64)
     canonical_url: str = Field(min_length=1, max_length=1000)
     checked_at: datetime
+    registration_authority: str | None = Field(default=None, max_length=240)
+    data_updated_at: datetime | None = None
+    provider_metadata: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("provider_metadata")
+    @classmethod
+    def restrict_provider_metadata(cls, value: dict[str, object]) -> dict[str, object]:
+        allowed_fields = {
+            "candidate_count",
+            "provider_company_id",
+            "search_response_hash",
+            "registration_response_hash",
+        }
+        unexpected = set(value) - allowed_fields
+        if unexpected:
+            raise ValueError("provider_metadata contains fields outside the identity contract")
+        candidate_count = value.get("candidate_count")
+        if candidate_count is not None and (
+            isinstance(candidate_count, bool)
+            or not isinstance(candidate_count, int)
+            or candidate_count < 0
+        ):
+            raise ValueError("provider_metadata candidate_count must be a non-negative integer")
+        provider_company_id = value.get("provider_company_id")
+        if provider_company_id is not None and (
+            not isinstance(provider_company_id, str)
+            or not provider_company_id.strip()
+            or len(provider_company_id) > 120
+        ):
+            raise ValueError("provider_metadata provider_company_id is invalid")
+        for field_name in ("search_response_hash", "registration_response_hash"):
+            field_value = value.get(field_name)
+            if field_value is not None and (
+                not isinstance(field_value, str)
+                or len(field_value) != 64
+                or any(character not in "0123456789abcdef" for character in field_value)
+            ):
+                raise ValueError(f"provider_metadata {field_name} must be a SHA-256 hash")
+        return value
 
     @field_validator("credit_code")
     @classmethod
     def validate_credit_code(cls, value: str) -> str:
-        return _validate_unified_credit_code(value)
+        return validate_unified_credit_code(value)
 
     @field_validator("canonical_url")
     @classmethod
     def validate_canonical_url(cls, value: str) -> str:
-        return _validate_official_identity_url(value)
+        return _validate_identity_https_url(value)
 
-    @field_validator("checked_at")
+    @field_validator("checked_at", "data_updated_at")
     @classmethod
-    def require_checked_timezone(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("checked_at must include a timezone")
+    def require_checked_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("identity timestamps must include a timezone")
         return value
 
 
@@ -296,7 +350,10 @@ class OfficialIdentityImportBatch(BaseModel):
     source: OfficialIdentitySource
     original_query: str = Field(min_length=1, max_length=1000)
     target_company_hint: str = Field(min_length=1, max_length=240)
-    license_status: Literal["public"]
+    verification_basis: Literal["official_government", "licensed_business_data"] = (
+        "official_government"
+    )
+    license_status: Literal["public", "permission_confirmed"]
     records: list[OfficialIdentityRecord] = Field(min_length=1, max_length=500)
 
     @field_validator("queried_at")
@@ -305,6 +362,27 @@ class OfficialIdentityImportBatch(BaseModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("queried_at must include a timezone")
         return value
+
+    @model_validator(mode="after")
+    def validate_basis_source_and_license(self) -> OfficialIdentityImportBatch:
+        if self.verification_basis == "official_government":
+            if self.license_status != "public":
+                raise ValueError("official government identity requires a public license status")
+            _validate_official_identity_url(self.source.base_url)
+            for record in self.records:
+                _validate_official_identity_url(record.canonical_url)
+            return self
+
+        if self.license_status != "permission_confirmed":
+            raise ValueError(
+                "licensed business identity requires a permission_confirmed license status"
+            )
+        if self.source.code != "tianyancha_licensed_business_data":
+            raise ValueError("licensed business identity must use the approved Tianyancha source")
+        _validate_tianyancha_identity_url(self.source.base_url)
+        for record in self.records:
+            _validate_tianyancha_identity_url(record.canonical_url)
+        return self
 
 
 @dataclass(frozen=True)

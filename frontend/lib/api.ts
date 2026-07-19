@@ -117,6 +117,7 @@ export type IdentityCandidate = {
   registered_region: string | null;
   registration_status: string;
   verification_status: string;
+  verification_basis: string;
   match_rule: string;
   checked_at: string;
   source_name: string;
@@ -141,6 +142,7 @@ export type CompanyDetail = {
   registered_region: string | null;
   official_website: string | null;
   identity_status: string;
+  identity_verification_basis: string | null;
   data_as_of: string | null;
   last_checked_at: string | null;
   freshness_status: string;

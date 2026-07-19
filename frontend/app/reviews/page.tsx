@@ -105,6 +105,12 @@ function publicationRouteLabel(route: string): string {
   return route;
 }
 
+function identityBasisLabel(basis: string): string {
+  if (basis === "official_government") return "政府官方来源";
+  if (basis === "licensed_business_data") return "授权工商数据";
+  return "未知核验依据";
+}
+
 function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
   const event = review.event;
   return (
@@ -281,13 +287,13 @@ function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
             {review.match_confidence ? `${Math.round(Number(review.match_confidence) * 100)}%` : "未知"}
           </p>
           <p>
-            当前状态：{review.resolution_status ?? "unresolved"}。只有官方工商候选需要人工选择；选定后系统会自动重建事件并按现行策略路由。
+            本条资料公司归属：{review.resolution_status ?? "unresolved"}。只有存在身份歧义的工商候选需要人工选择；选定后系统会自动重建事件并按现行策略路由。
           </p>
           {review.status === "pending" && review.identity_candidates.length ? (
             <form action={submitIdentityResolution} className="review-form">
               <input name="review_id" type="hidden" value={review.id} />
               <fieldset>
-                <legend>选择官方工商主体</legend>
+                <legend>选择工商主体</legend>
                 {review.identity_candidates.map((candidate) => (
                   <label className="review-confirmation" key={candidate.verification_id}>
                     <input
@@ -303,6 +309,7 @@ function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
                       {candidate.registered_region ?? "未载明"} · 登记状态：
                       {candidate.registration_status}
                       <br />
+                      核验依据：{identityBasisLabel(candidate.verification_basis)} ·
                       <a href={candidate.canonical_url} rel="noreferrer" target="_blank">
                         {candidate.source_name} ↗
                       </a>
@@ -323,7 +330,7 @@ function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
               />
               <label className="review-confirmation">
                 <input name="confirmed" required type="checkbox" />
-                <span>我已核对官方记录，并理解选择会更新公司身份主数据。</span>
+                <span>我已核对所示来源、信用代码和工商全称，并理解选择会更新公司身份主数据。</span>
               </label>
               <button className="button button-approve" type="submit">
                 确认主体并重新路由
@@ -332,7 +339,7 @@ function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
             </form>
           ) : review.status === "pending" ? (
             <p className="muted">
-              暂无在当前有效期内且与该线索关联的官方工商候选。请先通过本机官方身份导入命令入库。
+              暂无在当前有效期内且与该线索关联的工商身份候选。请先通过受控身份导入命令入库。
             </p>
           ) : (
             <div className="decision-note">

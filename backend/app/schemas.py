@@ -90,6 +90,7 @@ class CompanyDetail(BaseModel):
     registered_region: str | None
     official_website: str | None
     identity_status: str
+    identity_verification_basis: str | None
     data_as_of: date | None
     last_checked_at: datetime | None
     freshness_status: str
@@ -118,6 +119,7 @@ class IdentityCandidateOut(BaseModel):
     registered_region: str | None
     registration_status: str
     verification_status: str
+    verification_basis: str
     match_rule: str
     checked_at: datetime
     source_name: str

@@ -11,5 +11,6 @@
 | [ADR-0007](ADR-0007-identity-first-automated-publication.md) | 人工只处理身份例外，例行事实自动发布，其他异常保留为未确认线索 |
 | [ADR-0008](ADR-0008-official-identity-verification-and-rerouting.md) | 使用官方工商证据核验主体，身份歧义由人工选择并重新路由原记录 |
 | [ADR-0009](ADR-0009-dual-channel-access-and-data-scope.md) | 采用个人与机构双通道，平台共享事实与个人/机构私有数据按作用域隔离 |
+| [ADR-0010](ADR-0010-licensed-business-identity-verification.md) | 授权商业工商数据可作为独立身份核验依据，但不得冒充政府官方来源或降低事件发布门槛 |
 
 状态均为“已接受”，适用于 `DEMO / VALIDATION`。改变决定需新增 ADR，不回改历史理由。

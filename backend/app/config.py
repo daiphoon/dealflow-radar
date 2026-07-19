@@ -91,6 +91,44 @@ class IdentityPolicy:
             raise ValueError("IDENTITY_VERIFICATION_TTL_DAYS must be a positive integer")
 
 
+TIANYANCHA_CORE_ENDPOINT = "https://mcp.tianyancha.com/v1/core/tools/call"
+
+
+@dataclass(frozen=True)
+class TianyanchaIdentityPolicy:
+    version: str = "tianyancha-licensed-identity-v1"
+    endpoint_url: str = TIANYANCHA_CORE_ENDPOINT
+    max_companies_per_run: int = 10
+    max_requests_per_run: int = 24
+    max_response_bytes: int = 1_000_000
+    timeout_seconds: int = 10
+    retry_limit: int = 1
+    min_request_interval_ms: int = 1_000
+    cache_ttl_days: int = 30
+
+    def __post_init__(self) -> None:
+        if not self.version.strip():
+            raise ValueError("TIANYANCHA_IDENTITY_POLICY_VERSION must not be empty")
+        if self.endpoint_url != TIANYANCHA_CORE_ENDPOINT:
+            raise ValueError("TIANYANCHA_IDENTITY_ENDPOINT must use the approved endpoint")
+        for name, value in (
+            ("TIANYANCHA_IDENTITY_MAX_COMPANIES", self.max_companies_per_run),
+            ("TIANYANCHA_IDENTITY_MAX_REQUESTS", self.max_requests_per_run),
+            ("TIANYANCHA_IDENTITY_MAX_RESPONSE_BYTES", self.max_response_bytes),
+            ("TIANYANCHA_IDENTITY_TIMEOUT_SECONDS", self.timeout_seconds),
+            ("TIANYANCHA_IDENTITY_CACHE_TTL_DAYS", self.cache_ttl_days),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.retry_limit < 0:
+            raise ValueError("TIANYANCHA_IDENTITY_RETRY_LIMIT must be non-negative")
+        if self.min_request_interval_ms < 0:
+            raise ValueError("TIANYANCHA_IDENTITY_MIN_REQUEST_INTERVAL_MS must be non-negative")
+        minimum_requests = self.max_companies_per_run * 2
+        if self.max_requests_per_run < minimum_requests:
+            raise ValueError("TIANYANCHA_IDENTITY_MAX_REQUESTS must allow two calls per company")
+
+
 @dataclass(frozen=True)
 class SourceMonitoringPolicy:
     version: str = "trusted-source-v1"
@@ -133,10 +171,14 @@ class Settings:
     paid_api_calls_enabled: bool
     auto_refresh_enabled: bool
     trusted_source_calls_enabled: bool = False
+    tianyancha_identity_calls_enabled: bool = False
     review_workbench_enabled: bool = False
     refresh_policy: RefreshPolicy = field(default_factory=RefreshPolicy)
     publication_policy: PublicationPolicy = field(default_factory=PublicationPolicy)
     identity_policy: IdentityPolicy = field(default_factory=IdentityPolicy)
+    tianyancha_identity_policy: TianyanchaIdentityPolicy = field(
+        default_factory=TianyanchaIdentityPolicy
+    )
     source_monitoring_policy: SourceMonitoringPolicy = field(default_factory=SourceMonitoringPolicy)
 
     @classmethod
@@ -152,6 +194,9 @@ class Settings:
             auto_refresh_enabled=_as_bool(os.getenv("AUTO_REFRESH_ENABLED", "false")),
             trusted_source_calls_enabled=_as_bool(
                 os.getenv("TRUSTED_SOURCE_CALLS_ENABLED", "false")
+            ),
+            tianyancha_identity_calls_enabled=_as_bool(
+                os.getenv("TIANYANCHA_IDENTITY_CALLS_ENABLED", "false")
             ),
             review_workbench_enabled=_as_bool(os.getenv("REVIEW_WORKBENCH_ENABLED", "false")),
             refresh_policy=RefreshPolicy(
@@ -172,6 +217,27 @@ class Settings:
             identity_policy=IdentityPolicy(
                 version=os.getenv("IDENTITY_POLICY_VERSION", "official-identity-v1"),
                 verification_ttl_days=_as_positive_int("IDENTITY_VERIFICATION_TTL_DAYS", 30),
+            ),
+            tianyancha_identity_policy=TianyanchaIdentityPolicy(
+                version=os.getenv(
+                    "TIANYANCHA_IDENTITY_POLICY_VERSION",
+                    "tianyancha-licensed-identity-v1",
+                ),
+                endpoint_url=os.getenv(
+                    "TIANYANCHA_IDENTITY_ENDPOINT",
+                    TIANYANCHA_CORE_ENDPOINT,
+                ),
+                max_companies_per_run=_as_positive_int("TIANYANCHA_IDENTITY_MAX_COMPANIES", 10),
+                max_requests_per_run=_as_positive_int("TIANYANCHA_IDENTITY_MAX_REQUESTS", 24),
+                max_response_bytes=_as_positive_int(
+                    "TIANYANCHA_IDENTITY_MAX_RESPONSE_BYTES", 1_000_000
+                ),
+                timeout_seconds=_as_positive_int("TIANYANCHA_IDENTITY_TIMEOUT_SECONDS", 10),
+                retry_limit=_as_non_negative_int("TIANYANCHA_IDENTITY_RETRY_LIMIT", 1),
+                min_request_interval_ms=_as_non_negative_int(
+                    "TIANYANCHA_IDENTITY_MIN_REQUEST_INTERVAL_MS", 1_000
+                ),
+                cache_ttl_days=_as_positive_int("TIANYANCHA_IDENTITY_CACHE_TTL_DAYS", 30),
             ),
             source_monitoring_policy=SourceMonitoringPolicy(
                 version=os.getenv("SOURCE_MONITOR_POLICY_VERSION", "trusted-source-v1"),

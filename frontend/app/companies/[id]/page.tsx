@@ -65,6 +65,13 @@ function formatOwnership(value: string | null): string {
   return `${(Number(value) * 100).toFixed(2)}%`;
 }
 
+function identityLabel(status: string, basis: string | null): string {
+  if (status !== "verified") return "待核验";
+  if (basis === "official_government") return "已核验（政府官方来源）";
+  if (basis === "licensed_business_data") return "已核验（授权工商数据）";
+  return "已核验（历史依据未记录）";
+}
+
 function InvestmentCard({ investment }: { investment: Investment }) {
   return (
     <article className="investment-card">
@@ -200,7 +207,8 @@ export default async function CompanyDetailPage({
             <p className="eyebrow">{company.registered_region ?? "注册地区未知"}</p>
             <h1>{company.legal_name}</h1>
             <p>
-              身份{company.identity_status === "verified" ? "已核验" : "待核验"} · 数据基准日
+              工商主体身份：
+              {identityLabel(company.identity_status, company.identity_verification_basis)} · 数据基准日
               {formatDate(company.data_as_of)} · 最后检查 {formatDate(company.last_checked_at)}
             </p>
             <p>统一社会信用代码：{company.credit_code ?? "Demo 未设置"}</p>

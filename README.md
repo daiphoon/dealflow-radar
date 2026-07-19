@@ -16,6 +16,7 @@
 - 单次 Mock Worker 可领取一个虚构数据任务，支持租约、过期重领、零费用用量记录和 `stale → fresh` 闭环；
 - 本机 JSON 人工研究导入支持文件/批次幂等、公司身份解析、证据血缘、来源 URL 检查预算和发布策略审计；
 - 本机人工审核工作台主要展示身份歧义；既有事件审核记录仍可追溯；
+- 政府官方与授权商业工商身份使用不同核验依据；天眼查 V1 仅可由受控本机命令调用并保留私有缓存；
 - 平台管理员可登记已核验公司的官网、政府页、RSS、Sitemap 或列表页，后台低频检查后只生成机构私有候选文档，不自动创建事件或共享事实；
 - 应用层作用域过滤及 PostgreSQL RLS 双重保护，私有别名、文档、提及、事件、证据和快照均有明确 owner；
 - 外部搜索、模型、付费 API、自动刷新、自动发布和审核工作台默认关闭。
@@ -71,9 +72,9 @@ uv run python -m scripts.import_research_json
 
 `dry-run` 只校验文件并展示目标公司、发布策略、URL 检查上界、验证尝试上界和预计费用，不连接数据库、不访问网络；因为不读取公司主数据，该数量是身份解析前的保守上界。确认后再执行正式命令。重复执行同一文件返回 `duplicate`，不会新增文档、事件或费用记录。真实导入文件不得提交 Git；当前入口不接受内部财务、投委会、投资协议等敏感材料，也没有开放上传 API，因为测试身份 Header 不适合真实资料入口。
 
-### 官方工商身份核验导入
+### 工商身份核验导入
 
-当前未获得官方后台 API 授权，因此 V1 通过 `OfficialIdentityProvider` 边界导入已从官方系统核对的结构化 JSON，不抓取验证码、登录页或未公开接口。文件只能来自 Git 忽略的 `data/private/identity_imports/`，官方证据地址必须使用 `*.gsxt.gov.cn` 或 `*.gov.cn` HTTPS 域名，信用代码会校验字符集和校验位。
+政府来源继续通过 `OfficialIdentityProvider` 边界导入已核对的结构化 JSON，不抓取验证码、登录页或未公开接口。文件只能来自 Git 忽略的 `data/private/identity_imports/`，政府证据地址必须使用 `*.gsxt.gov.cn` 或 `*.gov.cn` HTTPS 域名，信用代码会校验字符集和校验位。
 
 ```bash
 mkdir -p data/private/identity_imports
@@ -85,6 +86,8 @@ uv run python -m scripts.import_official_identity_json
 ```
 
 程序会优先按统一社会信用代码匹配，再使用工商全称和注册地；冲突不会静默改主数据。核验记录默认 30 天有效，由 `IDENTITY_VERIFICATION_TTL_DAYS` 配置。
+
+天眼查授权工商身份 V1 使用同一导入和歧义工作台，但明确记录为 `licensed_business_data`，页面显示“已核验（授权工商数据）”，不冒充政府官方来源。它只在本机后台命令中按“名称候选 + 信用代码精确查询”运行，不进入公司搜索或详情请求；原始响应保存在 Git 忽略的权限受限缓存，数据库仅保留必要工商字段和响应哈希。运行方法、安全开关和清单格式见[运维手册](docs/12-operations-runbook.md)；架构边界见 [ADR-0010](docs/DECISIONS/ADR-0010-licensed-business-identity-verification.md)。
 
 ### 受控可信来源监测 V1
 

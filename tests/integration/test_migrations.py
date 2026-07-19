@@ -97,8 +97,12 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
         "raw_document_id",
         "credit_code",
         "verification_status",
+        "verification_basis",
         "checked_at",
     } <= identity_columns
+    assert "identity_verification_basis" in {
+        column["name"] for column in inspect(engine).get_columns("companies")
+    }
     evidence_columns = {
         column["name"]: column for column in inspect(engine).get_columns("event_evidence")
     }
@@ -218,3 +222,7 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "trusted_sources_platform_admin_read" in ddl
     assert "source_check_runs_platform_admin_insert" in ddl
     assert "candidate_documents_platform_admin_update" in ddl
+    assert "ADD COLUMN identity_verification_basis" in ddl
+    assert "ADD COLUMN verification_basis" in ddl
+    assert "ck_company_identity_verification_basis" in ddl
+    assert "ck_official_identity_verification_basis" in ddl
