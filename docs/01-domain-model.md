@@ -46,7 +46,7 @@ flowchart TB
 
 ## 4. 原始事实与派生数据
 
-- 原始层：`raw_documents` 保存来源元数据、许可、哈希和可选存储引用；内容按许可最小化保存。`official_identity_verifications` 引用官方工商原文档并保留匹配结论和核验时间。
+- 原始层：`raw_documents` 保存来源元数据、许可、哈希和可选存储引用；内容按许可最小化保存。`official_identity_verifications` 引用工商身份证据并保留政府官方或授权商业核验依据、匹配结论和核验时间；`companies.identity_verification_basis` 表示当前主档依据，历史未知值不猜测回填。
 - 事实层：`events`、`event_evidence`、`metric_observations` 追加记录，纠错不原地抹除历史。
 - 派生层：`company_snapshots`、`generated_reports` 可从已发布事实重建，带构建版本和基准时间。
 - 审计层：`refresh_runs`、`review_queue`、`usage_ledger`、`audit_logs` 解释数据如何产生、花费多少、谁批准。

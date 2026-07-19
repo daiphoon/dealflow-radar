@@ -51,10 +51,90 @@ def test_official_identity_provider_validates_and_hashes_local_json(tmp_path: Pa
 
     assert loaded.batch.records[0].credit_code == "91310000MA1K000006"
     assert loaded.batch.source.base_url == "https://bt.gsxt.gov.cn/"
+    assert loaded.batch.verification_basis == "official_government"
     assert len(loaded.file_hash) == 64
     assert len(provider.parser_version) <= 16
     assert provider.external_calls == 0
     assert provider.estimated_cost == 0
+
+
+def test_identity_provider_accepts_explicit_licensed_business_basis(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["verification_basis"] = "licensed_business_data"
+    payload["license_status"] = "permission_confirmed"
+    payload["source"] = {
+        "code": "tianyancha_licensed_business_data",
+        "name": "天眼查授权工商数据",
+        "base_url": "https://www.tianyancha.com/",
+    }
+    records = payload["records"]
+    assert isinstance(records, list)
+    records[0]["canonical_url"] = "https://www.tianyancha.com/company/123456"
+    records[0]["registration_authority"] = "示例市场监督管理局"
+    records[0]["data_updated_at"] = "2026-07-17T13:12:53+08:00"
+    records[0]["provider_metadata"] = {
+        "candidate_count": 1,
+        "provider_company_id": "123456",
+    }
+
+    loaded = _provider(tmp_path, payload).load()
+
+    assert loaded.batch.verification_basis == "licensed_business_data"
+    assert loaded.batch.license_status == "permission_confirmed"
+    assert loaded.batch.records[0].registration_authority == "示例市场监督管理局"
+
+
+def test_identity_provider_rejects_unnecessary_provider_metadata(tmp_path: Path) -> None:
+    payload = _payload()
+    records = payload["records"]
+    assert isinstance(records, list)
+    records[0]["provider_metadata"] = {"phoneNumber": "must-not-enter-business-database"}
+
+    with pytest.raises(ValueError, match="provider_metadata"):
+        _provider(tmp_path, payload).load()
+
+
+@pytest.mark.parametrize(
+    ("basis", "license_status", "source_url", "record_url", "message"),
+    [
+        (
+            "official_government",
+            "permission_confirmed",
+            "https://bt.gsxt.gov.cn/",
+            "https://bt.gsxt.gov.cn/",
+            "public license",
+        ),
+        (
+            "licensed_business_data",
+            "permission_confirmed",
+            "https://example.com/",
+            "https://example.com/company/1",
+            "Tianyancha",
+        ),
+    ],
+)
+def test_identity_provider_cross_validates_basis_license_and_domain(
+    tmp_path: Path,
+    basis: str,
+    license_status: str,
+    source_url: str,
+    record_url: str,
+    message: str,
+) -> None:
+    payload = _payload()
+    payload["verification_basis"] = basis
+    payload["license_status"] = license_status
+    source = payload["source"]
+    assert isinstance(source, dict)
+    source["base_url"] = source_url
+    if basis == "licensed_business_data":
+        source["code"] = "tianyancha_licensed_business_data"
+    records = payload["records"]
+    assert isinstance(records, list)
+    records[0]["canonical_url"] = record_url
+
+    with pytest.raises(ValueError, match=message):
+        _provider(tmp_path, payload).load()
 
 
 @pytest.mark.parametrize(

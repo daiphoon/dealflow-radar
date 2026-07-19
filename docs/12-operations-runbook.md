@@ -47,7 +47,7 @@ uv run python -m scripts.import_research_json
 
 先核对 `dry-run` 输出的目标公司、策略版本、URL 检查上界、验证尝试上界、零 Token/费用和零数据库写入；因为不读取公司主数据，该数量是身份解析前的保守上界，且该步骤不连接数据库、不访问网络。正式输出只包含批次 ID、状态和路由计数。完成后核对：未解析记录只形成实体提及审核项且不生成事件；安全记录为 `auto_published` 并进入快照；其他记录为 `unconfirmed_lead` 且不创建逐条事件审核项。默认 `EXTERNAL_CALLS_ENABLED=false` 时 URL 未检查，因此所有已解析记录安全降级为未确认，`usage_ledger` 的外部调用、Token 和费用均为 0。只在受控小批次显式开启 URL 检查，并核对已解析记录的 URL 检查数不超过 `SOURCE_URL_MAX_CHECKS_PER_IMPORT`；该检查仍不调用模型或付费 API。重复同一文件应返回 `duplicate`。批次号复用但内容改变、来源代码元数据冲突或外部记录内容冲突时整批失败并回滚，不要绕过去重键手工改库。
 
-### 官方工商身份导入
+### 政府官方工商身份导入
 
 ```bash
 mkdir -p data/private/identity_imports
@@ -62,9 +62,36 @@ uv run python -m scripts.import_official_identity_json
 
 V1 只接收不超过 1 MiB、最多 500 条且许可为 `public` 的 JSON。不得放入内部财务、投资协议、投委会材料、API Key、Cookie 或商业数据库受限内容；原始文件由操作者在私有目录管理，不进入 Git，也不会被系统复制到存储。当前没有网页/API 上传入口。
 
+### 天眼查授权工商身份查询 V1（本机受控）
+
+查询清单必须放在 `data/private/identity_imports/`，每批最多 10 家，每家公司必须同时给出工商全称和通过校验位验证的统一社会信用代码。可复制 `data/sample/tianyancha_identity_manifest.json` 后只在私有目录替换查询项。先执行不读取 Token、不连接数据库、不访问网络的 dry-run：
+
+```bash
+export TIANYANCHA_IDENTITY_MANIFEST='licensed-identity-request.json'
+TIANYANCHA_IDENTITY_DRY_RUN=true uv run python -m scripts.import_tianyancha_identities
+```
+
+核对公司数和预计请求数后，只在一次性本机窗口中运行。Token 使用环境或 Secret 注入，不写入项目 `.env`、命令参数、日志或 Git；如果已由官方 CLI 安全保存，可在不打印内容的情况下读入当前 shell：
+
+```bash
+export TIANYANCHA_AUTHORIZATION="$(uv run python -c 'import json,pathlib; print(json.loads((pathlib.Path.home()/".tyc/config.json").read_text())["headers"]["Authorization"])')"
+export IMPORT_USER_ID='replace_with_local_institution_admin_uuid'
+APP_MODE=demo \
+EXTERNAL_CALLS_ENABLED=true \
+TIANYANCHA_IDENTITY_CALLS_ENABLED=true \
+PAID_API_CALLS_ENABLED=false \
+AUTO_REFRESH_ENABLED=false \
+AUTO_PUBLISH_ENABLED=false \
+TRUSTED_SOURCE_CALLS_ENABLED=false \
+uv run python -m scripts.import_tianyancha_identities
+unset TIANYANCHA_AUTHORIZATION
+```
+
+适配器只调用固定 Core 端点的名称候选和工商登记两个工具；不跟随重定向，每次请求受超时、响应大小、低频间隔、总请求数和一次重试限制。完整响应只写入 `data/private/provider_cache/tianyancha/` 的权限受限缓存，数据库不保存联系方式。运行后核对 `official_identity_verifications.verification_basis=licensed_business_data`、`usage_ledger` 的调用/缓存/零 Token/零费用，以及 `conflict` 未改写公司主档。相同清单在缓存期内重复运行应为零外部调用并返回 `duplicate`。随后立即恢复两个外部调用开关为 false。
+
 ### 身份例外与历史审核工作台 V1（仅本机受控环境）
 
-确认 API 只绑定 `127.0.0.1` 并设置 `REVIEW_WORKBENCH_ENABLED=true`；前端 `DEMO_USER_ID` 必须是当前租户内同时具有 `reviewer` 和 `institution_admin` 角色的本地用户，才能修改身份主数据。访问 `/reviews` 后，新导入通常只出现身份歧义；只能从 30 天内、与该提及相关的官方候选中选择。提交后核对审核状态、公司信用代码/全称、实体提及、事件证据和发布路由；原 URL 未检查时应为 `unconfirmed_lead` 且不进入快照。工作台读取和身份决定都不调用外部 Provider。
+确认 API 只绑定 `127.0.0.1` 并设置 `REVIEW_WORKBENCH_ENABLED=true`；前端 `DEMO_USER_ID` 必须是当前租户内同时具有 `reviewer` 和 `institution_admin` 角色的本地用户，才能修改身份主数据。访问 `/reviews` 后，新导入通常只出现身份歧义；只能从 30 天内、与该提及相关且明确标注政府官方或授权商业依据的候选中选择。提交后核对审核状态、公司信用代码/全称、实体提及、事件证据和发布路由；原 URL 未检查时应为 `unconfirmed_lead` 且不进入快照。工作台读取和身份决定都不调用外部 Provider。
 
 完成私有验收后关闭前后端并取消该开关。当前 Header 身份可被伪造，禁止将工作台暴露到公网、局域网共享地址或多人环境；生产部署必须先实现正式认证和会话保护。
 

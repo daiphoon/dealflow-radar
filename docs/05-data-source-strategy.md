@@ -38,8 +38,8 @@
 | `KimiAgentImportProvider` | 预留 | 用户人工导出、许可明确，不调用未公开接口 |
 | `KimiScheduledResearchImportProvider` | 预留 | Kimi Work/Claw 等官方导出能力、授权和稳定格式已确认 |
 | `KimiOpenPlatformProvider` | 预留 | 正式 API 文档、账号授权、价格和数据条款确认 |
-| `LicensedBusinessDataProvider` | 预留 | 单独合同允许 API 调用、缓存和目标用途 |
-| `OfficialIdentityProvider` | 已实现 V1 边界与本机导入 | 当前只导入已核对的政府/GSXT JSON；自动查询要求正式 API 授权 |
+| `LicensedBusinessDataProvider` | 天眼查工商身份 V1 已实现 | 只用于受控后台身份查询；其他工商、司法或经营数据仍需逐项准入 |
+| `OfficialIdentityProvider` | 已实现政府 JSON 与授权商业数据双依据 | 政府来源和授权商业来源必须使用不同 `verification_basis`，不得混称官方 |
 
 ## 受控可信来源监测 V1
 
@@ -57,7 +57,7 @@ Kimi 消费端会员/Agent、Kimi Work 或 Kimi Claw、Kimi Code、开放平台 
 - Agent/Work/Claw 的结果只能通过官方导出或人工导入进入候选层，保存和再分发取决于来源许可。
 - Kimi Code 是开发辅助能力，不自动赋予生产数据访问、模型 API 或商业数据库权利。
 - 开放平台只有在正式文档、密钥、价格、速率和条款确认后才能作为 Provider。
-- 天眼查、iFind 等数据必须有单独授权；Kimi 结果不能替代工商、司法或监管原始来源。
+- 天眼查工商身份 API 已由项目负责人确认取得本项目所需授权；其他天眼查产品、iFind 等数据仍须逐项取得授权。Kimi 结果不能替代工商、司法或监管原始来源。
 
 系统在完全没有 Kimi 时仍须通过 Mock 和人工导入完成闭环。
 
@@ -78,7 +78,9 @@ Kimi 消费端会员/Agent、Kimi Work 或 Kimi Claw、Kimi Code、开放平台 
 
 V1 不复制保存原始文件字节，只保存受 RLS 保护的批次元数据、文件哈希，以及许可允许的公开来源定位、最小证据片段和结构化记录。CSV、Excel、Markdown、网页上传、内部财务和投资协议等敏感材料均未实现，启用前需另行设计格式、恶意内容隔离、正式认证与存储许可。实体提及不能由通用事件审核接口批准；只能在专用流程中选择有效关联的官方候选，由程序重跑解析、事件生成和发布路由。
 
-官方工商导入另使用 `data/private/identity_imports/`。它只接受 HTTPS 政府/GSXT 域名、`license_status=public`、带时区核验时间和通过校验位的统一社会信用代码。官方全称/地区冲突记为 `conflict`，无现有公司记为 `unmatched`，两者都不自动改主数据或创建公司。详见 ADR-0008。
+工商身份导入另使用 `data/private/identity_imports/`，并明确区分两类依据：政府/GSXT JSON 使用 `verification_basis=official_government`、`license_status=public`；天眼查受控查询使用 `verification_basis=licensed_business_data`、`license_status=permission_confirmed`。两类记录都要求 HTTPS 白名单域名、带时区核验时间和通过校验位的统一社会信用代码。同一代码的全称变化记为 `conflict`；同一代码且全称相同时，地区格式差异保留审计但不覆盖主档。无现有公司记为 `unmatched`，不得自动创建公司。
+
+天眼查 V1 先按名称取得候选，再按信用代码精确查询；完整响应只写入 Git 忽略且权限受限的本机缓存，数据库只保存必要字段、登记机关、更新时间、供应商记录 ID 和响应哈希，不保存本里程碑不需要的联系方式。真实调用仅允许本机后台脚本，要求总开关与专用开关同时开启，并保持付费、自动刷新、自动发布关闭；同步公司查询和详情永不调用该 Provider。详见 ADR-0010。
 
 ```mermaid
 sequenceDiagram

@@ -124,6 +124,13 @@ class FundAccessGrant(TimestampMixin, Base):
 
 class Company(TimestampMixin, Base):
     __tablename__ = "companies"
+    __table_args__ = (
+        CheckConstraint(
+            "identity_verification_basis IS NULL OR identity_verification_basis IN "
+            "('official_government', 'licensed_business_data')",
+            name="ck_company_identity_verification_basis",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID | None] = mapped_column(ForeignKey("tenants.id"))
@@ -132,6 +139,7 @@ class Company(TimestampMixin, Base):
     registered_region: Mapped[str | None] = mapped_column(String(120))
     official_website: Mapped[str | None] = mapped_column(String(500))
     identity_status: Mapped[str] = mapped_column(String(32), default="unresolved")
+    identity_verification_basis: Mapped[str | None] = mapped_column(String(32))
     last_identity_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     visibility_scope: Mapped[str] = mapped_column(String(16), default="public")
 
@@ -393,6 +401,10 @@ class OfficialIdentityVerification(TimestampMixin, Base):
             "verification_status IN ('verified', 'conflict', 'unmatched')",
             name="ck_official_identity_status",
         ),
+        CheckConstraint(
+            "verification_basis IN ('official_government', 'licensed_business_data')",
+            name="ck_official_identity_verification_basis",
+        ),
         Index(
             "ix_official_identity_tenant_status_checked",
             "tenant_id",
@@ -413,6 +425,7 @@ class OfficialIdentityVerification(TimestampMixin, Base):
     registered_region: Mapped[str | None] = mapped_column(String(120))
     registration_status: Mapped[str] = mapped_column(String(64))
     verification_status: Mapped[str] = mapped_column(String(32))
+    verification_basis: Mapped[str] = mapped_column(String(32))
     match_rule: Mapped[str] = mapped_column(String(80))
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
