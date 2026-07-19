@@ -140,6 +140,8 @@ class SourceMonitoringPolicy:
     max_redirects: int = 3
     min_request_interval_ms: int = 1_000
     worker_lease_seconds: int = 300
+    scheduler_max_sources_per_run: int = 10
+    failure_backoff_max_multiplier: int = 8
     user_agent: str = "DealflowRadarSourceMonitor/1.0 (controlled low-frequency monitoring)"
 
     def __post_init__(self) -> None:
@@ -150,6 +152,11 @@ class SourceMonitoringPolicy:
             ("SOURCE_MONITOR_TIMEOUT_SECONDS", self.timeout_seconds),
             ("SOURCE_MONITOR_MAX_REDIRECTS", self.max_redirects),
             ("SOURCE_MONITOR_WORKER_LEASE_SECONDS", self.worker_lease_seconds),
+            ("SOURCE_MONITOR_SCHEDULER_MAX_SOURCES", self.scheduler_max_sources_per_run),
+            (
+                "SOURCE_MONITOR_FAILURE_BACKOFF_MAX_MULTIPLIER",
+                self.failure_backoff_max_multiplier,
+            ),
         ):
             if value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
@@ -171,6 +178,7 @@ class Settings:
     paid_api_calls_enabled: bool
     auto_refresh_enabled: bool
     trusted_source_calls_enabled: bool = False
+    source_monitor_scheduler_enabled: bool = False
     tianyancha_identity_calls_enabled: bool = False
     review_workbench_enabled: bool = False
     refresh_policy: RefreshPolicy = field(default_factory=RefreshPolicy)
@@ -194,6 +202,9 @@ class Settings:
             auto_refresh_enabled=_as_bool(os.getenv("AUTO_REFRESH_ENABLED", "false")),
             trusted_source_calls_enabled=_as_bool(
                 os.getenv("TRUSTED_SOURCE_CALLS_ENABLED", "false")
+            ),
+            source_monitor_scheduler_enabled=_as_bool(
+                os.getenv("SOURCE_MONITOR_SCHEDULER_ENABLED", "false")
             ),
             tianyancha_identity_calls_enabled=_as_bool(
                 os.getenv("TIANYANCHA_IDENTITY_CALLS_ENABLED", "false")
@@ -253,6 +264,12 @@ class Settings:
                     "SOURCE_MONITOR_MIN_REQUEST_INTERVAL_MS", 1_000
                 ),
                 worker_lease_seconds=_as_positive_int("SOURCE_MONITOR_WORKER_LEASE_SECONDS", 300),
+                scheduler_max_sources_per_run=_as_positive_int(
+                    "SOURCE_MONITOR_SCHEDULER_MAX_SOURCES", 10
+                ),
+                failure_backoff_max_multiplier=_as_positive_int(
+                    "SOURCE_MONITOR_FAILURE_BACKOFF_MAX_MULTIPLIER", 8
+                ),
                 user_agent=os.getenv(
                     "SOURCE_MONITOR_USER_AGENT",
                     "DealflowRadarSourceMonitor/1.0 (controlled low-frequency monitoring)",

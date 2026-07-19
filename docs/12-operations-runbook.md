@@ -99,7 +99,20 @@ unset TIANYANCHA_AUTHORIZATION
 
 先以平台管理员打开 `/monitoring` 登记已核验公司、来源名称、类型、根域名、HTTPS 起始 URL、访问依据、许可、频率和保留策略。列表页应先用 dry-run，并在实样中确认内容链接路径；如导航链接过多，设置明确的列表内容路径前缀。dry-run 入队后以四个业务安全开关均关闭的 Worker 处理，核对请求、字节、Token 和费用全部为 0。
 
-真实免费 HTTP 检查仅在一次性受控窗口中临时设置 `EXTERNAL_CALLS_ENABLED=true` 和 `TRUSTED_SOURCE_CALLS_ENABLED=true`，同时保持 `PAID_API_CALLS_ENABLED=false`、`AUTO_REFRESH_ENABLED=false`、`AUTO_PUBLISH_ENABLED=false`。每次 Worker 只领取一个任务；运行后核对 `source_check_runs`、`usage_ledger`、robots、失败状态、候选公司归属和去重结果，再立即恢复双开关为 false。404、robots 拒绝、DNS/对端异常、MIME、超时或大小超限不得手工改成成功；候选只可人工标记并交给现有研究导入，不得直接写事件或共享层。
+真实免费 HTTP 检查仅在一次性受控窗口中临时设置 `EXTERNAL_CALLS_ENABLED=true` 和 `TRUSTED_SOURCE_CALLS_ENABLED=true`，同时保持 `PAID_API_CALLS_ENABLED=false`、`AUTO_PUBLISH_ENABLED=false`。人工入队时 `AUTO_REFRESH_ENABLED` 可保持 false；只有到期调度入队时才在受控窗口临时开启。每次 Worker 只领取一个任务；运行后核对 `source_check_runs`、`usage_ledger`、robots、失败状态、候选公司归属和去重结果，再立即恢复外部与调度开关为 false。404、robots 拒绝、DNS/对端异常、MIME、超时或大小超限不得手工改成成功。
+
+将候选标记为“值得研究”后，可在同一页面填写谨慎标题、最小证据摘录、事件分类、五项评价、结构化事实和不确定性。提交会复用既有人工研究导入服务，保留候选、来源、导入批次、原始文档、事件和证据血缘。重复提交返回同一份导入结果。`public_access` 只能建立私有研究；`permission_confirmed` 才可在另一次人工审核后晋升共享；`unclear` 和 `restricted` 必须先更新授权依据。交接不自动晋升或发布。
+
+到期调度器为 Cron 可调用的一次性入口，默认 dry-run，不写库、不联网：
+
+```bash
+export WORKER_TENANT_ID='replace_with_local_tenant_uuid'
+export SOURCE_MONITOR_WORKER_USER_ID='replace_with_local_platform_admin_uuid'
+APP_MODE=demo SOURCE_MONITOR_SCHEDULER_DRY_RUN=true \
+uv run python -m scripts.queue_due_source_checks
+```
+
+实际入队前必须同时显式设置 `AUTO_REFRESH_ENABLED=true`、`SOURCE_MONITOR_SCHEDULER_ENABLED=true`、`EXTERNAL_CALLS_ENABLED=true` 和 `TRUSTED_SOURCE_CALLS_ENABLED=true`，且两个付费/发布开关仍为 false。每次最多入队 `SOURCE_MONITOR_SCHEDULER_MAX_SOURCES`（默认 10）个来源；连续失败按检查间隔的 2、4、8 倍退避，上限由 `SOURCE_MONITOR_FAILURE_BACKOFF_MAX_MULTIPLIER` 配置。调度器只入队，不替代 Worker；既有请求级重试、活动任务合并和过期租约恢复继续生效。
 
 ## 4. 常见事件处置
 

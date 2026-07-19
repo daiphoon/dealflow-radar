@@ -68,3 +68,5 @@ npm run build
 GitHub CI 使用单个、10 分钟上限的 Ubuntu Job 和临时 PostgreSQL 16 服务，在 Pull Request 与 `main` 推送时运行 Ruff、格式检查、SQLite 迁移升级/漂移/降级、完整 Pytest（含受限账户 RLS）、TypeScript 和前端生产构建。CI 使用固定虚构数据和临时数据库凭据，不读取仓库 Secret，业务外部调用开关全部关闭。
 
 受控来源监测额外覆盖：HTTPS/域名允许列表、localhost/私网/元数据地址、DNS rebinding、实际对端不匹配、跨域及超限重定向、robots.txt、MIME/可执行文件、超时/重试/大小上限、ETag/304/内容哈希、列表路径、RSS/Sitemap、候选幂等与版本、零网络 dry-run、双开关、RLS 和跨 tenant 负向访问。真实网站验证必须人工显式开启且不进入 CI；CI 只使用 `httpx.MockTransport` 和本地 fixture，付费调用、模型 Token 与自动发布均为 0。
+
+可重复内容生产额外覆盖：候选必须先标记值得研究；身份歧义、失效链接和 `unclear/restricted` 许可失败关闭；交接后原候选/来源/owner 不变；文档、提及、证据与私有候选具有同 tenant 血缘；重复提交幂等；另一 tenant 和个人用户不可读取；`public_access` 可做私有研究但不能晋升，`permission_confirmed` 仍须独立人工晋升；整个交接外部调用、Token 和自动发布为 0。到期调度测试覆盖默认 dry-run、四开关、每次上限、活动任务合并、应检查时间幂等、连续失败退避和 Worker 过期租约恢复。

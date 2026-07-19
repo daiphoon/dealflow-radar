@@ -73,13 +73,31 @@ def test_trusted_source_monitoring_is_disabled_and_bounded_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("TRUSTED_SOURCE_CALLS_ENABLED", raising=False)
+    monkeypatch.delenv("SOURCE_MONITOR_SCHEDULER_ENABLED", raising=False)
 
     settings = Settings.from_env()
 
     assert settings.trusted_source_calls_enabled is False
+    assert settings.source_monitor_scheduler_enabled is False
     assert settings.source_monitoring_policy.max_requests_per_run == 10
     assert settings.source_monitoring_policy.max_response_bytes == 1_000_000
     assert settings.source_monitoring_policy.worker_lease_seconds == 300
+    assert settings.source_monitoring_policy.scheduler_max_sources_per_run == 10
+    assert settings.source_monitoring_policy.failure_backoff_max_multiplier == 8
+
+
+def test_source_monitor_scheduler_requires_explicit_enable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOURCE_MONITOR_SCHEDULER_ENABLED", "true")
+    monkeypatch.setenv("SOURCE_MONITOR_SCHEDULER_MAX_SOURCES", "4")
+    monkeypatch.setenv("SOURCE_MONITOR_FAILURE_BACKOFF_MAX_MULTIPLIER", "4")
+
+    settings = Settings.from_env()
+
+    assert settings.source_monitor_scheduler_enabled is True
+    assert settings.source_monitoring_policy.scheduler_max_sources_per_run == 4
+    assert settings.source_monitoring_policy.failure_backoff_max_multiplier == 4
 
 
 def test_source_monitoring_policy_rejects_invalid_limits(

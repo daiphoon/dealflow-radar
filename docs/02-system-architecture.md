@@ -97,13 +97,15 @@ sequenceDiagram
 
 按需缓存 V1 先使用带版本号的环境配置：最近查询 TTL 默认 14 天，请求冷却默认 24 小时。公司列表只计算并展示新鲜度，不触发整页公司批量入队；公司详情在 `AUTO_REFRESH_ENABLED=true` 且状态为 `stale` 或 `unknown` 时创建或合并零成本后台任务。首次响应仍返回旧数据及原新鲜度，后续在活动任务存在时显示 `refreshing`。
 
-Mock Worker V1 仅为虚构数据提供单任务命令入口：按租户使用 `FOR UPDATE SKIP LOCKED` 领取 `mock_refresh`，写入可配置的短租约与心跳，过期后允许重领，并用 `usage_ledger` 记录零次外部调用和零费用。有当前快照时只更新 `last_checked_at` 与新鲜度，保留 `data_as_of`；无快照时不生成事实，继续保持 `unknown`。完整 `refresh_policies` 表、`next_check_at`、Cron、常驻 Worker、真实 Provider 流水线和重试仍按后续阶段实施。
+Mock Worker V1 仅为虚构数据提供单任务命令入口：按租户使用 `FOR UPDATE SKIP LOCKED` 领取 `mock_refresh`，写入可配置的短租约与心跳，过期后允许重领，并用 `usage_ledger` 记录零次外部调用和零费用。有当前快照时只更新 `last_checked_at` 与新鲜度，保留 `data_as_of`；无快照时不生成事实，继续保持 `unknown`。完整 `refresh_policies` 表、通用 `next_check_at`、常驻 Worker 和公司级复杂升降频仍按后续阶段实施。
 
 人工研究导入 V1 是独立的本机前置入口，不进入用户同步查询路径：机构管理员从 Git 忽略的私有目录导入公开来源 JSON，系统按文件、批次、来源记录和事件指纹去重。主体未解析时只形成实体提及审核项；主体已验证时检查证据 URL、来源等级、官方域名、可信度和风险。安全记录自动发布并重建快照，其他记录以 `unconfirmed_lead` 路由保存且不创建逐条审核任务。URL 外部检查受总开关和每批上限控制；关闭时安全降级为未确认线索。批次元数据由 `research_imports` 的租户 RLS 隔离。
 
 官方工商身份流程通过 `OfficialIdentityProvider` 边界导入已核对的政府/GSXT 结构化记录，校验官方域名和统一社会信用代码校验位后，追加写入原始证据与 `official_identity_verifications`。工作台只向相关歧义项暴露有效期内候选；选定后于同一事务更新身份、解析提及、重建事件/证据并复用发布策略。页面决定本身不访问外部网站。
 
 授权商业工商身份 V1 复用同一导入、候选和重路由服务，但以 `verification_basis=licensed_business_data` 与政府来源分开审计。天眼查适配器只由本机运维命令调用：名称候选查询后必须用信用代码唯一锚定，原始响应进入私有缓存，规范化最小字段进入租户私有身份记录；名称或地区冲突保持待人工处理。公司搜索、详情、来源监测和自动刷新链路均不调用该适配器，身份查询也不生成事件或改变发布规则。
+
+受控来源监测使用独立 `source_check_runs` 队列和 Worker，不复用用户查询的 `refresh_jobs`。一次性 Scheduler 按每个来源的 `check_frequency_minutes`、`last_checked_at` 和连续失败退避计算应检查时间，只负责小批量、幂等入队。定时运行的 `trigger_type` 和 `scheduled_for` 随任务保存；真实网络、重试、过期租约恢复、候选去重和用量审计仍由现有 Worker 执行。标记值得研究的候选只能经另一个结构化管理员操作转成同 tenant 的私有底稿和候选事件；继续不自动晋升或发布。
 
 ## 5. 后台流水线
 

@@ -18,10 +18,12 @@
 - 本机人工审核工作台主要展示身份歧义；既有事件审核记录仍可追溯；
 - 政府官方与授权商业工商身份使用不同核验依据；天眼查 V1 仅可由受控本机命令调用并保留私有缓存；
 - 平台管理员可登记已核验公司的官网、政府页、RSS、Sitemap 或列表页，后台低频检查后只生成机构私有候选文档，不自动创建事件或共享事实；
+- 标记为“值得研究”的候选可在管理页直接录入谨慎结构化事实，复用现有研究导入、身份解析、证据和去重流程，原候选与私有底稿保持血缘；
+- 到期来源可由默认 dry-run 的一次性调度命令小批量入队，连续失败指数退避，复用现有 Worker 重试和租约恢复；
 - 应用层作用域过滤及 PostgreSQL RLS 双重保护，私有别名、文档、提及、事件、证据和快照均有明确 owner；
 - 外部搜索、模型、付费 API、自动刷新、自动发布和审核工作台默认关闭。
 
-本机已完成 PostgreSQL 16 迁移、Schema 漂移检查、非表所有者 `NOBYPASSRLS` 账户的租户/基金隔离，以及 API 和服务端渲染页面的端到端验证。该版本仍不能视为生产可用：SQLite 只用于离线自动测试，测试身份 Header 也不是生产认证系统；来源监测没有通用全网搜索、自动事件生成或定时调度。
+本机已完成 PostgreSQL 16 迁移、Schema 漂移检查、非表所有者 `NOBYPASSRLS` 账户的租户/基金隔离，以及 API 和服务端渲染页面的端到端验证。该版本仍不能视为生产可用：SQLite 只用于离线自动测试，测试身份 Header 也不是生产认证系统；来源监测没有通用全网搜索、语义事实自动生成或自动共享。
 
 ## 本地启动
 
@@ -99,7 +101,18 @@ export SOURCE_MONITOR_WORKER_USER_ID='replace_with_local_platform_admin_uuid'
 APP_MODE=demo uv run python -m scripts.run_source_monitor_worker
 ```
 
-每次 Worker 只处理一个任务。默认两个外部访问开关均为 `false`；真实运行只允许已登记域名，遵守 robots.txt，并限制重定向、请求数、响应大小、MIME、超时和域名访问间隔。系统只保留许可策略允许的元数据或最小摘录，不登录、不提交表单、不保存 Cookie、不调用模型或付费 API。候选需要管理员标记后再交给既有人工研究导入，不能直接成为事件或平台共享事实。
+每次 Worker 只处理一个任务。默认两个外部访问开关均为 `false`；真实运行只允许已登记域名，遵守 robots.txt，并限制重定向、请求数、响应大小、MIME、超时和域名访问间隔。系统只保留许可策略允许的元数据或最小摘录，不登录、不提交表单、不保存 Cookie、不调用模型或付费 API。候选需要管理员标记；结构化交接只创建机构私有底稿和候选事件，平台共享仍须另一次人工晋升。
+
+到期调度器是一次性 Cron 入口，默认只做 dry-run：
+
+```bash
+export WORKER_TENANT_ID='replace_with_local_tenant_uuid'
+export SOURCE_MONITOR_WORKER_USER_ID='replace_with_local_platform_admin_uuid'
+APP_MODE=demo SOURCE_MONITOR_SCHEDULER_DRY_RUN=true \
+uv run python -m scripts.queue_due_source_checks
+```
+
+真实入队还需显式设置 `AUTO_REFRESH_ENABLED=true`、`SOURCE_MONITOR_SCHEDULER_ENABLED=true`、`EXTERNAL_CALLS_ENABLED=true` 和 `TRUSTED_SOURCE_CALLS_ENABLED=true`，并保持 `PAID_API_CALLS_ENABLED=false` 与 `AUTO_PUBLISH_ENABLED=false`。调度命令本身不联网，只将到期来源小批量入队；后续仍由 Worker 执行受控检查。
 
 如果本机暂时没有 PostgreSQL，可用 SQLite 完成无真实数据的离线烟测：
 

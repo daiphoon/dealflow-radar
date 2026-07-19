@@ -849,6 +849,31 @@ dd {
   font-weight: 500;
 }
 
+.monitor-details {
+  margin: 16px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.monitor-details summary {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.compact-config-form,
+.candidate-research-form {
+  margin-top: 14px;
+}
+
+.candidate-research-form {
+  padding-top: 0;
+  border-top: 0;
+}
+
 .button-secondary {
   color: #34443e;
   background: #e7ece9;

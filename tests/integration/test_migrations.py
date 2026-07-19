@@ -26,6 +26,9 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "research_import_id" in {
         column["name"] for column in inspect(engine).get_columns("raw_documents")
     }
+    assert "candidate_document_id" in {
+        column["name"] for column in inspect(engine).get_columns("raw_documents")
+    }
     review_columns = {
         column["name"]: column for column in inspect(engine).get_columns("review_queue")
     }
@@ -145,6 +148,8 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
         "request_log",
         "robots_status",
         "leased_until",
+        "trigger_type",
+        "scheduled_for",
     } <= {column["name"] for column in inspect(engine).get_columns("source_check_runs")}
     assert {
         "canonical_url",
@@ -156,6 +161,9 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     } <= {column["name"] for column in inspect(engine).get_columns("candidate_documents")}
     assert "uq_source_check_run_active" in {
         index["name"] for index in inspect(engine).get_indexes("source_check_runs")
+    }
+    assert "uq_raw_document_candidate_handoff" in {
+        index["name"] for index in inspect(engine).get_indexes("raw_documents")
     }
 
     command.downgrade(config, "0007")
@@ -226,3 +234,7 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "ADD COLUMN verification_basis" in ddl
     assert "ck_company_identity_verification_basis" in ddl
     assert "ck_official_identity_verification_basis" in ddl
+    assert "ADD COLUMN trigger_type" in ddl
+    assert "ADD COLUMN scheduled_for" in ddl
+    assert "ADD COLUMN candidate_document_id" in ddl
+    assert "uq_raw_document_candidate_handoff" in ddl

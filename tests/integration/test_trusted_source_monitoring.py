@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -24,6 +24,9 @@ from backend.app.models import (
     CandidateDocument,
     Company,
     Event,
+    EventEvidence,
+    RawDocument,
+    ResearchImport,
     Role,
     SourceCheckRun,
     TrustedSource,
@@ -32,7 +35,10 @@ from backend.app.models import (
     UserRoleAssignment,
 )
 from backend.app.source_fetcher import TrustedSourceFetcher
-from backend.app.source_monitoring import run_trusted_source_worker_once
+from backend.app.source_monitoring import (
+    queue_due_source_checks,
+    run_trusted_source_worker_once,
+)
 
 ALPHA_HEADERS = {"X-Demo-User-Id": str(ALPHA_USER_ID)}
 BETA_HEADERS = {"X-Demo-User-Id": str(BETA_USER_ID)}
@@ -41,9 +47,9 @@ PUBLIC_ADDRESS = {"93.184.216.34"}
 VERIFIED_COMPANY_ID = demo_uuid("company-示例星河科技一号有限公司")
 
 
-def _grant_platform_admin(app: FastAPI, user_id=ALPHA_USER_ID) -> None:
+def _grant_role(app: FastAPI, role_code: str, user_id=ALPHA_USER_ID) -> None:
     with app.state.session_factory() as session:
-        role = session.scalar(select(Role).where(Role.code == "platform_admin"))
+        role = session.scalar(select(Role).where(Role.code == role_code))
         assert role is not None
         if not session.scalar(
             select(func.count())
@@ -65,6 +71,10 @@ def _grant_platform_admin(app: FastAPI, user_id=ALPHA_USER_ID) -> None:
             session.commit()
 
 
+def _grant_platform_admin(app: FastAPI, user_id=ALPHA_USER_ID) -> None:
+    _grant_role(app, "platform_admin", user_id)
+
+
 def _create_source(
     client: TestClient,
     *,
@@ -72,6 +82,8 @@ def _create_source(
     source_type: str = "single_page",
     start_url: str = "https://example.com/news",
     list_path_prefix: str | None = None,
+    license_status: str = "public_access",
+    check_frequency_minutes: int = 10_080,
 ) -> dict[str, object]:
     response = client.post(
         "/api/v1/trusted-sources",
@@ -84,13 +96,33 @@ def _create_source(
             "start_url": start_url,
             "list_path_prefix": list_path_prefix,
             "access_basis": "企业官网公开页面，低频人工触发检查",
-            "license_status": "public_access",
-            "check_frequency_minutes": 10080,
+            "license_status": license_status,
+            "check_frequency_minutes": check_frequency_minutes,
             "content_retention_policy": "minimal_excerpt",
         },
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def _candidate_research_payload(candidate: dict[str, object]) -> dict[str, object]:
+    return {
+        "title": str(candidate["title"]),
+        "evidence_excerpt": "公司官网披露该项进展；本条仅记录官网明确表述，不推断订单或收入。",
+        "event_type": "product_technology",
+        "event_subtype": "technology_milestone",
+        "direction": "positive",
+        "materiality_score": 55,
+        "risk_severity": "low",
+        "confidence_score": 0.9,
+        "source_quality": "B",
+        "fact_name": "milestone",
+        "fact_value": "官网披露一项产品进展",
+        "fact_unit": None,
+        "occurred_at": None,
+        "uncertainties": ["未披露商业订单或收入影响"],
+        "research_reason": "候选主体、来源和最小证据均已人工复核",
+    }
 
 
 def _queue(client: TestClient, source_id: str, *, dry_run: bool) -> dict[str, object]:
@@ -180,6 +212,29 @@ def test_source_configuration_is_tenant_private_and_rejects_unsafe_urls(
         assert source_row.last_etag is None
         assert source_row.last_modified is None
         assert source_row.last_content_hash is None
+
+    policy_updated = client.patch(
+        f"/api/v1/trusted-sources/{list_source['id']}",
+        headers=ALPHA_HEADERS,
+        json={
+            "access_basis": "已人工确认可保留最小摘录并用于受控共享引用",
+            "license_status": "permission_confirmed",
+            "content_retention_policy": "minimal_excerpt",
+        },
+    )
+    assert policy_updated.status_code == 200
+    assert policy_updated.json()["license_status"] == "permission_confirmed"
+    assert policy_updated.json()["content_retention_policy"] == "minimal_excerpt"
+    invalid_policy_downgrade = client.patch(
+        f"/api/v1/trusted-sources/{list_source['id']}",
+        headers=ALPHA_HEADERS,
+        json={"license_status": "restricted"},
+    )
+    assert invalid_policy_downgrade.status_code == 422
+    unchanged_policy = client.get("/api/v1/trusted-sources", headers=ALPHA_HEADERS).json()
+    current = next(item for item in unchanged_policy if item["id"] == list_source["id"])
+    assert current["license_status"] == "permission_confirmed"
+    assert current["content_retention_policy"] == "minimal_excerpt"
 
     invalid_prefix = client.post(
         "/api/v1/trusted-sources",
@@ -394,6 +449,322 @@ def test_new_unchanged_changed_and_handoff_do_not_create_events(
         assert session.scalar(select(func.sum(UsageLedger.input_tokens))) == 0
         assert session.scalar(select(func.sum(UsageLedger.output_tokens))) == 0
         assert session.scalar(select(func.sum(UsageLedger.estimated_cost))) == Decimal("0")
+
+
+def test_worth_research_candidate_creates_one_private_import_then_can_be_promoted(
+    client: TestClient,
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    _grant_platform_admin(migrated_app, BETA_USER_ID)
+    _grant_role(migrated_app, "institution_admin", BETA_USER_ID)
+    source = _create_source(
+        client,
+        start_url="https://example.com/permission-confirmed",
+        license_status="permission_confirmed",
+    )
+    settings = replace(
+        migrated_app.state.settings,
+        external_calls_enabled=True,
+        trusted_source_calls_enabled=True,
+        source_monitoring_policy=replace(
+            migrated_app.state.settings.source_monitoring_policy,
+            min_request_interval_ms=0,
+            retry_limit=0,
+        ),
+    )
+    _queue(client, str(source["id"]), dry_run=False)
+    with migrated_app.state.session_factory() as session:
+        result = run_trusted_source_worker_once(
+            session,
+            _worker_user(migrated_app),
+            settings,
+            now=datetime(2026, 7, 19, 8, 0, tzinfo=UTC),
+            fetcher_factory=_fetcher_factory(
+                _robots_or_html("<title>受控研究候选</title><p>官网披露一项产品进展</p>")
+            ),
+        )
+    assert result.new_count == 1
+    candidate = client.get("/api/v1/candidate-documents", headers=ALPHA_HEADERS).json()[0]
+    decision = client.post(
+        f"/api/v1/candidate-documents/{candidate['id']}/decision",
+        headers=ALPHA_HEADERS,
+        json={"decision": "worth_research", "reason": "主体清楚且值得结构化研究"},
+    )
+    assert decision.status_code == 200
+
+    import_response = client.post(
+        f"/api/v1/candidate-documents/{candidate['id']}/research-import",
+        headers=ALPHA_HEADERS,
+        json=_candidate_research_payload(candidate),
+    )
+    assert import_response.status_code == 200, import_response.text
+    imported = import_response.json()
+    assert imported["status"] == "completed"
+    assert imported["reused"] is False
+    assert imported["auto_published"] is False
+    assert imported["shared_fact_created"] is False
+    assert imported["external_calls"] == 0
+
+    repeated = client.post(
+        f"/api/v1/candidate-documents/{candidate['id']}/research-import",
+        headers=ALPHA_HEADERS,
+        json=_candidate_research_payload(candidate),
+    )
+    assert repeated.status_code == 200
+    assert repeated.json() == {**imported, "reused": True}
+
+    beta_attempt = client.post(
+        f"/api/v1/candidate-documents/{candidate['id']}/research-import",
+        headers=BETA_HEADERS,
+        json=_candidate_research_payload(candidate),
+    )
+    assert beta_attempt.status_code == 404
+    personal_attempt = client.post(
+        f"/api/v1/candidate-documents/{candidate['id']}/research-import",
+        headers=NO_ACCESS_HEADERS,
+        json=_candidate_research_payload(candidate),
+    )
+    assert personal_attempt.status_code == 403
+
+    with migrated_app.state.session_factory() as session:
+        candidate_row = session.get(CandidateDocument, UUID(str(candidate["id"])))
+        document = session.get(RawDocument, UUID(imported["raw_document_id"]))
+        event = session.get(Event, UUID(imported["private_event_id"]))
+        assert candidate_row is not None
+        assert document is not None and event is not None
+        assert document.candidate_document_id == candidate_row.id
+        assert document.visibility_scope == "organization_private"
+        assert document.owner_tenant_id == ALPHA_TENANT_ID
+        assert document.license_status == "permission_confirmed"
+        assert event.visibility_scope == "organization_private"
+        assert event.owner_tenant_id == ALPHA_TENANT_ID
+        assert event.status == "candidate"
+        assert event.publication_route == "unconfirmed_lead"
+        assert candidate_row.handoff_payload["research_import_id"] == imported["research_import_id"]
+        assert session.scalar(select(func.count()).select_from(ResearchImport)) == 1
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(RawDocument)
+                .where(RawDocument.candidate_document_id == candidate_row.id)
+            )
+            == 1
+        )
+        evidence = session.scalar(select(EventEvidence).where(EventEvidence.event_id == event.id))
+        assert evidence is not None
+        evidence_id = evidence.id
+
+    migrated_app.state.settings = replace(
+        migrated_app.state.settings,
+        review_workbench_enabled=True,
+    )
+    promotion = client.post(
+        f"/api/v1/events/{imported['private_event_id']}/sharing/promotion",
+        headers=ALPHA_HEADERS,
+        json={
+            "title": "示例公司官网披露一项产品进展",
+            "summary": "公司官网披露一项产品进展；不据此推断订单、收入或规模化交付。",
+            "reason": "身份明确，许可已确认，谨慎表述受到所选证据支持",
+            "evidence_ids": [str(evidence_id)],
+            "confirm_evidence_support": True,
+            "confirm_unchecked_links": False,
+        },
+    )
+    assert promotion.status_code == 200, promotion.text
+    assert promotion.json()["shared_event_status"] == "published"
+
+    personal_detail = client.get(
+        f"/api/v1/companies/{VERIFIED_COMPANY_ID}",
+        headers=NO_ACCESS_HEADERS,
+    )
+    assert personal_detail.status_code == 200
+    assert any(
+        item["id"] == promotion.json()["shared_event_id"]
+        for item in personal_detail.json()["events"]
+    )
+    assert personal_detail.json()["private_events"] == []
+    assert personal_detail.json()["unconfirmed_leads"] == []
+
+
+def test_public_access_candidate_stays_private_and_cannot_be_shared(
+    client: TestClient,
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    source = _create_source(client, start_url="https://example.com/public-access-only")
+    settings = replace(
+        migrated_app.state.settings,
+        external_calls_enabled=True,
+        trusted_source_calls_enabled=True,
+        source_monitoring_policy=replace(
+            migrated_app.state.settings.source_monitoring_policy,
+            min_request_interval_ms=0,
+            retry_limit=0,
+        ),
+    )
+    _queue(client, str(source["id"]), dry_run=False)
+    with migrated_app.state.session_factory() as session:
+        run_trusted_source_worker_once(
+            session,
+            _worker_user(migrated_app),
+            settings,
+            now=datetime(2026, 7, 19, 9, 0, tzinfo=UTC),
+            fetcher_factory=_fetcher_factory(
+                _robots_or_html("<title>仅公开访问</title><p>许可未确认的页面</p>")
+            ),
+        )
+    candidate = client.get("/api/v1/candidate-documents", headers=ALPHA_HEADERS).json()[0]
+    client.post(
+        f"/api/v1/candidate-documents/{candidate['id']}/decision",
+        headers=ALPHA_HEADERS,
+        json={"decision": "worth_research", "reason": "仅进入机构私有研究"},
+    )
+    imported = client.post(
+        f"/api/v1/candidate-documents/{candidate['id']}/research-import",
+        headers=ALPHA_HEADERS,
+        json=_candidate_research_payload(candidate),
+    )
+    assert imported.status_code == 200, imported.text
+    with migrated_app.state.session_factory() as session:
+        document = session.get(RawDocument, UUID(imported.json()["raw_document_id"]))
+        evidence = session.scalar(
+            select(EventEvidence).where(
+                EventEvidence.event_id == UUID(imported.json()["private_event_id"])
+            )
+        )
+        assert document is not None and document.license_status == "public_access"
+        assert evidence is not None
+        evidence_id = evidence.id
+
+    migrated_app.state.settings = replace(
+        migrated_app.state.settings,
+        review_workbench_enabled=True,
+    )
+    promotion = client.post(
+        f"/api/v1/events/{imported.json()['private_event_id']}/sharing/promotion",
+        headers=ALPHA_HEADERS,
+        json={
+            "title": "不得共享",
+            "summary": "来源仅公开可访问，尚无共享展示许可。",
+            "reason": "负向许可测试",
+            "evidence_ids": [str(evidence_id)],
+            "confirm_evidence_support": True,
+            "confirm_unchecked_links": False,
+        },
+    )
+    assert promotion.status_code == 422
+    assert "license" in promotion.json()["detail"]
+
+
+def test_due_scheduler_is_dry_run_first_idempotent_and_applies_failure_backoff(
+    client: TestClient,
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    first = _create_source(
+        client,
+        start_url="https://example.com/schedule-first",
+        check_frequency_minutes=60,
+    )
+    second = _create_source(
+        client,
+        start_url="https://example.com/schedule-second",
+        check_frequency_minutes=60,
+    )
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+    with migrated_app.state.session_factory() as session:
+        first_row = session.get(TrustedSource, UUID(str(first["id"])))
+        second_row = session.get(TrustedSource, UUID(str(second["id"])))
+        assert first_row is not None and second_row is not None
+        first_row.last_checked_at = now - timedelta(hours=3)
+        first_row.consecutive_failures = 1
+        second_row.last_checked_at = now - timedelta(minutes=30)
+        session.commit()
+
+        dry_run = queue_due_source_checks(
+            session,
+            _worker_user(migrated_app),
+            replace(
+                migrated_app.state.settings,
+                auto_refresh_enabled=False,
+                source_monitor_scheduler_enabled=False,
+            ),
+            now=now,
+            dry_run=True,
+        )
+        assert dry_run.status == "dry_run"
+        assert dry_run.due_count == 1
+        assert dry_run.queued_count == 0
+        assert dry_run.external_calls == 0
+        assert session.scalar(select(func.count()).select_from(SourceCheckRun)) == 0
+
+        enabled_settings = replace(
+            migrated_app.state.settings,
+            auto_refresh_enabled=True,
+            source_monitor_scheduler_enabled=True,
+            external_calls_enabled=True,
+            trusted_source_calls_enabled=True,
+        )
+        queued = queue_due_source_checks(
+            session,
+            _worker_user(migrated_app),
+            enabled_settings,
+            now=now,
+            dry_run=False,
+        )
+        assert queued.status == "queued"
+        assert queued.due_count == 1
+        assert queued.queued_count == 1
+        assert queued.external_calls == 0
+        scheduled_run = session.scalar(select(SourceCheckRun))
+        assert scheduled_run is not None
+        assert scheduled_run.trigger_type == "scheduled"
+        assert scheduled_run.scheduled_for.replace(tzinfo=UTC) == now - timedelta(hours=1)
+
+        repeated = queue_due_source_checks(
+            session,
+            _worker_user(migrated_app),
+            enabled_settings,
+            now=now,
+            dry_run=False,
+        )
+        assert repeated.queued_count == 0
+        second_row.enabled = False
+        session.commit()
+
+    disabled_network_settings = replace(
+        migrated_app.state.settings,
+        external_calls_enabled=False,
+        trusted_source_calls_enabled=False,
+    )
+    with migrated_app.state.session_factory() as session:
+        failed = run_trusted_source_worker_once(
+            session,
+            _worker_user(migrated_app),
+            disabled_network_settings,
+            now=now,
+        )
+        assert failed.status == "failed"
+        source_row = session.get(TrustedSource, UUID(str(first["id"])))
+        assert source_row is not None and source_row.consecutive_failures == 2
+
+        before_backoff = queue_due_source_checks(
+            session,
+            _worker_user(migrated_app),
+            enabled_settings,
+            now=now + timedelta(hours=3, minutes=59),
+            dry_run=True,
+        )
+        assert before_backoff.due_count == 0
+        after_backoff = queue_due_source_checks(
+            session,
+            _worker_user(migrated_app),
+            enabled_settings,
+            now=now + timedelta(hours=4),
+            dry_run=True,
+        )
+        assert after_backoff.due_count == 1
 
 
 def test_404_is_audited_without_candidate_or_fact(

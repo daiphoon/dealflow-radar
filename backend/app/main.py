@@ -15,6 +15,8 @@ from backend.app.schemas import (
     CandidateDocumentDecisionIn,
     CandidateDocumentDecisionOut,
     CandidateDocumentOut,
+    CandidateResearchImportIn,
+    CandidateResearchImportOut,
     CompanyDetail,
     CompanyListItem,
     CompanySearchResult,
@@ -62,6 +64,7 @@ from backend.app.source_monitoring import (
     SourceMonitoringValidationError,
     create_trusted_source,
     decide_candidate_document,
+    import_candidate_research,
     list_candidate_documents,
     list_source_check_runs,
     list_trusted_sources,
@@ -490,6 +493,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except SourceMonitoringConflictError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/api/v1/candidate-documents/{candidate_id}/research-import",
+        response_model=CandidateResearchImportOut,
+    )
+    def candidate_document_research_import(
+        candidate_id: UUID,
+        payload: CandidateResearchImportIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> CandidateResearchImportOut:
+        try:
+            return import_candidate_research(
+                session,
+                user,
+                candidate_id,
+                payload,
+                app.state.settings,
+            )
+        except SourceMonitoringAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except SourceMonitoringNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except SourceMonitoringConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except SourceMonitoringValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     return app
 

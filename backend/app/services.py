@@ -28,6 +28,7 @@ from backend.app.models import (
     ORGANIZATION_PRIVATE_SCOPE,
     PERSONAL_PRIVATE_SCOPE,
     PLATFORM_SHARED_SCOPE,
+    CandidateDocument,
     Company,
     CompanyAlias,
     CompanySnapshot,
@@ -53,6 +54,7 @@ from backend.app.models import (
     utc_now,
 )
 from backend.app.providers import (
+    CandidateResearchImportProvider,
     DisabledDocumentVerifier,
     DocumentVerification,
     DocumentVerifier,
@@ -786,7 +788,11 @@ def import_official_identities(
         raise
 
 
-def _manual_source(session: Session, record: ManualResearchRecord) -> Source:
+def _manual_source(
+    session: Session,
+    record: ManualResearchRecord,
+    license_status: str,
+) -> Source:
     source = session.scalar(select(Source).where(Source.code == record.source_code))
     parsed_url = urlsplit(record.canonical_url)
     base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
@@ -795,7 +801,7 @@ def _manual_source(session: Session, record: ManualResearchRecord) -> Source:
             code=record.source_code,
             name=record.source_name,
             source_quality=record.source_quality.value,
-            license_status="public",
+            license_status=license_status,
             base_url=base_url,
         )
         session.add(source)
@@ -804,7 +810,7 @@ def _manual_source(session: Session, record: ManualResearchRecord) -> Source:
     if (
         source.name != record.source_name
         or source.source_quality != record.source_quality.value
-        or source.license_status != "public"
+        or source.license_status != license_status
         or source.base_url != base_url
     ):
         raise ImportConflictError(f"source_code conflict: {record.source_code}")
@@ -905,10 +911,13 @@ def _evaluate_publication_route(
     record: ManualResearchRecord,
     verification: DocumentVerification,
     policy: PublicationPolicy,
+    license_status: str,
 ) -> tuple[str, list[str]]:
     blocking_reasons: list[str] = []
     if not policy.enabled:
         blocking_reasons.append("auto_publish_disabled")
+    if license_status != "public":
+        blocking_reasons.append("source_license_not_public")
     if verification.status != "healthy":
         blocking_reasons.append(f"source_url_{verification.status}")
     if record.source_quality.value not in {"A", "B"}:
@@ -1121,6 +1130,7 @@ def _route_manual_record(
         record,
         verification,
         publication_policy,
+        document.license_status,
     )
     event_fingerprint = _manual_event_fingerprint(company.id, record)
     existing_event = session.scalar(
@@ -1207,10 +1217,13 @@ def _duplicate_import_result(existing: ResearchImport) -> ResearchImportResult:
 def _ingest_manual_batch(
     session: Session,
     user: User,
-    provider: ManualResearchImportProvider,
+    provider: ManualResearchImportProvider | CandidateResearchImportProvider,
     loaded: LoadedResearchImport,
     publication_policy: PublicationPolicy,
     document_verifier: DocumentVerifier,
+    *,
+    candidate_document: CandidateDocument | None = None,
+    verification_overrides: dict[str, DocumentVerification] | None = None,
 ) -> ResearchImportResult:
     batch_payload = loaded.batch
     research_import = ResearchImport(
@@ -1243,6 +1256,7 @@ def _ingest_manual_batch(
     reviews_created = 0
     external_calls = 0
     source_url_checks = 0
+    preverified_documents = 0
     published_snapshot_scopes: set[tuple[UUID, str, UUID | None, UUID | None]] = set()
 
     for record in batch_payload.records:
@@ -1256,7 +1270,7 @@ def _ingest_manual_batch(
         else:
             research_import.unresolved_count += 1
 
-        source = _manual_source(session, record)
+        source = _manual_source(session, record, batch_payload.license_status)
         record_payload = record.model_dump(mode="json")
         content_hash = _sha256(json.dumps(record_payload, ensure_ascii=False, sort_keys=True))
         dedupe_key = _sha256(f"{source.id}:{record.external_record_id}")
@@ -1275,8 +1289,21 @@ def _ingest_manual_batch(
                 )
             continue
 
+        if candidate_document is not None and (
+            len(batch_payload.records) != 1
+            or resolution_status != "verified"
+            or company is None
+            or company.id != candidate_document.company_id
+        ):
+            raise ImportConflictError("candidate research handoff identity is not verified")
+
         verification = DisabledDocumentVerifier().verify(record.canonical_url)
-        if resolution_status == "verified" and publication_policy.enabled:
+        override = (verification_overrides or {}).get(record.canonical_url)
+        if override is not None:
+            verification = override
+            external_calls += override.external_calls
+            preverified_documents += 1
+        elif resolution_status == "verified" and publication_policy.enabled:
             if source_url_checks < publication_policy.max_source_url_checks_per_import:
                 verification = document_verifier.verify(record.canonical_url)
                 source_url_checks += 1
@@ -1295,6 +1322,7 @@ def _ingest_manual_batch(
         document = RawDocument(
             source_id=source.id,
             research_import_id=research_import.id,
+            candidate_document_id=candidate_document.id if candidate_document is not None else None,
             visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
             owner_user_id=None,
             owner_tenant_id=user.tenant_id,
@@ -1306,7 +1334,7 @@ def _ingest_manual_batch(
             observed_at=utc_now(),
             content_hash=content_hash,
             document_dedupe_key=dedupe_key,
-            license_status="public",
+            license_status=batch_payload.license_status,
             payload=document_payload,
         )
         session.add(document)
@@ -1363,6 +1391,18 @@ def _ingest_manual_batch(
             )
         if event_created:
             events_created += 1
+        if candidate_document is not None:
+            candidate_document.handoff_payload = {
+                **candidate_document.handoff_payload,
+                "workflow": "controlled_candidate_research_import",
+                "research_import_id": str(research_import.id),
+                "raw_document_id": str(document.id),
+                "private_event_id": str(routed_event.id),
+                "license_status_at_import": batch_payload.license_status,
+                "research_import_completed": True,
+                "event_created": event_created,
+                "shared_fact_created": False,
+            }
 
     for company_id, scope, owner_user_id, owner_tenant_id in sorted(
         published_snapshot_scopes,
@@ -1402,6 +1442,10 @@ def _ingest_manual_batch(
                 "identity_review_records": research_import.identity_review_count,
                 "publication_policy_version": publication_policy.version,
                 "source_url_checks": source_url_checks,
+                "preverified_documents": preverified_documents,
+                "candidate_document_id": (
+                    str(candidate_document.id) if candidate_document is not None else None
+                ),
             },
             idempotency_key=_sha256(f"manual-research-import:{research_import.id}"),
         )
@@ -1427,14 +1471,22 @@ def _ingest_manual_batch(
 def import_manual_research(
     session: Session,
     user: User,
-    provider: ManualResearchImportProvider,
+    provider: ManualResearchImportProvider | CandidateResearchImportProvider,
     publication_policy: PublicationPolicy | None = None,
     document_verifier: DocumentVerifier | None = None,
+    *,
+    candidate_document: CandidateDocument | None = None,
+    verification_overrides: dict[str, DocumentVerification] | None = None,
 ) -> ResearchImportResult:
     if not user_has_role(session, user.id, "institution_admin"):
         session.rollback()
         raise AccessDeniedError("institution_admin role required")
     loaded = provider.load()
+    if candidate_document is not None and (
+        candidate_document.tenant_id != user.tenant_id or len(loaded.batch.records) != 1
+    ):
+        session.rollback()
+        raise AccessDeniedError("candidate research handoff scope is invalid")
     existing_file = session.scalar(
         select(ResearchImport).where(
             ResearchImport.tenant_id == user.tenant_id,
@@ -1463,6 +1515,8 @@ def import_manual_research(
             loaded,
             publication_policy or PublicationPolicy(),
             document_verifier or DisabledDocumentVerifier(),
+            candidate_document=candidate_document,
+            verification_overrides=verification_overrides,
         )
     except Exception:
         session.rollback()
@@ -1560,7 +1614,7 @@ def _scope_owner_matches(
 def _link_can_be_displayed(url: str, health_status: str, license_status: str | None) -> bool:
     parsed = urlsplit(url)
     return (
-        license_status == "public"
+        license_status in {"public", "permission_confirmed"}
         and parsed.scheme in {"http", "https"}
         and bool(parsed.netloc)
         and health_status in {"healthy", "unchecked"}
@@ -2012,7 +2066,9 @@ def _load_promotable_evidence(
         source = session.get(Source, document.source_id)
         if source is None or not source.name.strip():
             raise PromotionEligibilityError("evidence source name is required")
-        if document.license_status != "public" or source.license_status != "public":
+        if document.license_status not in {"public", "permission_confirmed"} or (
+            source.license_status not in {"public", "permission_confirmed"}
+        ):
             raise PromotionEligibilityError("evidence license does not permit shared display")
         verification = _stored_document_verification(document)
         if not _link_can_be_displayed(

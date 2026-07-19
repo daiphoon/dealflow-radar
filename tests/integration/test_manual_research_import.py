@@ -317,6 +317,33 @@ def test_broken_source_becomes_visible_unconfirmed_lead_without_review(
         assert evidence["url_http_status"] == 404
 
 
+def test_public_access_license_cannot_auto_publish(
+    tmp_path: Path,
+    manual_import_payload: dict[str, object],
+    migrated_app: FastAPI,
+) -> None:
+    manual_import_payload["license_status"] = "public_access"
+    provider = _provider(tmp_path, manual_import_payload)
+
+    with migrated_app.state.session_factory() as session:
+        user = session.get(User, ALPHA_USER_ID)
+        assert user is not None
+        result = import_manual_research(
+            session,
+            user,
+            provider,
+            publication_policy=PublicationPolicy(enabled=True),
+            document_verifier=StubDocumentVerifier(),
+        )
+
+        event = session.scalar(select(Event))
+        assert result.auto_published_records == 0
+        assert result.unconfirmed_records == 1
+        assert event is not None and event.status == "candidate"
+        assert "source_license_not_public" in event.publication_reasons
+        assert session.scalar(select(func.count()).select_from(CompanySnapshot)) == 0
+
+
 def test_auto_published_event_without_source_date_keeps_snapshot_date_unknown(
     tmp_path: Path,
     manual_import_payload: dict[str, object],

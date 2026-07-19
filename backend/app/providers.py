@@ -11,6 +11,7 @@ from typing import Literal, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -502,7 +503,9 @@ class ManualResearchImportBatch(BaseModel):
     agent_name: str | None = Field(default=None, max_length=120)
     original_query: str = Field(min_length=1, max_length=1000)
     target_company_hint: str = Field(min_length=1, max_length=240)
-    license_status: Literal["public"]
+    license_status: Literal[
+        "public", "public_access", "permission_confirmed", "unclear", "restricted"
+    ]
     records: list[ManualResearchRecord] = Field(min_length=1, max_length=500)
 
     @field_validator("queried_at")
@@ -556,4 +559,28 @@ class ManualResearchImportProvider:
             batch=ManualResearchImportBatch.model_validate(payload),
             file_hash=hashlib.sha256(content).hexdigest(),
             source_filename=path.name,
+        )
+
+
+class CandidateResearchImportProvider:
+    code = "trusted_source_candidate_import"
+    parser_version = "candidate-v1"
+    external_calls = 0
+    estimated_cost = 0
+
+    def __init__(self, candidate_id: UUID, batch: ManualResearchImportBatch) -> None:
+        self.candidate_id = candidate_id
+        self.batch = batch
+
+    def load(self) -> LoadedResearchImport:
+        content = json.dumps(
+            self.batch.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return LoadedResearchImport(
+            batch=self.batch,
+            file_hash=hashlib.sha256(content).hexdigest(),
+            source_filename=f"candidate-{self.candidate_id}.json",
         )

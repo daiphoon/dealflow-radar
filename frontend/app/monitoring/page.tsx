@@ -13,8 +13,10 @@ import {
 
 import {
   submitCandidateDecision,
+  submitCandidateResearch,
   submitSourceEnabled,
   submitSourceListPathPrefix,
+  submitSourcePolicy,
   submitSourceRun,
   submitTrustedSource,
 } from "./actions";
@@ -26,14 +28,18 @@ const resultMessages: Record<string, string> = {
   source_enabled: "来源已启用。",
   source_disabled: "来源已停用，排队任务不会访问该来源。",
   source_scope_updated: "列表页内容路径已更新；后续检查只访问该路径下的页面。",
+  source_policy_updated: "来源许可与保留策略已更新；历史候选和底稿未被改写。",
   dry_run_queued: "Dry-run 已入队；Worker 处理时不会发起网络请求。",
   real_run_queued: "受控检查已入队；只有两个外部访问开关均开启时 Worker 才会联网。",
   candidate_decided: "候选处理决定已保存；没有自动生成事件或共享事实。",
+  candidate_research_imported:
+    "候选已转为机构私有研究底稿与候选事件；没有自动共享或发布。",
 };
 
 const errorMessages: Record<string, string> = {
   invalid_input: "输入不符合安全约束，请检查 HTTPS 地址、根域名、许可依据和频率。",
   invalid_decision: "请填写 3—1000 字的判断理由并选择有效操作。",
+  invalid_research: "研究结构化字段不完整或不符合取值范围，未创建底稿。",
   run_confirmation_required: "真实检查需要勾选一次性外部访问确认。",
   forbidden: "当前身份不是本租户平台管理员，无法访问运营候选。",
   conflict: "该来源或运行已存在，未创建重复记录。",
@@ -112,6 +118,46 @@ function SourceCard({ source }: { source: TrustedSource }) {
           </dd>
         </div>
       </dl>
+      <details className="monitor-details">
+        <summary>更新许可与保留策略</summary>
+        <form action={submitSourcePolicy} className="source-config-form compact-config-form">
+          <input name="source_id" type="hidden" value={source.id} />
+          <label className="wide-field">
+            访问许可或使用依据
+            <textarea
+              defaultValue={source.access_basis}
+              maxLength={2000}
+              minLength={3}
+              name="access_basis"
+              required
+              rows={2}
+            />
+          </label>
+          <label>
+            许可状态
+            <select defaultValue={source.license_status} name="license_status" required>
+              <option value="public_access">公开访问（仅可作私有研究）</option>
+              <option value="permission_confirmed">已确认允许共享引用</option>
+              <option value="unclear">许可待确认</option>
+              <option value="restricted">访问或使用受限</option>
+            </select>
+          </label>
+          <label>
+            内容保留
+            <select
+              defaultValue={source.content_retention_policy}
+              name="content_retention_policy"
+              required
+            >
+              <option value="metadata_only">仅元数据</option>
+              <option value="minimal_excerpt">许可范围内最小摘录</option>
+            </select>
+          </label>
+          <div className="wide-field">
+            <button className="button button-secondary" type="submit">保存许可策略</button>
+          </div>
+        </form>
+      </details>
       <form action={submitSourceRun} className="monitor-run-form">
         <input name="source_id" type="hidden" value={source.id} />
         <label className="review-confirmation">
@@ -164,7 +210,9 @@ function RunCard({ run }: { run: SourceCheckRun }) {
     <article className="monitor-run-card">
       <div className="monitor-heading">
         <strong>{run.source_name}</strong>
-        <span className="muted">{run.dry_run ? "Dry-run" : "受控检查"} · {run.status}</span>
+        <span className="muted">
+          {run.dry_run ? "Dry-run" : "受控检查"} · {run.trigger_type === "scheduled" ? "定时入队" : "人工入队"} · {run.status}
+        </span>
       </div>
       <div className="run-counts">
         <span>请求 {run.request_count}</span>
@@ -180,6 +228,9 @@ function RunCard({ run }: { run: SourceCheckRun }) {
         Token {run.input_tokens + run.output_tokens}；费用 ¥{run.estimated_cost}。
       </p>
       {run.error_code ? <p className="link-warning">{run.error_code}：{run.error_message}</p> : null}
+      {run.scheduled_for ? (
+        <span className="muted">应检查时间：{formatDateTime(run.scheduled_for)}</span>
+      ) : null}
       <span className="muted">{formatDateTime(run.finished_at ?? run.created_at)}</span>
     </article>
   );
@@ -190,6 +241,12 @@ function CandidateCard({ candidate }: { candidate: CandidateDocument }) {
     candidate.canonical_url.startsWith("https://") &&
     candidate.link_health_status !== "unsafe" &&
     candidate.license_status !== "restricted";
+  const researchImported = candidate.handoff_payload.research_import_completed === true;
+  const researchImportAllowed =
+    candidate.identity_status_at_discovery === "verified" &&
+    candidate.link_health_status !== "broken" &&
+    (candidate.current_source_license_status === "public_access" ||
+      candidate.current_source_license_status === "permission_confirmed");
   return (
     <article className="monitor-card">
       <div className="monitor-heading">
@@ -207,7 +264,10 @@ function CandidateCard({ candidate }: { candidate: CandidateDocument }) {
         <span>{candidate.change_type === "changed" ? "内容变化" : "新页面"}</span>
         <span>链接：{candidate.link_health_status}</span>
         <span>HTTP {candidate.http_status ?? "未知"}</span>
-        <span>许可：{candidate.license_status}</span>
+        <span>当前许可：{candidate.current_source_license_status}</span>
+        {candidate.license_status !== candidate.current_source_license_status ? (
+          <span>发现时许可：{candidate.license_status}</span>
+        ) : null}
         <span>发现：{formatDateTime(candidate.first_discovered_at)}</span>
       </div>
       {candidate.excerpt ? <blockquote className="candidate-excerpt">{candidate.excerpt}</blockquote> : null}
@@ -244,20 +304,141 @@ function CandidateCard({ candidate }: { candidate: CandidateDocument }) {
               标记来源失效
             </button>
           </div>
-          <p>交接只生成结构化导入提示，不会自动创建事件、证据或共享事实。</p>
+          <p>先保存候选判断；标记“值得研究”后再人工填写结构化事实，不会自动发布。</p>
         </form>
       ) : (
-        <div className="decision-note">
-          <strong>{candidateStatusLabels[candidate.processing_status]}</strong>
-          <span>{candidate.decision_reason}</span>
-          <span>{formatDateTime(candidate.processed_at)}</span>
-          {candidate.processing_status === "worth_research" ? (
-            <span>
-              已生成候选 {String(candidate.handoff_payload.candidate_document_id ?? candidate.id)}
-              的人工研究导入提示；下一步仍使用受控的 <code>scripts.import_research_json</code>。
-            </span>
+        <>
+          <div className="decision-note">
+            <strong>{candidateStatusLabels[candidate.processing_status]}</strong>
+            <span>{candidate.decision_reason}</span>
+            <span>{formatDateTime(candidate.processed_at)}</span>
+            {researchImported ? (
+              <span>
+                已建立私有研究底稿与候选事件 {String(candidate.handoff_payload.private_event_id)}；
+                需要共享时仍须前往事实审核工作台人工晋升。
+              </span>
+            ) : null}
+          </div>
+          {candidate.processing_status === "worth_research" && !researchImported ? (
+            researchImportAllowed ? (
+              <details className="monitor-details candidate-research-details">
+                <summary>录入谨慎事实候选</summary>
+                <form
+                  action={submitCandidateResearch}
+                  className="review-form source-config-form candidate-research-form"
+                >
+                  <input name="candidate_id" type="hidden" value={candidate.id} />
+                  <label className="wide-field">
+                    谨慎标题
+                    <input defaultValue={candidate.title} maxLength={200} minLength={3} name="title" required />
+                  </label>
+                  <label className="wide-field">
+                    证据最小摘录
+                    <textarea
+                      defaultValue={candidate.excerpt ?? ""}
+                      maxLength={1000}
+                      minLength={3}
+                      name="evidence_excerpt"
+                      required
+                      rows={3}
+                    />
+                  </label>
+                  <label>
+                    事件类型
+                    <select defaultValue="product_technology" name="event_type" required>
+                      <option value="financial_operation">财务经营</option>
+                      <option value="financing_cap_table">融资与股权</option>
+                      <option value="contract_commercial">合同与商业</option>
+                      <option value="product_technology">产品与技术</option>
+                      <option value="governance_people">治理与人员</option>
+                      <option value="legal_compliance">司法与合规</option>
+                      <option value="capacity_assets">产能与资产</option>
+                      <option value="exit_liquidity">退出与流动性</option>
+                      <option value="information_quality">信息质量</option>
+                    </select>
+                  </label>
+                  <label>
+                    事件子类型（英文 snake_case）
+                    <input defaultValue="company_update" maxLength={64} minLength={2} name="event_subtype" pattern="[a-z][a-z0-9_]*" required />
+                  </label>
+                  <label>
+                    方向
+                    <select defaultValue="neutral" name="direction" required>
+                      <option value="positive">正向</option>
+                      <option value="negative">负向</option>
+                      <option value="neutral">中性</option>
+                      <option value="mixed">混合</option>
+                      <option value="unknown">未知</option>
+                    </select>
+                  </label>
+                  <label>
+                    重要性（0—100）
+                    <input defaultValue="50" max="100" min="0" name="materiality_score" required type="number" />
+                  </label>
+                  <label>
+                    风险级别
+                    <select defaultValue="low" name="risk_severity" required>
+                      <option value="none">无</option>
+                      <option value="low">低</option>
+                      <option value="moderate">中</option>
+                      <option value="high">高</option>
+                      <option value="critical">严重</option>
+                    </select>
+                  </label>
+                  <label>
+                    置信度（0—1）
+                    <input defaultValue="0.8" max="1" min="0" name="confidence_score" required step="0.01" type="number" />
+                  </label>
+                  <label>
+                    来源质量
+                    <select defaultValue="B" name="source_quality" required>
+                      <option value="A">A</option>
+                      <option value="B">B</option>
+                      <option value="C">C</option>
+                      <option value="D">D</option>
+                    </select>
+                  </label>
+                  <label>
+                    事实字段（英文 snake_case）
+                    <input defaultValue="update_summary" maxLength={80} minLength={2} name="fact_name" pattern="[a-z][a-z0-9_]*" required />
+                  </label>
+                  <label className="wide-field">
+                    事实值
+                    <input defaultValue={candidate.title} maxLength={500} name="fact_value" required />
+                  </label>
+                  <label>
+                    单位（可选）
+                    <input maxLength={40} name="fact_unit" />
+                  </label>
+                  <label>
+                    事件发生日期（可选）
+                    <input name="occurred_on" type="date" />
+                  </label>
+                  <label className="wide-field">
+                    不确定性（可选，每行一条）
+                    <textarea maxLength={10000} name="uncertainties" rows={2} />
+                  </label>
+                  <label className="wide-field">
+                    研究判断理由
+                    <textarea maxLength={1000} minLength={3} name="research_reason" required rows={2} />
+                  </label>
+                  <div className="wide-field">
+                    <button className="button button-approve" type="submit">创建私有研究候选</button>
+                  </div>
+                  <p className="wide-field">
+                    此操作仅建立本机构私有底稿、证据和候选事件；不自动共享、晋升或发布。
+                    {candidate.current_source_license_status === "public_access"
+                      ? " 当前仅确认网页可公开访问，不允许后续共享晋升。"
+                      : " 后续如需共享，仍须单独人工审核。"}
+                  </p>
+                </form>
+              </details>
+            ) : (
+              <p className="link-warning">公司身份、链接或来源许可不满足交接条件，不能创建研究底稿。
+              </p>
+            )
           ) : null}
-        </div>
+        </>
       )}
     </article>
   );
