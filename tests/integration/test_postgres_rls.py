@@ -329,14 +329,15 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
                         'companies', 'company_aliases', 'raw_documents',
                         'entity_mentions', 'events', 'event_evidence',
                         'company_snapshots', 'event_sharing_decisions',
-                        'event_sharing_decision_evidence'
+                        'event_sharing_decision_evidence', 'trusted_sources',
+                        'source_check_runs', 'candidate_documents'
                     )
                       AND relrowsecurity
                     """
                 )
             )
         assert role == (False, False, False, False, False)
-        assert enabled_rls_tables == 17
+        assert enabled_rls_tables == 20
         assert _visible_counts(connection) == (0, 0, 0, 0, 0)
         assert _visible_counts(connection, ALPHA_USER_ID, ALPHA_TENANT_ID) == (10, 1, 10, 1, 0)
         assert _visible_counts(connection, BETA_USER_ID, BETA_TENANT_ID) == (1, 1, 0, 0, 0)
@@ -602,6 +603,211 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
             )
             == "RLS append-only test"
         )
+    finally:
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
+def test_trusted_source_monitoring_rls_is_platform_admin_and_tenant_scoped() -> None:
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    engine = create_engine(POSTGRES_RLS_DATABASE_URL, pool_pre_ping=True)
+    connection = engine.connect()
+    transaction = connection.begin()
+    source_id = "c3d5f98a-a4dc-45f0-becb-b86e44f97452"
+    run_id = "3872fe98-dbbe-4385-806d-8082bc027fb0"
+    candidate_id = "e775a5e4-988a-4fd1-8e13-1806d07945a7"
+    company_id = str(demo_uuid("company-示例星河科技一号有限公司"))
+    try:
+        for user_id, tenant_id, assignment_id in (
+            (
+                ALPHA_USER_ID,
+                ALPHA_TENANT_ID,
+                "369e78c1-420d-4301-9553-0e66d548aa5c",
+            ),
+            (
+                BETA_USER_ID,
+                BETA_TENANT_ID,
+                "886f3fe2-1bbd-46b1-9d2d-36ec59034e51",
+            ),
+        ):
+            connection.execute(
+                text(
+                    "SELECT set_config('app.current_user_id', :user_id, true), "
+                    "set_config('app.current_tenant_id', :tenant_id, true)"
+                ),
+                {"user_id": str(user_id), "tenant_id": str(tenant_id)},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO user_role_assignments (
+                        id, user_id, role_id, scope_id, valid_until, created_at, updated_at
+                    )
+                    SELECT :id, :user_id, roles.id, NULL, NULL,
+                           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    FROM roles WHERE roles.code = 'platform_admin'
+                    ON CONFLICT DO NOTHING
+                    """
+                ),
+                {"id": assignment_id, "user_id": str(user_id)},
+            )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO trusted_sources (
+                    id, tenant_id, company_id, name, source_type, root_domain,
+                    start_url, enabled, access_basis, license_status,
+                    check_frequency_minutes, content_retention_policy,
+                    visibility_scope, consecutive_failures, created_by, updated_by,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, :tenant_id, :company_id, 'RLS trusted source', 'single_page',
+                    'example.invalid', 'https://example.invalid/news', TRUE,
+                    'RLS controlled source', 'public_access', 10080, 'metadata_only',
+                    'organization_private', 0, :user_id, :user_id,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": source_id,
+                "tenant_id": str(ALPHA_TENANT_ID),
+                "company_id": company_id,
+                "user_id": str(ALPHA_USER_ID),
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_check_runs (
+                    id, tenant_id, company_id, trusted_source_id, requested_by,
+                    status, dry_run, visibility_scope, policy_version, idempotency_key,
+                    max_requests, max_download_bytes, max_response_bytes,
+                    timeout_seconds, retry_limit, max_redirects, request_count,
+                    downloaded_bytes, new_count, changed_count, unchanged_count,
+                    duplicate_count, failure_count, external_calls, paid_api_calls,
+                    input_tokens, output_tokens, estimated_cost, request_log,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, :tenant_id, :company_id, :source_id, :user_id,
+                    'completed', TRUE, 'organization_private', 'trusted-source-v1',
+                    :idempotency_key, 10, 5000000, 1000000, 10, 1, 3,
+                    0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    CAST('[]' AS JSON), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": run_id,
+                "tenant_id": str(ALPHA_TENANT_ID),
+                "company_id": company_id,
+                "source_id": source_id,
+                "user_id": str(ALPHA_USER_ID),
+                "idempotency_key": "6" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO candidate_documents (
+                    id, tenant_id, company_id, trusted_source_id, discovery_run_id,
+                    previous_candidate_id, canonical_url, title, published_at,
+                    first_discovered_at, last_observed_at, content_hash, change_type,
+                    link_health_status, http_status, excerpt, license_status,
+                    processing_status, identity_status_at_discovery, visibility_scope,
+                    document_metadata, handoff_payload, created_at, updated_at
+                ) VALUES (
+                    :id, :tenant_id, :company_id, :source_id, :run_id,
+                    NULL, 'https://example.invalid/news', 'RLS candidate', NULL,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, :content_hash, 'new',
+                    'healthy', 200, NULL, 'public_access', 'pending', 'verified',
+                    'organization_private', CAST('{}' AS JSON), CAST('{}' AS JSON),
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": candidate_id,
+                "tenant_id": str(ALPHA_TENANT_ID),
+                "company_id": company_id,
+                "source_id": source_id,
+                "run_id": run_id,
+                "content_hash": "7" * 64,
+            },
+        )
+        assert connection.execute(
+            text(
+                "SELECT (SELECT count(*) FROM trusted_sources), "
+                "(SELECT count(*) FROM source_check_runs), "
+                "(SELECT count(*) FROM candidate_documents)"
+            )
+        ).one() == (1, 1, 1)
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(BETA_USER_ID), "tenant_id": str(BETA_TENANT_ID)},
+        )
+        assert connection.execute(
+            text(
+                "SELECT (SELECT count(*) FROM trusted_sources), "
+                "(SELECT count(*) FROM source_check_runs), "
+                "(SELECT count(*) FROM candidate_documents)"
+            )
+        ).one() == (0, 0, 0)
+        with pytest.raises(DBAPIError):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO trusted_sources (
+                            id, tenant_id, company_id, name, source_type, root_domain,
+                            start_url, enabled, access_basis, license_status,
+                            check_frequency_minutes, content_retention_policy,
+                            visibility_scope, consecutive_failures, created_by, updated_by,
+                            created_at, updated_at
+                        ) VALUES (
+                            :id, :tenant_id, :company_id, 'forged source', 'single_page',
+                            'example.invalid', 'https://example.invalid/forged', TRUE,
+                            'cross tenant attempt', 'public_access', 10080, 'metadata_only',
+                            'organization_private', 0, :user_id, :user_id,
+                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {
+                        "id": "23a96772-6050-4c9f-a8dd-fcfcd76da650",
+                        "tenant_id": str(ALPHA_TENANT_ID),
+                        "company_id": company_id,
+                        "user_id": str(BETA_USER_ID),
+                    },
+                )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(NO_ACCESS_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        assert connection.execute(
+            text(
+                "SELECT (SELECT count(*) FROM trusted_sources), "
+                "(SELECT count(*) FROM source_check_runs), "
+                "(SELECT count(*) FROM candidate_documents)"
+            )
+        ).one() == (0, 0, 0)
     finally:
         transaction.rollback()
         connection.close()

@@ -1,5 +1,11 @@
 # 07 权限、安全与合规
 
+## 受控来源网络边界
+
+真实来源检查只在独立 Worker 中运行，并由 `EXTERNAL_CALLS_ENABLED` 与 `TRUSTED_SOURCE_CALLS_ENABLED` 双开关控制。URL 仅允许 HTTPS 和已登记根域名；拒绝 userinfo、localhost、IP 直连、回环、私网、链路本地、云元数据及其他非公网解析结果。每次请求与每次重定向都重新校验域名和 DNS，实际连接对端必须与预检公网地址一致，以阻断 DNS rebinding 与重定向绕过。
+
+Worker 遵守 robots.txt，使用明确 User-Agent，不登录、不提交表单、不保留 Cookie；按运行限制请求数、总下载字节、单响应大小、超时、重试、重定向和域名访问间隔，并只接受预期 HTML/XML/Feed MIME。可执行文件、归档和非预期二进制内容安全失败。来源、运行和候选保持 tenant 私有，个人及其他 tenant 不可通过 API、数量或字段读取；成为共享事实仍需走独立人工晋升流程。
+
 ## 1. 数据分级
 
 | 等级 | 示例 | 默认控制 |
@@ -36,7 +42,7 @@
 
 共享快照构建器只读平台共享事件和指标；基金投资概览及个人/机构私有数据在响应层按授权单独拼装，不能缓存为全局公司快照。没有基金授权但具有有效共享档案权益的用户仍可读取共享基础层。
 
-当前 17 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`，以及两张共享决定审计表。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权，`system_restricted` 不向普通应用用户或平台管理员开放。共享事件和共享证据引用只有平台管理员可写；共享决定审计表只允许平台管理员读取和追加。私有别名、外部文档记录和文档去重键按 owner 分区唯一，避免不同客户因同名或同一来源记录相互阻塞。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
+当前 20 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`、两张共享决定审计表，以及 `trusted_sources`、`source_check_runs`、`candidate_documents`。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权，`system_restricted` 不向普通应用用户或平台管理员开放。共享事件和共享证据引用只有平台管理员可写；共享决定审计表只允许平台管理员读取和追加。私有别名、外部文档记录和文档去重键按 owner 分区唯一，避免不同客户因同名或同一来源记录相互阻塞。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
 
 当前权益校验仍由受控 Demo 登录资格代替，正式个人订阅、机构赞助权益和生产认证尚未实现；因此本能力仅适合本地或受控邀请验证。迁移账户仍可作为表所有者绕过策略，必须继续与日常 `NOBYPASSRLS` 应用账户分离。
 

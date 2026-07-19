@@ -151,6 +151,84 @@ export type CompanyDetail = {
   unconfirmed_leads: Event[];
 };
 
+export type TrustedSource = {
+  id: string;
+  company_id: string;
+  company_legal_name: string;
+  company_identity_status: string;
+  name: string;
+  source_type: string;
+  root_domain: string;
+  start_url: string;
+  list_path_prefix: string | null;
+  enabled: boolean;
+  access_basis: string;
+  license_status: string;
+  check_frequency_minutes: number;
+  content_retention_policy: string;
+  visibility_scope: string;
+  last_checked_at: string | null;
+  last_success_at: string | null;
+  last_failure_code: string | null;
+  last_http_status: number | null;
+  consecutive_failures: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SourceCheckRun = {
+  id: string;
+  company_id: string;
+  trusted_source_id: string;
+  source_name: string;
+  status: string;
+  dry_run: boolean;
+  policy_version: string;
+  request_count: number;
+  downloaded_bytes: number;
+  new_count: number;
+  changed_count: number;
+  unchanged_count: number;
+  duplicate_count: number;
+  failure_count: number;
+  external_calls: number;
+  paid_api_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  estimated_cost: string;
+  robots_status: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+};
+
+export type CandidateDocument = {
+  id: string;
+  company_id: string;
+  company_legal_name: string;
+  trusted_source_id: string;
+  source_name: string;
+  canonical_url: string;
+  title: string;
+  published_at: string | null;
+  first_discovered_at: string;
+  last_observed_at: string;
+  content_hash: string;
+  change_type: string;
+  link_health_status: string;
+  http_status: number | null;
+  excerpt: string | null;
+  license_status: string;
+  processing_status: string;
+  identity_status_at_discovery: string;
+  visibility_scope: string;
+  handoff_payload: Record<string, unknown>;
+  processed_at: string | null;
+  decision_reason: string | null;
+};
+
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://127.0.0.1:8000";
 const demoUserId =
   process.env.DEMO_USER_ID ?? "ac07da52-7378-5762-a1af-74e43d1baeba";
@@ -175,6 +253,22 @@ async function getJson<T>(path: string): Promise<T> {
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: "POST",
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Demo-User-Id": demoUserId,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status);
+  }
+  return (await response.json()) as T;
+}
+
+async function patchJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    method: "PATCH",
     cache: "no-store",
     headers: {
       "Content-Type": "application/json",
@@ -253,6 +347,60 @@ export function rejectSharingCandidate(sourceEventId: string, reason: string): P
 
 export function retractSharedEvent(sharedEventId: string, reason: string): Promise<unknown> {
   return postJson(`/api/v1/shared-events/${encodeURIComponent(sharedEventId)}/retraction`, {
+    reason,
+  });
+}
+
+export function getTrustedSources(): Promise<TrustedSource[]> {
+  return getJson("/api/v1/trusted-sources");
+}
+
+export function createTrustedSource(payload: {
+  company_id: string;
+  name: string;
+  source_type: string;
+  root_domain: string;
+  start_url: string;
+  list_path_prefix?: string | null;
+  access_basis: string;
+  license_status: string;
+  check_frequency_minutes: number;
+  content_retention_policy: string;
+}): Promise<TrustedSource> {
+  return postJson("/api/v1/trusted-sources", payload);
+}
+
+export function updateTrustedSource(
+  sourceId: string,
+  payload: { enabled?: boolean; list_path_prefix?: string | null },
+): Promise<TrustedSource> {
+  return patchJson(`/api/v1/trusted-sources/${encodeURIComponent(sourceId)}`, payload);
+}
+
+export function queueTrustedSourceRun(
+  sourceId: string,
+  dryRun: boolean,
+): Promise<SourceCheckRun> {
+  return postJson(`/api/v1/trusted-sources/${encodeURIComponent(sourceId)}/runs`, {
+    dry_run: dryRun,
+  });
+}
+
+export function getTrustedSourceRuns(): Promise<SourceCheckRun[]> {
+  return getJson("/api/v1/trusted-source-runs");
+}
+
+export function getCandidateDocuments(): Promise<CandidateDocument[]> {
+  return getJson("/api/v1/candidate-documents");
+}
+
+export function decideCandidateDocument(
+  candidateId: string,
+  decision: "worth_research" | "irrelevant" | "duplicate" | "source_unavailable",
+  reason: string,
+): Promise<unknown> {
+  return postJson(`/api/v1/candidate-documents/${encodeURIComponent(candidateId)}/decision`, {
+    decision,
     reason,
   });
 }

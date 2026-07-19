@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充个人安全查询、按需缓存、Mock Worker V1 与人工研究导入 V1：
+当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充个人安全查询、按需缓存、Mock Worker V1、人工研究导入 V1 与受控可信来源监测 V1：
 
 - 10 家虚构公司及两个虚构租户/基金；
 - Mock 文档幂等导入、主体精确匹配、候选事件、证据和历史审核闭环；
@@ -16,10 +16,11 @@
 - 单次 Mock Worker 可领取一个虚构数据任务，支持租约、过期重领、零费用用量记录和 `stale → fresh` 闭环；
 - 本机 JSON 人工研究导入支持文件/批次幂等、公司身份解析、证据血缘、来源 URL 检查预算和发布策略审计；
 - 本机人工审核工作台主要展示身份歧义；既有事件审核记录仍可追溯；
+- 平台管理员可登记已核验公司的官网、政府页、RSS、Sitemap 或列表页，后台低频检查后只生成机构私有候选文档，不自动创建事件或共享事实；
 - 应用层作用域过滤及 PostgreSQL RLS 双重保护，私有别名、文档、提及、事件、证据和快照均有明确 owner；
 - 外部搜索、模型、付费 API、自动刷新、自动发布和审核工作台默认关闭。
 
-本机已完成 PostgreSQL 16 迁移、Schema 漂移检查、非表所有者 `NOBYPASSRLS` 账户的租户/基金隔离，以及 API 和服务端渲染页面的端到端验证。该版本仍不能视为生产可用：SQLite 只用于离线自动测试，测试身份 Header 也不是生产认证系统。
+本机已完成 PostgreSQL 16 迁移、Schema 漂移检查、非表所有者 `NOBYPASSRLS` 账户的租户/基金隔离，以及 API 和服务端渲染页面的端到端验证。该版本仍不能视为生产可用：SQLite 只用于离线自动测试，测试身份 Header 也不是生产认证系统；来源监测没有通用全网搜索、自动事件生成或定时调度。
 
 ## 本地启动
 
@@ -84,6 +85,18 @@ uv run python -m scripts.import_official_identity_json
 ```
 
 程序会优先按统一社会信用代码匹配，再使用工商全称和注册地；冲突不会静默改主数据。核验记录默认 30 天有效，由 `IDENTITY_VERIFICATION_TTL_DAYS` 配置。
+
+### 受控可信来源监测 V1
+
+访问本机 `/monitoring`，平台管理员可为已核验公司明确登记 HTTPS 来源。列表页建议填写内容路径前缀，例如 `/news/detail`，避免把导航或产品目录误收为新闻；来源配置、运行和候选均为当前 tenant 的运营私有数据。`dry-run` 只入队并记录零调用计划，真实检查必须同时显式开启 `EXTERNAL_CALLS_ENABLED=true` 与 `TRUSTED_SOURCE_CALLS_ENABLED=true`，并保持付费、自动刷新和自动发布开关关闭：
+
+```bash
+export WORKER_TENANT_ID='replace_with_local_tenant_uuid'
+export SOURCE_MONITOR_WORKER_USER_ID='replace_with_local_platform_admin_uuid'
+APP_MODE=demo uv run python -m scripts.run_source_monitor_worker
+```
+
+每次 Worker 只处理一个任务。默认两个外部访问开关均为 `false`；真实运行只允许已登记域名，遵守 robots.txt，并限制重定向、请求数、响应大小、MIME、超时和域名访问间隔。系统只保留许可策略允许的元数据或最小摘录，不登录、不提交表单、不保存 Cookie、不调用模型或付费 API。候选需要管理员标记后再交给既有人工研究导入，不能直接成为事件或平台共享事实。
 
 如果本机暂时没有 PostgreSQL，可用 SQLite 完成无真实数据的离线烟测：
 

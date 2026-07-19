@@ -69,6 +69,28 @@ def test_auto_publish_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch) ->
     assert PublicationPolicy().enabled is False
 
 
+def test_trusted_source_monitoring_is_disabled_and_bounded_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRUSTED_SOURCE_CALLS_ENABLED", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.trusted_source_calls_enabled is False
+    assert settings.source_monitoring_policy.max_requests_per_run == 10
+    assert settings.source_monitoring_policy.max_response_bytes == 1_000_000
+    assert settings.source_monitoring_policy.worker_lease_seconds == 300
+
+
+def test_source_monitoring_policy_rejects_invalid_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOURCE_MONITOR_RETRY_LIMIT", "-1")
+
+    with pytest.raises(ValueError, match="SOURCE_MONITOR_RETRY_LIMIT"):
+        Settings.from_env()
+
+
 def test_publication_policy_rejects_invalid_confidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

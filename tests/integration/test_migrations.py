@@ -19,7 +19,7 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     command.upgrade(config, "head")
     command.check(config)
     engine = create_engine(database_url)
-    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 22
+    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 25
     assert "heartbeat_at" in {
         column["name"] for column in inspect(engine).get_columns("refresh_jobs")
     }
@@ -121,6 +121,38 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "uq_event_sharing_source_outcome" in {
         index["name"] for index in inspect(engine).get_indexes("event_sharing_decisions")
     }
+    assert {
+        "trusted_sources",
+        "source_check_runs",
+        "candidate_documents",
+    } <= set(inspect(engine).get_table_names())
+    assert {
+        "root_domain",
+        "source_type",
+        "access_basis",
+        "content_retention_policy",
+        "list_path_prefix",
+        "last_etag",
+        "last_modified",
+    } <= {column["name"] for column in inspect(engine).get_columns("trusted_sources")}
+    assert {
+        "request_count",
+        "downloaded_bytes",
+        "request_log",
+        "robots_status",
+        "leased_until",
+    } <= {column["name"] for column in inspect(engine).get_columns("source_check_runs")}
+    assert {
+        "canonical_url",
+        "content_hash",
+        "change_type",
+        "processing_status",
+        "identity_status_at_discovery",
+        "handoff_payload",
+    } <= {column["name"] for column in inspect(engine).get_columns("candidate_documents")}
+    assert "uq_source_check_run_active" in {
+        index["name"] for index in inspect(engine).get_indexes("source_check_runs")
+    }
 
     command.downgrade(config, "0007")
     assert "visibility_scope" not in {
@@ -180,3 +212,9 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "uq_event_sharing_source_outcome" in ddl
     assert "events_platform_admin_read" in ddl
     assert "roles.code IN ('platform_admin')" in ddl
+    assert "CREATE TABLE trusted_sources" in ddl
+    assert "CREATE TABLE source_check_runs" in ddl
+    assert "CREATE TABLE candidate_documents" in ddl
+    assert "trusted_sources_platform_admin_read" in ddl
+    assert "source_check_runs_platform_admin_insert" in ddl
+    assert "candidate_documents_platform_admin_update" in ddl

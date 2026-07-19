@@ -215,6 +215,124 @@ class SharingActionOut(BaseModel):
     reused_shared_event: bool = False
 
 
+class TrustedSourceCreate(BaseModel):
+    company_id: UUID
+    name: str = Field(min_length=2, max_length=200)
+    source_type: Literal["single_page", "list_page", "rss", "sitemap"]
+    root_domain: str = Field(min_length=3, max_length=253)
+    start_url: str = Field(min_length=8, max_length=1000)
+    list_path_prefix: str | None = Field(default=None, min_length=2, max_length=500)
+    access_basis: str = Field(min_length=3, max_length=2000)
+    license_status: Literal["public_access", "permission_confirmed", "unclear", "restricted"]
+    check_frequency_minutes: int = Field(default=10_080, ge=60, le=525_600)
+    content_retention_policy: Literal["metadata_only", "minimal_excerpt"] = "metadata_only"
+
+
+class TrustedSourceUpdate(BaseModel):
+    enabled: bool | None = None
+    list_path_prefix: str | None = Field(default=None, min_length=2, max_length=500)
+
+
+class TrustedSourceOut(BaseModel):
+    id: UUID
+    company_id: UUID
+    company_legal_name: str
+    company_identity_status: str
+    name: str
+    source_type: str
+    root_domain: str
+    start_url: str
+    list_path_prefix: str | None
+    enabled: bool
+    access_basis: str
+    license_status: str
+    check_frequency_minutes: int
+    content_retention_policy: str
+    visibility_scope: str
+    last_checked_at: datetime | None
+    last_success_at: datetime | None
+    last_failure_code: str | None
+    last_http_status: int | None
+    consecutive_failures: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class SourceCheckRequest(BaseModel):
+    dry_run: bool = True
+
+
+class SourceCheckBatchRequest(BaseModel):
+    source_ids: list[UUID] = Field(min_length=1, max_length=10)
+    dry_run: bool = True
+
+
+class SourceCheckRunOut(BaseModel):
+    id: UUID
+    company_id: UUID
+    trusted_source_id: UUID
+    source_name: str
+    status: str
+    dry_run: bool
+    policy_version: str
+    request_count: int
+    downloaded_bytes: int
+    new_count: int
+    changed_count: int
+    unchanged_count: int
+    duplicate_count: int
+    failure_count: int
+    external_calls: int
+    paid_api_calls: int
+    input_tokens: int
+    output_tokens: int
+    estimated_cost: Decimal
+    robots_status: str | None
+    error_code: str | None
+    error_message: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime
+
+
+class CandidateDocumentOut(BaseModel):
+    id: UUID
+    company_id: UUID
+    company_legal_name: str
+    trusted_source_id: UUID
+    source_name: str
+    canonical_url: str
+    title: str
+    published_at: datetime | None
+    first_discovered_at: datetime
+    last_observed_at: datetime
+    content_hash: str
+    change_type: str
+    link_health_status: str
+    http_status: int | None
+    excerpt: str | None
+    license_status: str
+    processing_status: str
+    identity_status_at_discovery: str
+    visibility_scope: str
+    handoff_payload: dict[str, object]
+    processed_at: datetime | None
+    decision_reason: str | None
+
+
+class CandidateDocumentDecisionIn(BaseModel):
+    decision: Literal["worth_research", "irrelevant", "duplicate", "source_unavailable"]
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class CandidateDocumentDecisionOut(BaseModel):
+    candidate_id: UUID
+    processing_status: str
+    handoff_payload: dict[str, object]
+    event_created: bool = False
+    shared_fact_created: bool = False
+
+
 class IngestResult(BaseModel):
     records_seen: int
     documents_created: int

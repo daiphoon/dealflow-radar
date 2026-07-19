@@ -4,7 +4,7 @@
 
 PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；不修改已应用迁移。UUID 主键、UTC `timestamptz`、显式外键和状态约束为默认。原始事实追加保存，派生快照可重建。个人、机构与基金私有行必须通过应用授权和 PostgreSQL 行级安全（RLS）双重限制。
 
-本文件同时描述当前 `0010` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询和受控共享事实晋升已经实现；标记为“目标”的 organization、watchlist、正式认证和商业权益对象仍未实现。当前 `tenant` 继续作为技术隔离边界，当前用户仍是 tenant 绑定的 Demo 身份。
+本文件同时描述当前 `0012` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询、受控共享事实晋升和受控可信来源监测已经实现；标记为“目标”的 organization、watchlist、正式认证和商业权益对象仍未实现。当前 `tenant` 继续作为技术隔离边界，当前用户仍是 tenant 绑定的 Demo 身份。
 
 ## 2. 表目录：身份、投资与权限
 
@@ -54,6 +54,9 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `refresh_runs` | 每次尝试、检查点、Provider 结果、错误、变化计数、起止时间 | FK job；job/attempt 唯一；状态/开始时间索引 |
 | `research_imports` | tenant、导入人、批次、格式、工具、原始文件哈希、许可、自动发布/未确认/身份审核计数与状态 | `(tenant_id, batch_id)` 和 `(tenant_id, file_hash, parser_version)` 唯一；机构管理员 RLS；状态索引 |
 | `official_identity_verifications` | tenant、公司候选、官方原文档、查询词、工商全称、信用代码、注册地、登记状态、核验结果/规则/时间 | 每份原文档唯一核验记录；tenant/状态/时间及信用代码索引；管理员写、审核员读 RLS |
+| `trusted_sources` | tenant、公司、来源类型、允许域名、起始 URL、可选列表内容路径、许可依据、检查频率、保留策略和最近状态 | 同 tenant/company/URL 唯一；仅当前 tenant 平台管理员可读写；列表路径变更会清除起始页条件缓存 |
+| `source_check_runs` | 来源检查队列、策略与资源上限快照、租约、请求/字节/变化/失败计数、robots 状态、请求审计和零费用字段 | 同来源仅一个活跃任务；tenant/company/source 复合血缘；RLS；运行记录不被后续配置静默改写 |
+| `candidate_documents` | 新增或变化页面的 URL、标题、日期、哈希、最小摘录、许可、链接状态、发现运行、前版本和人工处理状态 | 同来源/URL/哈希唯一；tenant/company/source/run 复合外键；默认 `organization_private`；不直接生成事件 |
 | `review_queue` | 事件或实体提及、触发规则、状态、分配人、决定和理由 | `event_id` 与 `entity_mention_id` 必须且只能存在一个；每个对象唯一；状态索引 |
 | `event_sharing_decisions` | 平台管理员的晋升、拒绝和撤回决定；操作者、理由、私有来源事件、目标共享事件、共享表述和策略版本 | 幂等键唯一；来源/共享事件和操作者索引；只追加，不允许应用角色更新或删除 |
 | `event_sharing_decision_evidence` | 每次共享决定采用的私有证据引用和当时展示快照 | 每个决定与来源证据唯一；只追加；不授予原文档共享权限 |

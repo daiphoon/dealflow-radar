@@ -12,6 +12,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -414,6 +415,231 @@ class OfficialIdentityVerification(TimestampMixin, Base):
     verification_status: Mapped[str] = mapped_column(String(32))
     match_rule: Mapped[str] = mapped_column(String(80))
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class TrustedSource(TimestampMixin, Base):
+    __tablename__ = "trusted_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "company_id", "start_url", name="uq_trusted_source_company_url"
+        ),
+        UniqueConstraint("id", "tenant_id", "company_id", name="uq_trusted_source_scope_lineage"),
+        CheckConstraint(
+            "source_type IN ('single_page', 'list_page', 'rss', 'sitemap')",
+            name="ck_trusted_source_type",
+        ),
+        CheckConstraint(
+            "content_retention_policy IN ('metadata_only', 'minimal_excerpt')",
+            name="ck_trusted_source_retention",
+        ),
+        CheckConstraint(
+            "license_status IN ('public_access', 'permission_confirmed', 'unclear', 'restricted')",
+            name="ck_trusted_source_license_status",
+        ),
+        CheckConstraint(
+            "visibility_scope = 'organization_private'",
+            name="ck_trusted_source_scope",
+        ),
+        CheckConstraint(
+            "check_frequency_minutes > 0 AND consecutive_failures >= 0",
+            name="ck_trusted_source_counters",
+        ),
+        Index("ix_trusted_source_tenant_company", "tenant_id", "company_id"),
+        Index("ix_trusted_source_tenant_enabled", "tenant_id", "enabled"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    company_id: Mapped[UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(200))
+    source_type: Mapped[str] = mapped_column(String(32))
+    root_domain: Mapped[str] = mapped_column(String(253))
+    start_url: Mapped[str] = mapped_column(String(1000))
+    list_path_prefix: Mapped[str | None] = mapped_column(String(500))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    access_basis: Mapped[str] = mapped_column(Text)
+    license_status: Mapped[str] = mapped_column(String(32))
+    check_frequency_minutes: Mapped[int] = mapped_column(Integer, default=10_080)
+    content_retention_policy: Mapped[str] = mapped_column(String(32), default="metadata_only")
+    visibility_scope: Mapped[str] = mapped_column(String(32), default=ORGANIZATION_PRIVATE_SCOPE)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_failure_code: Mapped[str | None] = mapped_column(String(64))
+    last_http_status: Mapped[int | None] = mapped_column(Integer)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    last_etag: Mapped[str | None] = mapped_column(String(500))
+    last_modified: Mapped[str | None] = mapped_column(String(200))
+    last_content_hash: Mapped[str | None] = mapped_column(String(64))
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    updated_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+
+
+class SourceCheckRun(TimestampMixin, Base):
+    __tablename__ = "source_check_runs"
+    __table_args__ = (
+        Index(
+            "uq_source_check_run_active",
+            "trusted_source_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+            sqlite_where=text("status IN ('queued', 'running')"),
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'partial', 'failed', "
+            "'dry_run_completed')",
+            name="ck_source_check_run_status",
+        ),
+        CheckConstraint(
+            "visibility_scope = 'organization_private'",
+            name="ck_source_check_run_scope",
+        ),
+        CheckConstraint(
+            "max_requests > 0 AND max_download_bytes > 0 AND max_response_bytes > 0 "
+            "AND timeout_seconds > 0 AND retry_limit >= 0 AND max_redirects > 0",
+            name="ck_source_check_run_limits",
+        ),
+        CheckConstraint(
+            "request_count >= 0 AND downloaded_bytes >= 0 AND new_count >= 0 "
+            "AND changed_count >= 0 AND unchanged_count >= 0 "
+            "AND duplicate_count >= 0 AND failure_count >= 0",
+            name="ck_source_check_run_counts",
+        ),
+        ForeignKeyConstraint(
+            ["trusted_source_id", "tenant_id", "company_id"],
+            ["trusted_sources.id", "trusted_sources.tenant_id", "trusted_sources.company_id"],
+            name="fk_source_check_run_source_lineage",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "id",
+            "tenant_id",
+            "company_id",
+            "trusted_source_id",
+            name="uq_source_check_run_scope_lineage",
+        ),
+        Index("ix_source_check_run_tenant_status", "tenant_id", "status"),
+        Index("ix_source_check_run_company_created", "company_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    company_id: Mapped[UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
+    trusted_source_id: Mapped[UUID] = mapped_column(Uuid)
+    requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    status: Mapped[str] = mapped_column(String(32), default="queued")
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=True)
+    visibility_scope: Mapped[str] = mapped_column(String(32), default=ORGANIZATION_PRIVATE_SCOPE)
+    policy_version: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True)
+    max_requests: Mapped[int] = mapped_column(Integer)
+    max_download_bytes: Mapped[int] = mapped_column(Integer)
+    max_response_bytes: Mapped[int] = mapped_column(Integer)
+    timeout_seconds: Mapped[int] = mapped_column(Integer)
+    retry_limit: Mapped[int] = mapped_column(Integer)
+    max_redirects: Mapped[int] = mapped_column(Integer)
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
+    downloaded_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    new_count: Mapped[int] = mapped_column(Integer, default=0)
+    changed_count: Mapped[int] = mapped_column(Integer, default=0)
+    unchanged_count: Mapped[int] = mapped_column(Integer, default=0)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    external_calls: Mapped[int] = mapped_column(Integer, default=0)
+    paid_api_calls: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"))
+    robots_status: Mapped[str | None] = mapped_column(String(32))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    request_log: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CandidateDocument(TimestampMixin, Base):
+    __tablename__ = "candidate_documents"
+    __table_args__ = (
+        UniqueConstraint(
+            "trusted_source_id",
+            "canonical_url",
+            "content_hash",
+            name="uq_candidate_document_source_url_hash",
+        ),
+        CheckConstraint(
+            "change_type IN ('new', 'changed')",
+            name="ck_candidate_document_change_type",
+        ),
+        CheckConstraint(
+            "processing_status IN ('pending', 'worth_research', 'irrelevant', "
+            "'duplicate', 'source_unavailable')",
+            name="ck_candidate_document_processing_status",
+        ),
+        CheckConstraint(
+            "link_health_status IN ('healthy', 'unchecked', 'broken')",
+            name="ck_candidate_document_link_health",
+        ),
+        CheckConstraint(
+            "license_status IN ('public_access', 'permission_confirmed', 'unclear', 'restricted')",
+            name="ck_candidate_document_license_status",
+        ),
+        CheckConstraint(
+            "visibility_scope = 'organization_private'",
+            name="ck_candidate_document_scope",
+        ),
+        ForeignKeyConstraint(
+            ["trusted_source_id", "tenant_id", "company_id"],
+            ["trusted_sources.id", "trusted_sources.tenant_id", "trusted_sources.company_id"],
+            name="fk_candidate_document_source_lineage",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["discovery_run_id", "tenant_id", "company_id", "trusted_source_id"],
+            [
+                "source_check_runs.id",
+                "source_check_runs.tenant_id",
+                "source_check_runs.company_id",
+                "source_check_runs.trusted_source_id",
+            ],
+            name="fk_candidate_document_run_lineage",
+            ondelete="CASCADE",
+        ),
+        Index("ix_candidate_document_tenant_status", "tenant_id", "processing_status"),
+        Index("ix_candidate_document_company_seen", "company_id", "first_discovered_at"),
+        Index("ix_candidate_document_source_hash", "trusted_source_id", "content_hash"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    company_id: Mapped[UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
+    trusted_source_id: Mapped[UUID] = mapped_column(Uuid)
+    discovery_run_id: Mapped[UUID] = mapped_column(Uuid)
+    previous_candidate_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("candidate_documents.id", ondelete="SET NULL")
+    )
+    canonical_url: Mapped[str] = mapped_column(String(1000))
+    title: Mapped[str] = mapped_column(String(500))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    change_type: Mapped[str] = mapped_column(String(16))
+    link_health_status: Mapped[str] = mapped_column(String(32), default="unchecked")
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    etag: Mapped[str | None] = mapped_column(String(500))
+    last_modified: Mapped[str | None] = mapped_column(String(200))
+    excerpt: Mapped[str | None] = mapped_column(Text)
+    license_status: Mapped[str] = mapped_column(String(32))
+    processing_status: Mapped[str] = mapped_column(String(32), default="pending")
+    identity_status_at_discovery: Mapped[str] = mapped_column(String(32))
+    visibility_scope: Mapped[str] = mapped_column(String(32), default=ORGANIZATION_PRIVATE_SCOPE)
+    document_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    handoff_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    processed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class Event(TimestampMixin, Base):
