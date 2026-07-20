@@ -199,6 +199,32 @@ export type PersonalUsageSummary = {
   company_requests: PersonalQuota;
 };
 
+export type PersonalCompanyView = {
+  company_id: string;
+  first_view: boolean;
+  previous_viewed_at: string | null;
+  viewed_at: string;
+  new_events: Event[];
+};
+
+export type PersonalCompanyReportSummary = {
+  id: string;
+  company_id: string;
+  company_legal_name: string;
+  report_version: string;
+  title: string;
+  as_of: string;
+  content_hash: string;
+  source_event_count: number;
+  created_at: string;
+};
+
+export type PersonalCompanyReport = PersonalCompanyReportSummary & {
+  markdown: string;
+  source_event_ids: string[];
+  reused: boolean;
+};
+
 export type TrustedSource = {
   id: string;
   company_id: string;
@@ -418,6 +444,27 @@ export function createPersonalInclusionRequest(payload: {
 
 export function createPersonalRefreshRequest(companyId: string): Promise<PersonalCompanyRequest> {
   return postJson(`/api/v1/me/company-requests/refresh/${encodeURIComponent(companyId)}`, {});
+}
+
+export function recordPersonalCompanyView(companyId: string): Promise<PersonalCompanyView> {
+  return postJson(`/api/v1/me/companies/${encodeURIComponent(companyId)}/view`, {});
+}
+
+export function createPersonalCompanyReport(
+  companyId: string,
+  idempotencyKey: string,
+): Promise<PersonalCompanyReport> {
+  return postJson(`/api/v1/me/companies/${encodeURIComponent(companyId)}/reports`, {
+    idempotency_key: idempotencyKey,
+  });
+}
+
+export function getPersonalCompanyReports(): Promise<PersonalCompanyReportSummary[]> {
+  return getJson("/api/v1/me/reports");
+}
+
+export function getPersonalCompanyReport(reportId: string): Promise<PersonalCompanyReport> {
+  return getJson(`/api/v1/me/reports/${encodeURIComponent(reportId)}`);
 }
 
 export function getReviewWorkbench(): Promise<ReviewWorkbenchItem[]> {

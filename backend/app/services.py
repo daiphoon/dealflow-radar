@@ -1767,6 +1767,22 @@ def _event_out(
     )
 
 
+def platform_shared_event_out(session: Session, event: Event, user: User) -> EventOut:
+    if (
+        event.visibility_scope != PLATFORM_SHARED_SCOPE
+        or event.owner_user_id is not None
+        or event.owner_tenant_id is not None
+        or event.status != "published"
+    ):
+        raise ValueError("event is not a published platform-shared fact")
+    return _event_out(
+        session,
+        event,
+        user,
+        allow_organization_private=False,
+    )
+
+
 def _identity_candidates_for_mention(
     session: Session,
     tenant_id: UUID,

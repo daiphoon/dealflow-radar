@@ -161,6 +161,36 @@ class PersonalUsageSummaryOut(BaseModel):
     company_requests: PersonalQuotaOut
 
 
+class PersonalCompanyViewOut(BaseModel):
+    company_id: UUID
+    first_view: bool
+    previous_viewed_at: datetime | None
+    viewed_at: datetime
+    new_events: list[EventOut]
+
+
+class PersonalReportCreateIn(BaseModel):
+    idempotency_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class PersonalCompanyReportSummaryOut(BaseModel):
+    id: UUID
+    company_id: UUID
+    company_legal_name: str
+    report_version: str
+    title: str
+    as_of: datetime
+    content_hash: str
+    source_event_count: int
+    created_at: datetime
+
+
+class PersonalCompanyReportOut(PersonalCompanyReportSummaryOut):
+    markdown: str
+    source_event_ids: list[UUID]
+    reused: bool = False
+
+
 class ReviewDecisionIn(BaseModel):
     decision: str = Field(pattern=r"^(approve|reject)$")
     reason: str = Field(min_length=3, max_length=1000)

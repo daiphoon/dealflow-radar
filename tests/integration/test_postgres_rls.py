@@ -363,14 +363,15 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
                         'source_check_runs', 'candidate_documents',
                         'authentication_audit_logs',
                         'personal_watchlist_items', 'personal_company_requests',
-                        'personal_usage_records'
+                        'personal_usage_records', 'personal_company_view_states',
+                        'personal_event_view_receipts', 'personal_company_reports'
                     )
                       AND relrowsecurity
                     """
                 )
             )
         assert role == (False, False, False, False, False)
-        assert enabled_rls_tables == 24
+        assert enabled_rls_tables == 27
         assert _visible_counts(connection) == (0, 0, 0, 0, 0)
         assert _visible_counts(connection, ALPHA_USER_ID, ALPHA_TENANT_ID) == (10, 1, 10, 1, 0)
         assert _visible_counts(connection, BETA_USER_ID, BETA_TENANT_ID) == (1, 1, 0, 0, 0)
@@ -1432,3 +1433,205 @@ def test_personal_request_api_keeps_rls_response_after_commit() -> None:
         assert reviewed.json()["status"] == "completed"
         assert reviewed.json()["reviewed_by_id"] == str(ALPHA_USER_ID)
     engine.dispose()
+
+
+def test_personal_changes_and_reports_rls_is_owner_only() -> None:
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    engine = create_engine(POSTGRES_RLS_DATABASE_URL, pool_pre_ping=True)
+    connection = engine.connect()
+    transaction = connection.begin()
+    company_id = str(demo_uuid("company-示例星河科技一号有限公司"))
+    state_id = str(uuid4())
+    receipt_id = str(uuid4())
+    report_id = str(uuid4())
+    try:
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        event_id = connection.scalar(text("SELECT id FROM events ORDER BY id LIMIT 1"))
+        assert event_id is not None
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(NO_ACCESS_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO personal_company_view_states (
+                    id, owner_user_id, company_id, last_viewed_at, created_at, updated_at
+                ) VALUES (
+                    :id, :owner_user_id, :company_id,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": state_id,
+                "owner_user_id": str(NO_ACCESS_USER_ID),
+                "company_id": company_id,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO personal_event_view_receipts (
+                    id, owner_user_id, event_id, first_seen_at
+                ) VALUES (
+                    :id, :owner_user_id, :event_id, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": receipt_id,
+                "owner_user_id": str(NO_ACCESS_USER_ID),
+                "event_id": str(event_id),
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO personal_company_reports (
+                    id, owner_user_id, company_id, report_version, idempotency_key,
+                    company_legal_name, title, as_of, markdown, content_hash,
+                    source_event_ids, created_at
+                ) VALUES (
+                    :id, :owner_user_id, :company_id, 'personal-company-v1',
+                    :idempotency_key, '示例星河科技一号有限公司', 'RLS report',
+                    CURRENT_TIMESTAMP, '# RLS report',
+                    :content_hash, CAST(:source_event_ids AS json), CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": report_id,
+                "owner_user_id": str(NO_ACCESS_USER_ID),
+                "company_id": company_id,
+                "idempotency_key": "c" * 64,
+                "content_hash": "d" * 64,
+                "source_event_ids": f'["{event_id}"]',
+            },
+        )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(BETA_USER_ID), "tenant_id": str(BETA_TENANT_ID)},
+        )
+        assert connection.execute(
+            text(
+                "SELECT (SELECT count(*) FROM personal_company_view_states), "
+                "(SELECT count(*) FROM personal_event_view_receipts), "
+                "(SELECT count(*) FROM personal_company_reports)"
+            )
+        ).one() == (0, 0, 0)
+        with pytest.raises(DBAPIError):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO personal_company_reports (
+                            id, owner_user_id, company_id, report_version,
+                            idempotency_key, company_legal_name, title, as_of, markdown,
+                            content_hash, source_event_ids, created_at
+                        ) VALUES (
+                            :id, :owner_user_id, :company_id, 'personal-company-v1',
+                            :idempotency_key, '伪造公司', 'forged', CURRENT_TIMESTAMP, '# forged',
+                            :content_hash, CAST('[]' AS json), CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {
+                        "id": str(uuid4()),
+                        "owner_user_id": str(NO_ACCESS_USER_ID),
+                        "company_id": company_id,
+                        "idempotency_key": "e" * 64,
+                        "content_hash": "f" * 64,
+                    },
+                )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        assert connection.scalar(text("SELECT count(*) FROM personal_company_reports")) == 0
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(NO_ACCESS_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        assert connection.execute(
+            text(
+                "SELECT (SELECT count(*) FROM personal_company_view_states), "
+                "(SELECT count(*) FROM personal_event_view_receipts), "
+                "(SELECT count(*) FROM personal_company_reports)"
+            )
+        ).one() == (1, 1, 1)
+    finally:
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
+def test_personal_changes_and_reports_api_keeps_postgres_rls_context() -> None:
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    base_settings = Settings.from_env()
+    settings = replace(
+        base_settings,
+        database_url=POSTGRES_RLS_DATABASE_URL,
+        auth_provider="demo",
+        external_calls_enabled=False,
+        paid_api_calls_enabled=False,
+        auto_refresh_enabled=False,
+        personal_entitlement_policy=replace(
+            base_settings.personal_entitlement_policy,
+            monthly_report_limit=1_000,
+        ),
+    )
+    company_id = str(demo_uuid("company-示例星河科技一号有限公司"))
+    with TestClient(create_app(settings)) as client:
+        personal_headers = {"X-Demo-User-Id": str(NO_ACCESS_USER_ID)}
+        first_view = client.post(
+            f"/api/v1/me/companies/{company_id}/view",
+            headers=personal_headers,
+        )
+        second_view = client.post(
+            f"/api/v1/me/companies/{company_id}/view",
+            headers=personal_headers,
+        )
+        assert first_view.status_code == second_view.status_code == 200
+        assert second_view.json()["first_view"] is False
+
+        report_key = uuid4().hex * 2
+        created = client.post(
+            f"/api/v1/me/companies/{company_id}/reports",
+            headers=personal_headers,
+            json={"idempotency_key": report_key},
+        )
+        assert created.status_code == 200, created.text
+        report_id = created.json()["id"]
+        assert (
+            client.get(f"/api/v1/me/reports/{report_id}", headers=personal_headers).status_code
+            == 200
+        )
+        for other_user_id in (BETA_USER_ID, ALPHA_USER_ID):
+            hidden = client.get(
+                f"/api/v1/me/reports/{report_id}",
+                headers={"X-Demo-User-Id": str(other_user_id)},
+            )
+            assert hidden.status_code == 404

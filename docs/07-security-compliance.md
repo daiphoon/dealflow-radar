@@ -62,7 +62,7 @@ CloudBase 身份请求是登录基础设施调用，不受业务数据 `EXTERNAL
 
 共享快照构建器只读平台共享事件和指标；基金投资概览及个人/机构私有数据在响应层按授权单独拼装，不能缓存为全局公司快照。没有基金授权但具有有效共享档案权益的用户仍可读取共享基础层。
 
-当前 24 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`、两张共享决定审计表、`trusted_sources`、`source_check_runs`、`candidate_documents`、认证审计表，以及 `personal_watchlist_items`、`personal_company_requests`、`personal_usage_records`。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权，`system_restricted` 不向普通应用用户或平台管理员开放。个人关注和用量只允许本人读取；收录/更新申请因为由用户明确提交给平台处理，平台管理员可以跨租户读取和更新状态，但看不到该用户的关注或其他个人用量。共享事件和共享证据引用只有平台管理员可写；共享决定审计表只允许平台管理员读取和追加。认证审计允许本人追加和读取、同 tenant 平台管理员读取，没有更新或删除策略。私有别名、外部文档记录和文档去重键按 owner 分区唯一，避免不同客户因同名或同一来源记录相互阻塞。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
+当前 27 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`、两张共享决定审计表、`trusted_sources`、`source_check_runs`、`candidate_documents`、认证审计表，以及 `personal_watchlist_items`、`personal_company_requests`、`personal_usage_records`、`personal_company_view_states`、`personal_event_view_receipts`和 `personal_company_reports`。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权，`system_restricted` 不向普通应用用户或平台管理员开放。个人关注、用量、查看状态、事件回执和报告只允许本人读取；报告和事件回执只追加，不允许应用角色更新或删除。收录/更新申请因为由用户明确提交给平台处理，平台管理员可以跨租户读取和更新状态，但看不到该用户的关注或其他个人用量。共享事件和共享证据引用只有平台管理员可写；共享决定审计表只允许平台管理员读取和追加。认证审计允许本人追加和读取、同 tenant 平台管理员读取，没有更新或删除策略。私有别名、外部文档记录和文档去重键按 owner 分区唯一，避免不同客户因同名或同一来源记录相互阻塞。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
 
 当前 CloudBase 认证只替换身份凭证，个人订阅与机构赞助权益尚未实现；M3 完成真实收码和四角色验收前仍只适合本地或受控邀请验证。迁移账户仍可作为表所有者绕过策略，必须继续与日常 `NOBYPASSRLS` 应用账户分离。
 

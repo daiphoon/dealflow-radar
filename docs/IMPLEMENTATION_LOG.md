@@ -170,3 +170,12 @@
 - 实际命令：`uv run --frozen ruff check backend migrations scripts tests`；`uv run --frozen ruff format --check backend migrations scripts tests`；`uv run --frozen pytest -q`；隔离 PostgreSQL 16 空库升级至 `0016`、Schema 漂移检查、`0016 → 0015 → 0016` 往返、虚构数据导入、受限应用账户初始化和 RLS 套件；`npm audit --audit-level=high`、`npm run typecheck`、`npm run build`；临时 SQLite 虚构数据下的无基金个人浏览器查询、关注、重复更新申请、无结果收录、取消关注和额度展示；`git diff --check`。
 - 测试结果：Ruff 和格式通过；默认 Pytest 175 项通过、7 项需显式 PostgreSQL 环境的测试按预期跳过，仅有 FastAPI TestClient 上游弃用警告；全新 PostgreSQL 16 迁移、Schema 漂移、往返及 24 张受保护表的 RLS 测试 7 项通过；TypeScript、Next.js 生产构建和依赖审计通过，0 个已知漏洞。浏览器确认查询只返回共享公司、关注/取消关注可逆、相同更新申请复用原记录、收录申请不创建公司，并修复成功提交后回到搜索页造成查询额度二次计数的问题。严格自查另修复了 PostgreSQL 事务级 RLS 上下文在提交后响应重读时丢失，以及只追加用量记录被二次更新而遭 RLS 拒绝的问题；未放宽 RLS。业务外部查询、付费调用、模型 Token、估算费用和自动发布均为 0。
 - 未解决阻塞：M4 的“自上次查看后的变化”和确定性 HTML/Markdown 固定报告将在下一独立 PR 实现；商业订阅、支付、多观察清单、个人备注、PDF、通知和 LLM 报告不在本阶段。机构基金叠加由自动回归覆盖，本轮未新增第二套机构浏览器数据验收；FastAPI TestClient 上游弃用警告仍存在，不影响结果。
+
+## 2026-07-21｜M4 个人变化回访与固定报告
+
+- 日期：2026-07-21
+- 任务：为每个用户独立建立公司查看基线和逐事件回执，回访时只展示新通过审核的平台共享事实；生成个人私有、只追加的确定性 Markdown 时点报告，执行每月 10 次测试上限；不调用 LLM、外部 Provider 或自动发布。
+- 关键文件：`migrations/versions/0017_add_personal_changes_and_reports.py`、`backend/app/personal_features.py`、`backend/app/models.py`、`backend/app/main.py`、`backend/app/services.py`、`frontend/app/companies/[id]/personal-change-panel.tsx`、`frontend/app/reports/`、`tests/integration/test_personal_changes_reports.py`、`tests/integration/test_postgres_rls.py` 和受影响文档。
+- 实际命令：`uv run --frozen ruff check backend migrations scripts tests`；`uv run --frozen ruff format --check backend migrations scripts tests`；`uv run --frozen pytest -q`；隔离 SQLite 空库升级至 `0017`、`alembic check`、`0017 → 0016 → 0017`；一次性 PostgreSQL 16 空库执行同样迁移往返、虚构数据导入、`NOBYPASSRLS` 应用角色和 RLS 套件；`npm audit --audit-level=high`、`npm run typecheck`、`npm run build`；临时 SQLite 虚构数据下的个人首次查看、共享事实晋升、二次查看、报告生成、其他用户拒绝和基金叠加浏览器验收；`git diff --check`。
+- 测试结果：Ruff 与格式检查通过；默认 Pytest 177 项通过、9 项显式 PostgreSQL 测试按预期跳过；隔离 PostgreSQL 的 27 张受保护表与 9 项 RLS/API 测试通过；SQLite/PostgreSQL 迁移、Schema 漂移和 `0017` 往返通过；TypeScript、Next.js 生产构建通过，依赖审计 0 个已知高风险漏洞。浏览器确认链接预取不会标记已读、新共享事实只提示一次、报告不含投资和私有候选、其他用户读取返回 404、机构用户仍能看到授权基金叠加，页面无横向溢出且控制台无警告或错误。严格自查修复了 Next.js 预取提前写入已读、React 开发模式重复 effect 卡在加载、公司切换后不重新记录、报告公司名未冻结以及新鲜度未按生成时点重算的问题。业务外部调用、付费调用、模型 Token、估算费用和自动发布均为 0。
+- 未解决阻塞：无。报告按产品决策保留生成时点快照，后续纠正或撤回不回写旧报告，界面已明示需以最新公司详情为准。PDF、多观察清单、个人备注、通知、商业订阅/支付和 LLM 报告不在 M4；FastAPI TestClient 上游弃用警告仍存在，不影响当前结果。

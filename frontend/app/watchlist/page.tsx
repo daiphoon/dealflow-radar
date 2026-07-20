@@ -86,6 +86,13 @@ export default async function WatchlistPage({
               {usage.company_requests.used} / {usage.company_requests.limit}
             </strong>
           </article>
+          <article className="quota-card">
+            <span>本月固定报告</span>
+            <strong>
+              {usage.reports.used} / {usage.reports.limit}
+            </strong>
+            <Link href="/reports">查看我的报告</Link>
+          </article>
         </section>
 
         <section className="panel">

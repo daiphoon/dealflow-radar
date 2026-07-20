@@ -4,7 +4,7 @@
 
 PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；不修改已应用迁移。UUID 主键、UTC `timestamptz`、显式外键和状态约束为默认。原始事实追加保存，派生快照可重建。个人、机构与基金私有行必须通过应用授权和 PostgreSQL 行级安全（RLS）双重限制。
 
-本文件同时描述当前 `0016` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询、受控共享事实晋升、授权工商身份 Provider、受控可信来源监测、候选研究交接、低频调度审计、CloudBase 身份映射和单一个人关注清单已经实现；标记为“目标”的 organization 和商业订阅权益对象仍未实现。当前 `tenant` 继续作为技术隔离边界，CloudBase 只提供外部身份，业务授权仍由本地用户、角色、基金授权和 RLS 决定。
+本文件同时描述当前 `0017` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询、受控共享事实晋升、授权工商身份 Provider、受控可信来源监测、候选研究交接、低频调度审计、CloudBase 身份映射、单一个人关注清单、个人变化回访和确定性报告已经实现；标记为“目标”的 organization 和商业订阅权益对象仍未实现。当前 `tenant` 继续作为技术隔离边界，CloudBase 只提供外部身份，业务授权仍由本地用户、角色、基金授权和 RLS 决定。
 
 ## 2. 表目录：身份、投资与权限
 
@@ -25,6 +25,8 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `personal_watchlist_items` | 当前用户的单一默认关注清单 | 唯一 `(owner_user_id, company_id)`；只允许关注已核验共享公司，不产生公司读取权限 |
 | `personal_company_requests` | 用户主动提交的平台收录或人工更新申请 | owner 私有；平台管理员可读取和处理；保存目标快照、状态、理由和处理人 |
 | `personal_usage_records` | 查询、申请和固定报告的测试权益消耗 | owner 私有；按上海自然月和动作计数；与外部调用成本 `usage_ledger` 分离 |
+| `personal_company_view_states` | 用户首次和最近查看某共享公司的时间状态 | 唯一 `(owner_user_id, company_id)`；只允许 owner 读写 |
+| `personal_event_view_receipts` | 用户确实看到过的平台共享事件回执 | 唯一 `(owner_user_id, event_id)`；事件外键可追溯公司；只追加；避免用时间截止点错过并发发布事件 |
 | `plans`（目标） | 套餐能力和限额的版本化配置 | 唯一套餐版本；不保存资源授权 |
 | `subscriptions`（目标） | 个人或机构获得 plan 的有效关系 | 个人和机构订阅主体二选一；不替代 access grant |
 | `plan_entitlements`（目标） | 查询、关注、报告、刷新和席位等能力或额度 | 唯一 `(plan_version, entitlement_code)` |
@@ -42,6 +44,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `metric_definitions` | 指标编码、类型、单位集合、周期和行业命名空间 | 唯一 `metric_code`; 行业索引 |
 | `metric_observations` | 公司指标历史值、单位、期间、`as_of_date`、来源性质、审核状态 | 观测幂等键唯一；公司/指标/基准日降序索引 |
 | `company_snapshots` | 派生状态、信息缺口、新鲜度、构建版本、可空的事实水位 | 唯一 `(company_id, snapshot_version)`；当前快照条件唯一；没有可靠事件/来源日期时 `data_as_of` 保持空 |
+| `personal_company_reports` | 个人生成的确定性 Markdown 公司报告时点快照 | owner 私有且只追加；保存模板版本、事件 ID 快照、正文校验和幂等键；不含私有候选、文档或投资字段 |
 | `report_templates` | 固定模板、版本、适用报告类型和可见范围 | 唯一 `(template_code, version, tenant_id)` |
 | `generated_reports` | 模板版本、事实水位、`as_of_date`、存储引用、可见范围 | 唯一报告幂等键；tenant/fund/as-of 索引 |
 | `notifications` | 已批准事件/报告的通知投递状态和幂等键 | 投递幂等键唯一；状态/计划时间索引 |

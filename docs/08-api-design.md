@@ -28,9 +28,11 @@
 | `POST /me/company-requests/refresh/{company_id}` | 请求人工更新共享公司 | 与收录申请合计每月 5 次，同目标 24 小时冷却，不创建自动刷新任务 |
 | `GET /me/company-requests` | 查看本人申请状态 | 其他个人和机构不可见 |
 | `GET /me/usage` | 当前测试权益用量 | 查询、关注、报告和申请分别返回已用、上限和剩余 |
+| `POST /me/companies/{company_id}/view` | 记录实际查看并返回新共享事实 | 首次只建基线；之后只返回本人未看过的 `published + platform_shared` 事件，并追加事件回执 |
+| `POST /me/companies/{company_id}/reports` | 生成个人固定报告 | 只读共享公司、共享快照和已发布共享事件；每月 10 次测试上限；幂等生成；不调用 LLM 或外部 Provider |
+| `GET /me/reports` 与 `GET /me/reports/{report_id}` | 查看本人报告 | 其他用户统一按不存在处理；报告是不可变时点快照 |
 | `GET/PATCH /platform/company-requests` | 平台处理用户主动提交的申请 | 仅 `platform_admin`；不扩张到个人关注或用量读取 |
 | `GET /companies/{id}` | 公司详情 | 已实现共享基础层独立读取，并按基金/owner 授权叠加私有层 |
-| `GET /companies/{id}/changes?since=` | 上次查看后变化 | 只返回版本化事实变化和纠正撤回 |
 | `GET /companies/{id}/events` | 事件时间线 | 按有效权益和记录作用域返回事件；业务状态不代替授权 |
 | `GET /events/{id}/evidence` | 证据 | 对证据引用和原始文档分别授权，只返回许可允许的最小内容 |
 | `GET /companies/{id}/metrics` | 指标历史 | 返回来源性质、期间、单位和审核状态 |
@@ -50,7 +52,7 @@
 
 人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`；政府身份 JSON 通过 `python -m scripts.import_official_identity_json` 导入；天眼查授权身份通过 `python -m scripts.import_tianyancha_identities` 在独立受控进程查询并导入。三者均未开放网页上传或同步查询 API；即使 CloudBase 身份已接入，上传隔离、文件审计和许可校验仍须单独验收。`GET /companies` 继续返回基金授权列表；`GET /companies/search?q=` 和共享公司详情不要求基金关系，但要求有效身份，且永不触发天眼查调用。
 
-当前详情响应使用 `events` 表示平台共享已审核事实、`private_events` 表示当前机构可见的已确认信息、`unconfirmed_leads` 表示当前个人或机构 owner 可见的未确认线索，`investments` 只在基金授权存在时返回记录；`is_platform_shared` 只用于决定是否展示个人关注/更新入口，不暴露私有记录。证据引用和原始文档分别做作用域过滤；共享事件只序列化独立展示引用的来源名称、URL、日期、状态和许可短摘录，不读取私有原文档。无基金用户不会因共享详情请求触发机构私有刷新状态或任务。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放；普通审核区要求 `reviewer`，共享晋升区另要求 `platform_admin`，该开关不能替代认证。
+当前详情响应使用 `events` 表示平台共享已审核事实、`private_events` 表示当前机构可见的已确认信息、`unconfirmed_leads` 表示当前个人或机构 owner 可见的未确认线索，`investments` 只在基金授权存在时返回记录；`is_platform_shared` 只用于决定是否展示个人关注/更新/报告入口，不暴露私有记录。个人变化通过客户端组件在页面挂载后单独记录，Next.js 链接预取或服务端渲染不会提前标记为已看。证据引用和原始文档分别做作用域过滤；共享事件和固定报告只序列化独立展示引用的来源名称、URL、日期、状态和许可短摘录，不读取私有原文档。无基金用户不会因共享详情请求触发机构私有刷新状态或任务。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放；普通审核区要求 `reviewer`，共享晋升区另要求 `platform_admin`，该开关不能替代认证。
 
 链接展示按 `link_display_allowed` 和检查状态决定：健康链接显示检查时间；合法但未检查的 URL 可点击并明确警告；失效链接只保留历史来源信息；不安全或许可受限链接不返回为可点击链接。链接可点击不表示证据内容已完成实质核验。
 
