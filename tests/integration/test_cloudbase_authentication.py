@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from backend.app.auth import (
+    AuthenticationProviderUnavailableError,
     AuthTokenSet,
     InvalidAuthenticationFlowError,
     VerificationChallenge,
@@ -69,9 +70,15 @@ class FakeCloudBaseProvider:
         return VerificationChallenge("verification-alpha", 600)
 
     def sign_in_with_email_code(self, verification_id: str, verification_code: str) -> AuthTokenSet:
-        if (verification_id, verification_code) != ("verification-alpha", "123456"):
+        token_set = {
+            ("verification-alpha", "123456"): AuthTokenSet("access-alpha", "refresh-alpha", 7200),
+            ("verification-duplicate", "123456"): AuthTokenSet(
+                "access-duplicate", "refresh-duplicate", 7200
+            ),
+        }.get((verification_id, verification_code))
+        if token_set is None:
             raise InvalidAuthenticationFlowError
-        return AuthTokenSet("access-alpha", "refresh-alpha", 7200)
+        return token_set
 
     def refresh_tokens(self, refresh_token: str) -> AuthTokenSet:
         if refresh_token != "refresh-alpha":
@@ -88,6 +95,11 @@ class FakeCloudBaseProvider:
         self.signed_out.append(access_token)
 
 
+class UnavailableProfileProvider(FakeCloudBaseProvider):
+    def verify_access_token(self, access_token: str) -> VerifiedIdentity:
+        raise AuthenticationProviderUnavailableError
+
+
 def _cloudbase_app(migrated_app: FastAPI) -> tuple[FastAPI, FakeCloudBaseProvider]:
     provider = FakeCloudBaseProvider()
     settings = replace(
@@ -98,14 +110,40 @@ def _cloudbase_app(migrated_app: FastAPI) -> tuple[FastAPI, FakeCloudBaseProvide
     return create_app(settings, identity_provider=provider), provider
 
 
+def _bind_identity(app: FastAPI, user_id: UUID, subject: str) -> None:
+    with app.state.session_factory() as session:
+        user = session.get(User, user_id)
+        assert user is not None
+        user.auth_provider = "cloudbase"
+        user.auth_subject = subject
+        session.commit()
+
+
 def test_cloudbase_identity_replaces_forgeable_demo_header(migrated_app: FastAPI) -> None:
     app, _ = _cloudbase_app(migrated_app)
+    _bind_identity(app, BETA_USER_ID, "subject-beta")
     with TestClient(app) as client:
         demo_only = client.get(
             "/api/v1/auth/me",
             headers={"X-Demo-User-Id": str(ALPHA_USER_ID)},
         )
         assert demo_only.status_code == 401
+
+        unbound_bearer = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": "Bearer access-alpha"},
+        )
+        assert unbound_bearer.status_code == 403
+        assert unbound_bearer.json()["detail"] == "invitation_required"
+
+        login = client.post(
+            "/api/v1/auth/email/login",
+            json={
+                "verification_id": "verification-alpha",
+                "verification_code": "123456",
+            },
+        )
+        assert login.status_code == 200
 
         alpha = client.get(
             "/api/v1/auth/me",
@@ -146,7 +184,7 @@ def test_cloudbase_identity_replaces_forgeable_demo_header(migrated_app: FastAPI
                 .select_from(AuthenticationAuditLog)
                 .where(AuthenticationAuditLog.event_type == "identity_linked")
             )
-            == 2
+            == 1
         )
     app.state.engine.dispose()
 
@@ -156,9 +194,12 @@ def test_subject_mapping_survives_email_change_and_unknown_user_is_denied(
 ) -> None:
     app, _ = _cloudbase_app(migrated_app)
     with TestClient(app) as client:
-        first = client.get(
-            "/api/v1/auth/me",
-            headers={"Authorization": "Bearer access-alpha"},
+        first = client.post(
+            "/api/v1/auth/email/login",
+            json={
+                "verification_id": "verification-alpha",
+                "verification_code": "123456",
+            },
         )
         changed = client.get(
             "/api/v1/auth/me",
@@ -201,9 +242,12 @@ def test_ambiguous_cross_tenant_email_fails_closed(migrated_app: FastAPI) -> Non
 
     app, _ = _cloudbase_app(migrated_app)
     with TestClient(app) as client:
-        response = client.get(
-            "/api/v1/auth/me",
-            headers={"Authorization": "Bearer access-duplicate"},
+        response = client.post(
+            "/api/v1/auth/email/login",
+            json={
+                "verification_id": "verification-duplicate",
+                "verification_code": "123456",
+            },
         )
     assert response.status_code == 403
     assert response.json()["detail"] == "invitation_required"
@@ -213,6 +257,13 @@ def test_ambiguous_cross_tenant_email_fails_closed(migrated_app: FastAPI) -> Non
 def test_email_login_refresh_logout_and_audit(migrated_app: FastAPI) -> None:
     app, provider = _cloudbase_app(migrated_app)
     with TestClient(app) as client:
+        refresh_before_link = client.post(
+            "/api/v1/auth/token/refresh",
+            json={"refresh_token": "refresh-alpha"},
+        )
+        assert refresh_before_link.status_code == 403
+        assert refresh_before_link.json()["detail"] == "invitation_required"
+
         challenge = client.post(
             "/api/v1/auth/email/verification",
             json={"email": "alpha-admin@example.invalid"},
@@ -245,7 +296,7 @@ def test_email_login_refresh_logout_and_audit(migrated_app: FastAPI) -> None:
             headers={"Authorization": "Bearer access-alpha-2"},
         )
         assert logout.status_code == 204
-        assert provider.signed_out == ["access-alpha-2"]
+        assert provider.signed_out == ["access-alpha-2", "access-alpha-2"]
 
     with app.state.session_factory() as session:
         user = session.get(User, ALPHA_USER_ID)
@@ -260,6 +311,30 @@ def test_email_login_refresh_logout_and_audit(migrated_app: FastAPI) -> None:
         assert sorted(event_types) == sorted(
             ["identity_linked", "session_started", "session_refreshed", "session_ended"]
         )
+    app.state.engine.dispose()
+
+
+def test_malformed_provider_profile_is_not_reported_as_invalid_code(
+    migrated_app: FastAPI,
+) -> None:
+    settings = replace(
+        migrated_app.state.settings,
+        auth_provider="cloudbase",
+        cloudbase_auth_policy=CloudBaseAuthPolicy(env_id="demo-env-123"),
+    )
+    app = create_app(settings, identity_provider=UnavailableProfileProvider())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/auth/email/login",
+            json={
+                "verification_id": "verification-alpha",
+                "verification_code": "123456",
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "authentication_unavailable"
     app.state.engine.dispose()
 
 
@@ -286,8 +361,12 @@ def test_uninvited_email_verification_does_not_disclose_account_existence(
 def test_inactive_local_tenant_is_denied(migrated_app: FastAPI) -> None:
     with migrated_app.state.session_factory() as session:
         tenant = session.get(Tenant, BETA_TENANT_ID)
+        user = session.get(User, BETA_USER_ID)
         assert tenant is not None
+        assert user is not None
         tenant.status = "inactive"
+        user.auth_provider = "cloudbase"
+        user.auth_subject = "subject-beta"
         session.commit()
 
     app, _ = _cloudbase_app(migrated_app)
@@ -326,6 +405,15 @@ def test_cloudbase_identity_preserves_four_local_authorization_personas(
                 valid_until=None,
             )
         )
+        for user_id, subject in (
+            (ALPHA_USER_ID, "subject-alpha"),
+            (BETA_USER_ID, "subject-beta"),
+            (NO_ACCESS_USER_ID, "subject-personal"),
+        ):
+            user = session.get(User, user_id)
+            assert user is not None
+            user.auth_provider = "cloudbase"
+            user.auth_subject = subject
         session.commit()
 
     app, provider = _cloudbase_app(migrated_app)
@@ -334,6 +422,7 @@ def test_cloudbase_identity_preserves_four_local_authorization_personas(
         subject="subject-platform",
         email="platform-admin@example.invalid",
     )
+    _bind_identity(app, platform_user_id, "subject-platform")
     with TestClient(app) as client:
         personal_search = client.get(
             "/api/v1/companies/search",
@@ -385,7 +474,4 @@ def test_cloudbase_identity_preserves_four_local_authorization_personas(
         )
         assert platform_sources.status_code == 200
 
-    with app.state.session_factory() as session:
-        assert session.get(User, NO_ACCESS_USER_ID).auth_subject == "subject-personal"
-        assert session.get(User, platform_user_id).auth_subject == "subject-platform"
     app.state.engine.dispose()

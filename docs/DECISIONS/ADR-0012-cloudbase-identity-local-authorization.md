@@ -14,9 +14,9 @@
 
 1. CloudBase 是身份提供方，只回答“登录者是谁”。本地 `users`、`user_role_assignments`、`fund_access_grants`、租户状态、资源作用域和 PostgreSQL RLS 继续回答“该用户能看什么、能做什么”。CloudBase `groups`、前端字段或 Cookie 内容不得授予业务角色。
 2. V1 使用 CloudBase 官方 HTTP API 的邮箱验证码登录，发送验证码时固定 `target=USER`。CloudBase 中不存在的账户不能自行注册；本地数据库中也必须已经存在唯一、启用的受邀用户。
-3. 第一次成功登录时，用 CloudBase 已验证邮箱匹配唯一的 active 本地用户，并保存 `(auth_provider, auth_subject)`。后续以稳定 subject 为准，不因邮箱变更自动换绑。相同邮箱命中零个或多个 tenant、本地用户已绑定其他 subject、用户或 tenant 停用时均失败关闭，等待管理员处理。
+3. 只有刚完成 CloudBase 邮箱验证码交换的登录请求，才可用 `/user/me` 返回的邮箱匹配唯一的 active 本地用户，并保存 `(auth_provider, auth_subject)`。普通 Bearer 请求和 refresh token 不能建立首次绑定；后续只以稳定 subject 为准，不因邮箱变更自动换绑。相同邮箱命中零个或多个 tenant、本地用户已绑定其他 subject、用户或 tenant 停用时均失败关闭，等待管理员处理。
 4. 浏览器不保存可由 JavaScript 读取的访问令牌。Next.js 服务端登录动作把 CloudBase access/refresh token 存入 `HttpOnly`、`SameSite=Strict` Cookie；生产环境再加 `Secure`。服务端渲染请求从 Cookie 取 token，以 `Authorization: Bearer` 调用 FastAPI。
-5. FastAPI 在 `AUTH_PROVIDER=cloudbase` 时完全忽略 `X-Demo-User-Id`，通过 CloudBase `GET /auth/v1/user/me` 核验 token、active 状态、subject 和邮箱身份源，再加载本地用户并设置既有 RLS 上下文。`AUTH_PROVIDER=demo` 仅为本地开发和默认 CI 保留，不得作为对外环境配置。
+5. FastAPI 在 `AUTH_PROVIDER=cloudbase` 时完全忽略 `X-Demo-User-Id`，通过 CloudBase `GET /auth/v1/user/me` 核验 token、active 状态、subject 和顶层邮箱，再加载本地用户并设置既有 RLS 上下文。真实原生邮箱账户的 `providers` 字段不保证是列表，且在控制台语义中与第三方身份源分开，因此不得把该字段作为邮箱验证码登录的必要条件；首次邮箱映射的控制证明来自刚完成的验证码交换。`AUTH_PROVIDER=demo` 仅为本地开发和默认 CI 保留，不得作为对外环境配置。
 6. access token 到期后，Next.js 使用只存在于 `HttpOnly` Cookie 的 refresh token 调用官方刷新接口并轮换两枚 token。退出时先请求 CloudBase 撤销会话，再清除本地 Cookie；即使 Provider 暂时不可用，本地 Cookie 仍清除，失败写入审计并等待 access token 自然过期。
 7. 新增追加式 `authentication_audit_logs`，记录本地身份绑定、会话开始、刷新和结束。只保存 provider subject 的 SHA-256，不保存 access token、refresh token、验证码或完整请求正文；应用角色没有更新或删除策略。
 8. 认证调用是建立登录会话所必需的身份基础设施调用，不属于天眼查、搜索、模型或自动刷新业务调用。`EXTERNAL_CALLS_ENABLED`、`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED` 和 `AUTO_PUBLISH_ENABLED` 继续保持关闭；CloudBase 是否启用只由 `AUTH_PROVIDER=cloudbase` 与有效环境配置共同决定。

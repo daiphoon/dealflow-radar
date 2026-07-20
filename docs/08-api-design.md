@@ -9,8 +9,8 @@
 邀请制认证接口为：
 
 - `POST /api/v1/auth/email/verification`：固定向 CloudBase 已存在账户发送邮箱验证码；不存在账户返回不可区分的通用响应；
-- `POST /api/v1/auth/email/login`：验证码换 token，并完成唯一的本地邀请映射和登录审计；
-- `POST /api/v1/auth/token/refresh`：轮换 token 并重新检查本地账户状态；
+- `POST /api/v1/auth/email/login`：验证码换 token，并在该受控路径中完成唯一的首次本地邀请映射和登录审计；
+- `POST /api/v1/auth/token/refresh`：轮换 token 并按已绑定 subject 重新检查本地账户状态，不允许首次邮箱绑定；
 - `GET /api/v1/auth/me`：返回本地 user/tenant 身份，不返回 CloudBase group 作为业务角色；
 - `POST /api/v1/auth/logout`：撤销 CloudBase 会话并追加退出审计。
 

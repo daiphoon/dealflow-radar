@@ -55,7 +55,7 @@ export CLOUDBASE_ENV_ID='replace_with_cloudbase_env_id'
 export CLOUDBASE_CLIENT_ID='replace_with_client_id_or_leave_empty'
 ```
 
-访问 `http://127.0.0.1:3000/login`，验证码登录成功后 access/refresh token 只保存于 Next.js 的 `HttpOnly` Cookie。CloudBase group 不会映射成业务角色；API 仍从 PostgreSQL 加载 tenant、角色与基金授权，并设置既有 RLS 上下文。`AUTH_PROVIDER=cloudbase` 时 `X-Demo-User-Id` 完全无效。
+访问 `http://localhost:3000/login`，验证码登录成功后 access/refresh token 只保存于 Next.js 的 `HttpOnly` Cookie。本地认证验收期间不要混用 `localhost` 和 `127.0.0.1`，浏览器会把两者视为不同的 Cookie 站点。CloudBase group 不会映射成业务角色；API 仍从 PostgreSQL 加载 tenant、角色与基金授权，并设置既有 RLS 上下文。`AUTH_PROVIDER=cloudbase` 时 `X-Demo-User-Id` 完全无效。
 
 CloudBase 身份请求不等于公司信息外部查询，不会调用天眼查，也不会开启 `EXTERNAL_CALLS_ENABLED`、`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED` 或 `AUTO_PUBLISH_ENABLED`。完整配置、四角色验收、故障回退和控制台操作见[运维手册](docs/12-operations-runbook.md)；边界见 [ADR-0012](docs/DECISIONS/ADR-0012-cloudbase-identity-local-authorization.md)。
 
@@ -147,7 +147,7 @@ npm ci
 npm run dev
 ```
 
-访问 `http://127.0.0.1:3000`。前端默认使用虚构机构管理员身份；设置 `DEMO_USER_ID` 为无基金测试用户可验证个人查询路径。API 调试可访问 `http://127.0.0.1:8000/docs`。共享搜索和详情只读数据库，不自动创建公司，也不触发外部 Provider；有基金权限时才叠加投资关系和机构私有内容。
+访问 `http://localhost:3000`。前端默认使用虚构机构管理员身份；设置 `DEMO_USER_ID` 为无基金测试用户可验证个人查询路径。API 调试可访问 `http://127.0.0.1:8000/docs`。共享搜索和详情只读数据库，不自动创建公司，也不触发外部 Provider；有基金权限时才叠加投资关系和机构私有内容。
 
 ### 身份例外与历史审核工作台 V1（仅本机）
 
@@ -162,7 +162,7 @@ export DEMO_USER_ID='replace_with_local_reviewer_uuid'
 npm run dev
 ```
 
-访问 `http://127.0.0.1:3000/reviews`。新导入默认只有身份歧义进入该队列；既有事件审核记录仍展示证据和决定历史。当 30 天内的关联官方工商候选已入库时，同时具有 `reviewer` 和 `institution_admin` 角色的本地用户可选择主体并填写理由。系统会在一个事务内更新身份、保留曾用名、重建事件/证据并按当前发布策略重路由。该决定不会在页面请求中访问外部网站；原来源链接尚未检查时，记录会安全转为 `unconfirmed_lead`。
+访问 `http://localhost:3000/reviews`。新导入默认只有身份歧义进入该队列；既有事件审核记录仍展示证据和决定历史。当 30 天内的关联官方工商候选已入库时，同时具有 `reviewer` 和 `institution_admin` 角色的本地用户可选择主体并填写理由。系统会在一个事务内更新身份、保留曾用名、重建事件/证据并按当前发布策略重路由。该决定不会在页面请求中访问外部网站；原来源链接尚未检查时，记录会安全转为 `unconfirmed_lead`。
 
 `AUTH_PROVIDER=demo` 下的 `X-Demo-User-Id` 仍只是本地测试身份。只有切换 CloudBase 模式并完成真实受邀账户和权限回归后，才可在后续生产部署里程碑评估对外开放；审核工作台开关不能替代认证。
 

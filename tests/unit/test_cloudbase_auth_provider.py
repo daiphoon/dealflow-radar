@@ -56,27 +56,54 @@ def test_verifies_active_email_identity_against_fixed_gateway() -> None:
     assert requests[0].headers["authorization"] == "Bearer valid-access-token"
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {
-            "sub": "subject",
-            "email": "invitee@example.com",
-            "status": "SUSPENDED",
-            "providers": [{"id": "email", "provider_user_id": "invitee@example.com"}],
-        },
-        {
-            "sub": "subject",
-            "email": "invitee@example.com",
-            "status": "ACTIVE",
-            "providers": [{"id": "github", "provider_user_id": "invitee@example.com"}],
-        },
-    ],
-)
-def test_rejects_inactive_or_unverified_email_identity(payload: dict[str, object]) -> None:
+def test_accepts_native_email_account_without_provider_list() -> None:
+    provider = _provider(
+        httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                json={
+                    "sub": "native-email-subject",
+                    "email": "Native.User@Example.COM",
+                    "status": "ACTIVE",
+                    "providers": {},
+                },
+            )
+        )
+    )
+
+    identity = provider.verify_access_token("valid-access-token")
+
+    assert identity.provider == "cloudbase"
+    assert identity.subject == "native-email-subject"
+    assert identity.email == "native.user@example.com"
+
+
+def test_rejects_inactive_identity() -> None:
+    payload = {
+        "sub": "subject",
+        "email": "invitee@example.com",
+        "status": "SUSPENDED",
+    }
     provider = _provider(httpx.MockTransport(lambda _: httpx.Response(200, json=payload)))
 
     with pytest.raises(InvalidAccessTokenError):
+        provider.verify_access_token("valid-access-token")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"email": "invitee@example.com", "status": "ACTIVE"},
+        {"sub": "subject", "email": "not-an-email", "status": "ACTIVE"},
+        {"sub": "subject", "email": "invitee@example.com"},
+    ],
+)
+def test_treats_malformed_success_profile_as_provider_failure(
+    payload: dict[str, object],
+) -> None:
+    provider = _provider(httpx.MockTransport(lambda _: httpx.Response(200, json=payload)))
+
+    with pytest.raises(AuthenticationProviderUnavailableError):
         provider.verify_access_token("valid-access-token")
 
 

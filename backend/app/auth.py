@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -14,6 +15,8 @@ from sqlalchemy.orm import Session
 from backend.app.config import CloudBaseAuthPolicy
 from backend.app.database import set_request_context
 from backend.app.models import AuthenticationAuditLog, Tenant, User
+
+logger = logging.getLogger(__name__)
 
 
 class InvalidAccessTokenError(Exception):
@@ -122,6 +125,7 @@ class CloudBaseIdentityProvider:
                         if len(content) > self._policy.max_response_bytes:
                             raise AuthenticationProviderUnavailableError
                     status_code = response.status_code
+                    request_id = (response.headers.get("X-Request-Id") or "")[:128]
         except AuthenticationProviderUnavailableError:
             raise
         except httpx.HTTPError as error:
@@ -137,6 +141,15 @@ class CloudBaseIdentityProvider:
             return data
 
         error_code = str(data.get("error") or "")
+        logger.warning(
+            "CloudBase authentication request rejected path=%s status=%s error=%s "
+            "error_code=%s request_id=%s",
+            path,
+            status_code,
+            error_code[:64],
+            str(data.get("error_code") or "")[:32],
+            request_id,
+        )
         if error_code == "rate_limit_exceeded" or status_code == 429:
             raise AuthenticationRateLimitedError
         if error_code == "captcha_required":
@@ -233,25 +246,34 @@ class CloudBaseIdentityProvider:
         subject = data.get("sub")
         email = data.get("email")
         status = data.get("status")
-        providers = data.get("providers")
         if (
             not isinstance(subject, str)
             or not 1 <= len(subject) <= 255
             or not isinstance(email, str)
             or not 3 <= len(email) <= 320
-            or str(status).upper() != "ACTIVE"
-            or not isinstance(providers, list)
         ):
+            logger.warning(
+                "CloudBase authentication profile was malformed has_subject=%s "
+                "has_email=%s status=%s",
+                isinstance(subject, str),
+                isinstance(email, str),
+                str(status)[:32],
+            )
+            raise AuthenticationProviderUnavailableError
+        if not isinstance(status, str):
+            logger.warning("CloudBase authentication profile omitted account status")
+            raise AuthenticationProviderUnavailableError
+        if status.upper() != "ACTIVE":
+            logger.warning(
+                "CloudBase authentication profile rejected inactive account status=%s",
+                status[:32],
+            )
             raise InvalidAccessTokenError
-        normalized_email = normalize_email(email)
-        has_matching_email_provider = any(
-            isinstance(provider, dict)
-            and provider.get("id") == "email"
-            and normalize_email(str(provider.get("provider_user_id") or "")) == normalized_email
-            for provider in providers
-        )
-        if not has_matching_email_provider:
-            raise InvalidAccessTokenError
+        try:
+            normalized_email = normalize_email(email)
+        except InvalidAuthenticationFlowError as error:
+            logger.warning("CloudBase authentication profile contained a malformed email")
+            raise AuthenticationProviderUnavailableError from error
         return VerifiedIdentity(
             provider="cloudbase",
             subject=subject,
@@ -310,7 +332,12 @@ def record_authentication_event(
     )
 
 
-def resolve_local_user(session: Session, identity: VerifiedIdentity) -> User:
+def resolve_local_user(
+    session: Session,
+    identity: VerifiedIdentity,
+    *,
+    allow_email_link: bool = False,
+) -> User:
     user = session.scalar(
         select(User)
         .join(Tenant, Tenant.id == User.tenant_id)
@@ -323,6 +350,9 @@ def resolve_local_user(session: Session, identity: VerifiedIdentity) -> User:
     )
     if user is not None:
         return user
+
+    if not allow_email_link:
+        raise InvitationRequiredError
 
     candidates = list(
         session.scalars(

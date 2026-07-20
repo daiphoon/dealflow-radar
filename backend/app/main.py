@@ -192,11 +192,16 @@ def create_app(
         session: Session,
         *,
         event_type: str,
+        allow_email_link: bool,
     ) -> AuthTokenOut:
         access_token = token_set.access_token
         try:
             identity = provider.verify_access_token(access_token)
-            user = resolve_local_user(session, identity)
+            user = resolve_local_user(
+                session,
+                identity,
+                allow_email_link=allow_email_link,
+            )
         except InvitationRequiredError as error:
             try:
                 provider.sign_out(access_token)
@@ -261,6 +266,7 @@ def create_app(
                 token_set,
                 session,
                 event_type="session_started",
+                allow_email_link=True,
             )
         except HTTPException:
             raise
@@ -288,6 +294,7 @@ def create_app(
                 token_set,
                 session,
                 event_type="session_refreshed",
+                allow_email_link=False,
             )
         except HTTPException:
             raise

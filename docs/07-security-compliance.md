@@ -32,9 +32,9 @@ Worker 遵守 robots.txt，使用明确 User-Agent，不登录、不提交表单
 
 ## CloudBase 身份认证边界
 
-CloudBase 只核验登录身份，不承载 PostgreSQL 数据、tenant、基金、角色、RLS 或业务权限。正式模式由 `AUTH_PROVIDER=cloudbase` 显式启用；FastAPI 随后完全忽略 `X-Demo-User-Id`，核验 Bearer token 后只按 CloudBase subject 或唯一受邀邮箱加载 active 本地用户。CloudBase 返回的 group、前端 Cookie 和界面隐藏均不能授予业务权限。
+CloudBase 只核验登录身份，不承载 PostgreSQL 数据、tenant、基金、角色、RLS 或业务权限。正式模式由 `AUTH_PROVIDER=cloudbase` 显式启用；FastAPI 随后完全忽略 `X-Demo-User-Id`。首次绑定只允许发生在刚完成邮箱验证码交换的登录请求中；普通 Bearer 请求和 token 刷新只能按已经绑定的 CloudBase subject 加载 active 本地用户。CloudBase 返回的 group、前端 Cookie 和界面隐藏均不能授予业务权限。
 
-邮箱验证码固定使用邀请制 `target=USER`；CloudBase 账户和本地用户必须均已预先创建。跨 tenant 重复邮箱、无本地邀请、用户或 tenant 停用、subject 冲突都失败关闭。access/refresh token 只进入 Next.js 服务端的 `HttpOnly + SameSite=Strict` Cookie，生产环境加 `Secure`；不得写入 URL、数据库、日志或 Git。认证审计只保存 subject 哈希并追加记录身份绑定、开始、刷新和退出。
+邮箱验证码固定使用邀请制 `target=USER`；CloudBase 账户和本地用户必须均已预先创建。`/user/me` 的 active 状态、subject 和顶层邮箱是身份映射输入；原生邮箱账户的 `providers` 不是可靠的第三方身份源列表，不作为首次绑定的独立证明。跨 tenant 重复邮箱、无本地邀请、用户或 tenant 停用、subject 冲突都失败关闭。access/refresh token 只进入 Next.js 服务端的 `HttpOnly + SameSite=Strict` Cookie，生产环境加 `Secure`；不得写入 URL、数据库、日志或 Git。认证审计只保存 subject 哈希并追加记录身份绑定、开始、刷新和退出。
 
 CloudBase 身份请求是登录基础设施调用，不受业务数据 `EXTERNAL_CALLS_ENABLED` 开关控制；它也不能触发天眼查、搜索、模型、自动刷新或自动发布。默认 `AUTH_PROVIDER=demo` 只用于本地和 CI；对外环境禁止通过 Demo Header 回退。CloudBase 要求图片验证码时 V1 失败关闭，不绕过安全挑战。
 
