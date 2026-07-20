@@ -5,11 +5,12 @@
 ## 1. 部署前检查
 
 1. 使用云服务器或合作者服务器；不使用家庭 Ubuntu 服务器，不依赖 Tailscale。
-2. 从 `.env.example` 创建部署 Secret，确认外部调用、付费调用、自动刷新和审核工作台等安全开关仍为关闭，禁止提交 `.env`；自动发布策略虽默认启用，但 URL 未检查时会降级为未确认线索。
+2. 从 `.env.example` 创建部署 Secret，确认外部调用、付费调用、自动刷新、自动发布和审核工作台等安全开关仍为关闭，禁止提交 `.env`。
 3. 检查镜像版本、PostgreSQL 持久卷、TLS、允许来源、备份目标和磁盘余量。
 4. 先执行迁移备份与 `alembic upgrade` 演练，再部署 API/Worker/Cron。
 5. 用两个租户/基金的虚构数据运行权限冒烟测试。
 6. 外部 Provider 逐个完成许可、价格、预算和 `dry-run` 审批后才启用。
+7. 对外环境必须使用 `AUTH_PROVIDER=cloudbase`；`AUTH_PROVIDER=demo` 和 `X-Demo-User-Id` 只允许本机/CI。
 
 Docker Compose 文件只依赖标准容器、环境变量和卷，可迁移到不同主机；反向代理与证书由部署环境提供，不绑定云厂商 SDK。
 
@@ -20,6 +21,33 @@ Docker Compose 文件只依赖标准容器、环境变量和卷，可迁移到�
 ## 3. 安全的更新操作
 
 更新前先运行 `dry-run`，核对公司、原因、Provider、预计搜索/Token/商业数据调用和费用。只在变更单明确授权的范围内开启 `EXTERNAL_CALLS_ENABLED`；付费能力还需 `PAID_API_CALLS_ENABLED` 与正预算。任务完成后立即核对 `usage_ledger` 和有效产出，不长期保留调试日志正文。
+
+### CloudBase 邀请制身份认证 V1
+
+CloudBase 只接入身份认证，不创建或迁移数据库、云函数、业务权限、tenant、基金或 RLS。第一次真实验收需要项目负责人在 CloudBase 控制台完成以下账户操作，本项目不得代为接受条款或创建付费资源：
+
+1. 创建或选择一个合法持有的 CloudBase 环境，开启邮箱登录；
+2. 预先创建四个受邀邮箱账户，分别对应无基金个人、基金用户、其他 tenant 用户和平台管理员；
+3. 确认本地 `users` 中存在相同邮箱的唯一 active 记录，且对应 tenant 为 active；不得用同一邮箱跨 tenant 建两个待绑定用户；
+4. 不把 CloudBase group 当作本地角色，不在 CloudBase 迁移基金或公司权限。
+
+数据库先备份并升级到 `0015`。后端与前端使用相同的服务端环境配置；环境 ID 和客户端 ID 不是业务权限凭证，但仍应由部署配置管理，不写死在代码：
+
+```bash
+export AUTH_PROVIDER=cloudbase
+export CLOUDBASE_ENV_ID='replace_with_cloudbase_env_id'
+export CLOUDBASE_CLIENT_ID='replace_with_client_id_or_leave_empty'
+export EXTERNAL_CALLS_ENABLED=false
+export PAID_API_CALLS_ENABLED=false
+export AUTO_REFRESH_ENABLED=false
+export AUTO_PUBLISH_ENABLED=false
+```
+
+启动后访问 `/login`。邮箱验证码固定使用 CloudBase `target=USER`，因此未在 CloudBase 创建的账户不会自行注册；本地无唯一邀请时登录也会拒绝。access/refresh token 只能存在于 Next.js 的 `HttpOnly` Cookie，不得复制到命令、URL、日志、截图、数据库或 Git。CloudBase 身份调用是登录基础设施调用，不会打开上述四个业务数据开关，也不会调用天眼查。
+
+至少验证：伪造 Demo Header 无效、四类用户权限符合本地角色和基金授权、无基金用户仍可查共享公司、其他 tenant 看不到私有数据、会话过期可刷新、退出后需要重新登录、`authentication_audit_logs` 有绑定/登录/刷新/退出记录。若出现 `authentication_challenge_required`，说明 CloudBase 要求图片验证码；V1 必须停止，不得绕过，另行评估官方安全挑战接入。
+
+故障时先保留 `0015` 数据库结构并回退应用。`AUTH_PROVIDER=demo` 只能作为绑定 `127.0.0.1` 的本地排障手段，不能用于已对外开放的环境。解绑或换绑 subject 不得直接清空字段，应先核对审计并另行执行受控纠错。
 
 ### Mock Worker V1（仅 Demo）
 

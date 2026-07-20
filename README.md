@@ -21,9 +21,10 @@
 - 标记为“值得研究”的候选可在管理页直接录入谨慎结构化事实，复用现有研究导入、身份解析、证据和去重流程，原候选与私有底稿保持血缘；
 - 到期来源可由默认 dry-run 的一次性调度命令小批量入队，连续失败指数退避，复用现有 Worker 重试和租约恢复；
 - 应用层作用域过滤及 PostgreSQL RLS 双重保护，私有别名、文档、提及、事件、证据和快照均有明确 owner；
+- CloudBase 邀请制邮箱认证已形成代码路径：正式模式不再信任 Demo Header，CloudBase 只核验身份，本地角色、基金授权与 RLS 继续决定业务权限；
 - 外部搜索、模型、付费 API、自动刷新、自动发布和审核工作台默认关闭。
 
-本机已完成 PostgreSQL 16 迁移、Schema 漂移检查、非表所有者 `NOBYPASSRLS` 账户的租户/基金隔离，以及 API 和服务端渲染页面的端到端验证。该版本仍不能视为生产可用：SQLite 只用于离线自动测试，测试身份 Header 也不是生产认证系统；来源监测没有通用全网搜索、语义事实自动生成或自动共享。
+本机已完成 PostgreSQL 16 迁移、Schema 漂移检查、非表所有者 `NOBYPASSRLS` 账户的租户/基金隔离，以及 API 和服务端渲染页面的端到端验证。该版本仍不能视为生产可用：CloudBase 真实环境收码和四类受邀账户验收、生产部署、个人留存与订阅权益尚未完成；来源监测也没有通用全网搜索、语义事实自动生成或自动共享。
 
 ## 本地启动
 
@@ -43,6 +44,20 @@ uv run uvicorn backend.app.main:app --reload
 ```
 
 `demo_user` 只执行迁移和虚构数据导入；API 默认使用 `equity_app`。初始化脚本可重复执行，会创建或更新该应用账户、撤销建库和绕过 RLS 等高权限，并授予当前及未来迁移表的必要权限。两个本地密码不得相同，也不得提交到 Git。
+
+### CloudBase 邀请制认证 V1
+
+本地开发和 CI 默认 `AUTH_PROVIDER=demo`，继续使用固定虚构用户。只有在 CloudBase 控制台已开启邮箱登录、创建受邀账户，且本地 `users` 有唯一同邮箱 active 用户后，才切换前后端的服务端配置：
+
+```bash
+export AUTH_PROVIDER=cloudbase
+export CLOUDBASE_ENV_ID='replace_with_cloudbase_env_id'
+export CLOUDBASE_CLIENT_ID='replace_with_client_id_or_leave_empty'
+```
+
+访问 `http://127.0.0.1:3000/login`，验证码登录成功后 access/refresh token 只保存于 Next.js 的 `HttpOnly` Cookie。CloudBase group 不会映射成业务角色；API 仍从 PostgreSQL 加载 tenant、角色与基金授权，并设置既有 RLS 上下文。`AUTH_PROVIDER=cloudbase` 时 `X-Demo-User-Id` 完全无效。
+
+CloudBase 身份请求不等于公司信息外部查询，不会调用天眼查，也不会开启 `EXTERNAL_CALLS_ENABLED`、`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED` 或 `AUTO_PUBLISH_ENABLED`。完整配置、四角色验收、故障回退和控制台操作见[运维手册](docs/12-operations-runbook.md)；边界见 [ADR-0012](docs/DECISIONS/ADR-0012-cloudbase-identity-local-authorization.md)。
 
 缓存参数由 `REFRESH_POLICY_VERSION`、`RECENT_QUERY_TTL_DAYS` 和 `REFRESH_REQUEST_COOLDOWN_HOURS` 配置。Demo 默认分别为 `demo-v1`、14 天和 24 小时；`AUTO_REFRESH_ENABLED=false` 时仍会准确显示过期状态，但不会因页面访问创建任务。即使开启自动入队，同步请求也不会调用搜索、模型或付费 API。
 
@@ -72,7 +87,7 @@ RESEARCH_IMPORT_DRY_RUN=true uv run python -m scripts.import_research_json
 uv run python -m scripts.import_research_json
 ```
 
-`dry-run` 只校验文件并展示目标公司、发布策略、URL 检查上界、验证尝试上界和预计费用，不连接数据库、不访问网络；因为不读取公司主数据，该数量是身份解析前的保守上界。确认后再执行正式命令。重复执行同一文件返回 `duplicate`，不会新增文档、事件或费用记录。真实导入文件不得提交 Git；当前入口不接受内部财务、投委会、投资协议等敏感材料，也没有开放上传 API，因为测试身份 Header 不适合真实资料入口。
+`dry-run` 只校验文件并展示目标公司、发布策略、URL 检查上界、验证尝试上界和预计费用，不连接数据库、不访问网络；因为不读取公司主数据，该数量是身份解析前的保守上界。确认后再执行正式命令。重复执行同一文件返回 `duplicate`，不会新增文档、事件或费用记录。真实导入文件不得提交 Git；当前入口不接受内部财务、投委会、投资协议等敏感材料，也没有开放上传 API，因为文件隔离、恶意内容检查和许可审计尚未单独验收。
 
 ### 工商身份核验导入
 
@@ -149,7 +164,7 @@ npm run dev
 
 访问 `http://127.0.0.1:3000/reviews`。新导入默认只有身份歧义进入该队列；既有事件审核记录仍展示证据和决定历史。当 30 天内的关联官方工商候选已入库时，同时具有 `reviewer` 和 `institution_admin` 角色的本地用户可选择主体并填写理由。系统会在一个事务内更新身份、保留曾用名、重建事件/证据并按当前发布策略重路由。该决定不会在页面请求中访问外部网站；原来源链接尚未检查时，记录会安全转为 `unconfirmed_lead`。
 
-`X-Demo-User-Id` 仍只是本地测试身份，不是登录系统。真实数据工作台不得绑定公网地址或部署到共享环境；正式认证完成前，本开关必须保持关闭。
+`AUTH_PROVIDER=demo` 下的 `X-Demo-User-Id` 仍只是本地测试身份。只有切换 CloudBase 模式并完成真实受邀账户和权限回归后，才可在后续生产部署里程碑评估对外开放；审核工作台开关不能替代认证。
 
 ## 验证
 

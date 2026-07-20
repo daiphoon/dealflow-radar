@@ -430,3 +430,36 @@ class RefreshResult(BaseModel):
     estimated_input_tokens: int = 0
     estimated_output_tokens: int = 0
     estimated_cost: Decimal = Decimal("0")
+
+
+class AuthEmailVerificationIn(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+
+
+class AuthEmailVerificationOut(BaseModel):
+    verification_id: str
+    expires_in: int
+
+
+class AuthEmailLoginIn(BaseModel):
+    verification_id: str = Field(min_length=8, max_length=2000)
+    verification_code: str = Field(pattern=r"^\d{6}$")
+
+
+class AuthTokenRefreshIn(BaseModel):
+    refresh_token: str = Field(min_length=8, max_length=8192)
+
+
+class AuthTokenOut(BaseModel):
+    access_token: str
+    refresh_token: str
+    expires_in: int
+    token_type: Literal["Bearer"] = "Bearer"
+
+
+class AuthMeOut(BaseModel):
+    user_id: UUID
+    tenant_id: UUID
+    email: str
+    display_name: str
+    auth_provider: str

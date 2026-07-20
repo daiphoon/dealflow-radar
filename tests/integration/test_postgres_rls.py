@@ -9,7 +9,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Connection, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
-from backend.app.config import Settings
+from backend.app.auth import AuthTokenSet, VerificationChallenge, VerifiedIdentity
+from backend.app.config import CloudBaseAuthPolicy, Settings
 from backend.app.demo import (
     ALPHA_TENANT_ID,
     ALPHA_USER_ID,
@@ -30,6 +31,31 @@ pytestmark = [
         reason="set POSTGRES_RLS_DATABASE_URL to run live PostgreSQL RLS tests",
     ),
 ]
+
+
+class _PostgresCloudBaseProvider:
+    def send_email_code(self, email: str) -> VerificationChallenge:
+        assert email == "alpha-admin@example.invalid"
+        return VerificationChallenge("postgres-verification", 600)
+
+    def sign_in_with_email_code(self, verification_id: str, verification_code: str) -> AuthTokenSet:
+        assert (verification_id, verification_code) == ("postgres-verification", "123456")
+        return AuthTokenSet("postgres-access-token", "postgres-refresh-token", 7200)
+
+    def refresh_tokens(self, refresh_token: str) -> AuthTokenSet:
+        assert refresh_token == "postgres-refresh-token"
+        return AuthTokenSet("postgres-access-token", "postgres-refresh-token-2", 7200)
+
+    def verify_access_token(self, access_token: str) -> VerifiedIdentity:
+        assert access_token == "postgres-access-token"
+        return VerifiedIdentity(
+            provider="cloudbase",
+            subject="postgres-subject-alpha",
+            email="alpha-admin@example.invalid",
+        )
+
+    def sign_out(self, access_token: str) -> None:
+        assert access_token == "postgres-access-token"
 
 
 def _visible_counts(
@@ -334,14 +360,15 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
                         'entity_mentions', 'events', 'event_evidence',
                         'company_snapshots', 'event_sharing_decisions',
                         'event_sharing_decision_evidence', 'trusted_sources',
-                        'source_check_runs', 'candidate_documents'
+                        'source_check_runs', 'candidate_documents',
+                        'authentication_audit_logs'
                     )
                       AND relrowsecurity
                     """
                 )
             )
         assert role == (False, False, False, False, False)
-        assert enabled_rls_tables == 20
+        assert enabled_rls_tables == 21
         assert _visible_counts(connection) == (0, 0, 0, 0, 0)
         assert _visible_counts(connection, ALPHA_USER_ID, ALPHA_TENANT_ID) == (10, 1, 10, 1, 0)
         assert _visible_counts(connection, BETA_USER_ID, BETA_TENANT_ID) == (1, 1, 0, 0, 0)
@@ -1004,4 +1031,150 @@ def test_candidate_research_import_restores_rls_context_after_commit() -> None:
             assert lineage == (1, str(ALPHA_TENANT_ID))
         finally:
             transaction.rollback()
+    engine.dispose()
+
+
+def test_authentication_audit_rls_is_self_scoped_and_append_only() -> None:
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    engine = create_engine(POSTGRES_RLS_DATABASE_URL, pool_pre_ping=True)
+    connection = engine.connect()
+    transaction = connection.begin()
+    audit_id = str(uuid4())
+    try:
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO authentication_audit_logs (
+                    id, tenant_id, user_id, provider, subject_hash,
+                    event_type, outcome, reason_code, created_at
+                ) VALUES (
+                    :id, :tenant_id, :user_id, 'cloudbase', :subject_hash,
+                    'session_started', 'succeeded', NULL, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": audit_id,
+                "tenant_id": str(ALPHA_TENANT_ID),
+                "user_id": str(ALPHA_USER_ID),
+                "subject_hash": "a" * 64,
+            },
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM authentication_audit_logs WHERE id = :id"),
+                {"id": audit_id},
+            )
+            == 1
+        )
+        update_result = connection.execute(
+            text("UPDATE authentication_audit_logs SET reason_code = 'tampered' WHERE id = :id"),
+            {"id": audit_id},
+        )
+        assert update_result.rowcount == 0
+        assert (
+            connection.scalar(
+                text("SELECT reason_code FROM authentication_audit_logs WHERE id = :id"),
+                {"id": audit_id},
+            )
+            is None
+        )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(BETA_USER_ID), "tenant_id": str(BETA_TENANT_ID)},
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM authentication_audit_logs WHERE id = :id"),
+                {"id": audit_id},
+            )
+            == 0
+        )
+        with pytest.raises(DBAPIError):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO authentication_audit_logs (
+                            id, tenant_id, user_id, provider, subject_hash,
+                            event_type, outcome, reason_code, created_at
+                        ) VALUES (
+                            :id, :tenant_id, :user_id, 'cloudbase', :subject_hash,
+                            'session_started', 'succeeded', NULL, CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {
+                        "id": str(uuid4()),
+                        "tenant_id": str(ALPHA_TENANT_ID),
+                        "user_id": str(ALPHA_USER_ID),
+                        "subject_hash": "b" * 64,
+                    },
+                )
+    finally:
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
+def test_cloudbase_login_uses_postgres_rls_application_role() -> None:
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    settings = replace(
+        Settings.from_env(),
+        database_url=POSTGRES_RLS_DATABASE_URL,
+        auth_provider="cloudbase",
+        cloudbase_auth_policy=CloudBaseAuthPolicy(env_id="postgres-test-env"),
+        external_calls_enabled=False,
+        paid_api_calls_enabled=False,
+        auto_refresh_enabled=False,
+    )
+    app = create_app(settings, identity_provider=_PostgresCloudBaseProvider())
+    with TestClient(app) as client:
+        challenge = client.post(
+            "/api/v1/auth/email/verification",
+            json={"email": "alpha-admin@example.invalid"},
+        )
+        assert challenge.status_code == 200
+        login = client.post(
+            "/api/v1/auth/email/login",
+            json={
+                "verification_id": challenge.json()["verification_id"],
+                "verification_code": "123456",
+            },
+        )
+        assert login.status_code == 200, login.text
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        companies = client.get("/api/v1/companies", headers=headers)
+        assert companies.status_code == 200
+        assert companies.json()
+        logout = client.post("/api/v1/auth/logout", headers=headers)
+        assert logout.status_code == 204
+
+    engine = create_engine(POSTGRES_RLS_DATABASE_URL, pool_pre_ping=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        event_types = set(
+            connection.scalars(
+                text("SELECT event_type FROM authentication_audit_logs WHERE user_id = :user_id"),
+                {"user_id": str(ALPHA_USER_ID)},
+            )
+        )
+        assert {"identity_linked", "session_started", "session_ended"} <= event_types
     engine.dispose()

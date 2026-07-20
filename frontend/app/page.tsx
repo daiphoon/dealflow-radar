@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { getCompanies, searchCompanies } from "@/lib/api";
+import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -160,7 +161,11 @@ export default async function CompanyListPage({
         </section>
       </main>
     );
-  } catch {
+  } catch (error) {
+    await redirectIfAuthenticationRequired(
+      error,
+      query ? `/?q=${encodeURIComponent(query)}` : "/",
+    );
     return (
       <main className="shell page-stack">
         <section className="hero">

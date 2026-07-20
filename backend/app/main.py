@@ -3,15 +3,37 @@ from __future__ import annotations
 from collections.abc import Iterator
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.app.auth import (
+    AuthenticationChallengeRequiredError,
+    AuthenticationProviderUnavailableError,
+    AuthenticationRateLimitedError,
+    AuthTokenSet,
+    CloudBaseIdentityProvider,
+    IdentityProvider,
+    InvalidAccessTokenError,
+    InvalidAuthenticationFlowError,
+    InvitationRequiredError,
+    VerifiedIdentity,
+    dummy_verification_challenge,
+    normalize_email,
+    record_authentication_event,
+    resolve_local_user,
+)
 from backend.app.config import Settings
 from backend.app.database import build_engine, build_session_factory, set_request_context
-from backend.app.models import ReviewQueue, User
+from backend.app.models import ReviewQueue, Tenant, User, utc_now
 from backend.app.providers import MockResearchProvider
 from backend.app.schemas import (
+    AuthEmailLoginIn,
+    AuthEmailVerificationIn,
+    AuthEmailVerificationOut,
+    AuthMeOut,
+    AuthTokenOut,
+    AuthTokenRefreshIn,
     CandidateDocumentDecisionIn,
     CandidateDocumentDecisionOut,
     CandidateDocumentOut,
@@ -84,35 +106,247 @@ def get_session(request: Request) -> Iterator[Session]:
 
 
 def get_current_user(
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
     x_demo_user_id: str | None = Header(default=None, alias="X-Demo-User-Id"),
     session: Session = Depends(get_session),
 ) -> User:
-    if x_demo_user_id is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
-    try:
-        user_id = UUID(x_demo_user_id)
-    except ValueError as error:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized"
-        ) from error
-    user = session.get(User, user_id)
-    if user is None or user.status != "active":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+    settings: Settings = request.app.state.settings
+    if settings.auth_provider == "demo":
+        if x_demo_user_id is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+        try:
+            user_id = UUID(x_demo_user_id)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized"
+            ) from error
+        user = session.get(User, user_id)
+        tenant = session.get(Tenant, user.tenant_id) if user is not None else None
+        if user is None or user.status != "active" or tenant is None or tenant.status != "active":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+    else:
+        access_token = _bearer_token(authorization)
+        provider: IdentityProvider = request.app.state.identity_provider
+        try:
+            identity = provider.verify_access_token(access_token)
+        except (InvalidAccessTokenError, InvalidAuthenticationFlowError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized"
+            ) from error
+        except (
+            AuthenticationProviderUnavailableError,
+            AuthenticationRateLimitedError,
+            AuthenticationChallengeRequiredError,
+        ) as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="authentication_unavailable",
+            ) from error
+        try:
+            user = resolve_local_user(session, identity)
+        except InvitationRequiredError as error:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="invitation_required",
+            ) from error
     set_request_context(session, user.id, user.tenant_id)
     return user
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def _bearer_token(authorization: str | None) -> str:
+    if authorization is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+    scheme, separator, token = authorization.partition(" ")
+    if separator != " " or scheme.casefold() != "bearer" or not 8 <= len(token) <= 8192:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+    return token
+
+
+def create_app(
+    settings: Settings | None = None,
+    identity_provider: IdentityProvider | None = None,
+) -> FastAPI:
     resolved = settings or Settings.from_env()
     app = FastAPI(title="Dealflow Radar", version="0.1.0")
     engine = build_engine(resolved.database_url)
     app.state.settings = resolved
     app.state.engine = engine
     app.state.session_factory = build_session_factory(engine)
+    app.state.identity_provider = identity_provider
+    if resolved.auth_provider == "cloudbase" and identity_provider is None:
+        app.state.identity_provider = CloudBaseIdentityProvider(resolved.cloudbase_auth_policy)
 
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok", "mode": resolved.app_mode}
+
+    def require_cloudbase_provider() -> IdentityProvider:
+        if resolved.auth_provider != "cloudbase" or app.state.identity_provider is None:
+            raise HTTPException(status_code=404, detail="cloudbase_auth_disabled")
+        return app.state.identity_provider
+
+    def complete_provider_login(
+        provider: IdentityProvider,
+        token_set: AuthTokenSet,
+        session: Session,
+        *,
+        event_type: str,
+    ) -> AuthTokenOut:
+        access_token = token_set.access_token
+        try:
+            identity = provider.verify_access_token(access_token)
+            user = resolve_local_user(session, identity)
+        except InvitationRequiredError as error:
+            try:
+                provider.sign_out(access_token)
+            except (
+                AuthenticationProviderUnavailableError,
+                AuthenticationRateLimitedError,
+                AuthenticationChallengeRequiredError,
+            ):
+                pass
+            raise HTTPException(status_code=403, detail="invitation_required") from error
+        except (InvalidAccessTokenError, InvalidAuthenticationFlowError) as error:
+            raise HTTPException(status_code=401, detail="invalid_authentication") from error
+        set_request_context(session, user.id, user.tenant_id)
+        if event_type == "session_started":
+            user.last_login_at = utc_now()
+        record_authentication_event(session, user, identity, event_type)
+        session.commit()
+        return AuthTokenOut(
+            access_token=token_set.access_token,
+            refresh_token=token_set.refresh_token,
+            expires_in=token_set.expires_in,
+        )
+
+    @app.post(
+        "/api/v1/auth/email/verification",
+        response_model=AuthEmailVerificationOut,
+    )
+    def request_email_verification(
+        payload: AuthEmailVerificationIn,
+    ) -> AuthEmailVerificationOut:
+        provider = require_cloudbase_provider()
+        try:
+            challenge = provider.send_email_code(normalize_email(payload.email))
+        except InvalidAuthenticationFlowError:
+            challenge = dummy_verification_challenge()
+        except AuthenticationRateLimitedError as error:
+            raise HTTPException(status_code=429, detail="authentication_rate_limited") from error
+        except AuthenticationChallengeRequiredError as error:
+            raise HTTPException(
+                status_code=409, detail="authentication_challenge_required"
+            ) from error
+        except AuthenticationProviderUnavailableError as error:
+            raise HTTPException(status_code=503, detail="authentication_unavailable") from error
+        return AuthEmailVerificationOut(
+            verification_id=challenge.verification_id,
+            expires_in=challenge.expires_in,
+        )
+
+    @app.post("/api/v1/auth/email/login", response_model=AuthTokenOut)
+    def email_login(
+        payload: AuthEmailLoginIn,
+        session: Session = Depends(get_session),
+    ) -> AuthTokenOut:
+        provider = require_cloudbase_provider()
+        try:
+            token_set = provider.sign_in_with_email_code(
+                payload.verification_id,
+                payload.verification_code,
+            )
+            return complete_provider_login(
+                provider,
+                token_set,
+                session,
+                event_type="session_started",
+            )
+        except HTTPException:
+            raise
+        except (InvalidAuthenticationFlowError, InvalidAccessTokenError) as error:
+            raise HTTPException(status_code=401, detail="invalid_authentication") from error
+        except AuthenticationRateLimitedError as error:
+            raise HTTPException(status_code=429, detail="authentication_rate_limited") from error
+        except AuthenticationChallengeRequiredError as error:
+            raise HTTPException(
+                status_code=409, detail="authentication_challenge_required"
+            ) from error
+        except AuthenticationProviderUnavailableError as error:
+            raise HTTPException(status_code=503, detail="authentication_unavailable") from error
+
+    @app.post("/api/v1/auth/token/refresh", response_model=AuthTokenOut)
+    def refresh_authentication_token(
+        payload: AuthTokenRefreshIn,
+        session: Session = Depends(get_session),
+    ) -> AuthTokenOut:
+        provider = require_cloudbase_provider()
+        try:
+            token_set = provider.refresh_tokens(payload.refresh_token)
+            return complete_provider_login(
+                provider,
+                token_set,
+                session,
+                event_type="session_refreshed",
+            )
+        except HTTPException:
+            raise
+        except (InvalidAuthenticationFlowError, InvalidAccessTokenError) as error:
+            raise HTTPException(status_code=401, detail="invalid_authentication") from error
+        except AuthenticationRateLimitedError as error:
+            raise HTTPException(status_code=429, detail="authentication_rate_limited") from error
+        except AuthenticationChallengeRequiredError as error:
+            raise HTTPException(
+                status_code=409, detail="authentication_challenge_required"
+            ) from error
+        except AuthenticationProviderUnavailableError as error:
+            raise HTTPException(status_code=503, detail="authentication_unavailable") from error
+
+    @app.get("/api/v1/auth/me", response_model=AuthMeOut)
+    def authentication_me(user: User = Depends(get_current_user)) -> AuthMeOut:
+        return AuthMeOut(
+            user_id=user.id,
+            tenant_id=user.tenant_id,
+            email=user.email,
+            display_name=user.display_name,
+            auth_provider=user.auth_provider or "demo",
+        )
+
+    @app.post("/api/v1/auth/logout", status_code=204)
+    def authentication_logout(
+        response: Response,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> Response:
+        provider = require_cloudbase_provider()
+        access_token = _bearer_token(authorization)
+        identity = VerifiedIdentity(
+            provider=user.auth_provider or "cloudbase",
+            subject=user.auth_subject or "unknown",
+            email=user.email,
+        )
+        try:
+            provider.sign_out(access_token)
+        except (
+            AuthenticationProviderUnavailableError,
+            AuthenticationRateLimitedError,
+            AuthenticationChallengeRequiredError,
+        ) as error:
+            record_authentication_event(
+                session,
+                user,
+                identity,
+                "session_ended",
+                outcome="failed",
+                reason_code="provider_unavailable",
+            )
+            session.commit()
+            raise HTTPException(status_code=503, detail="authentication_unavailable") from error
+        record_authentication_event(session, user, identity, "session_ended")
+        session.commit()
+        response.status_code = 204
+        return response
 
     @app.get("/api/v1/companies", response_model=list[CompanyListItem])
     def companies(

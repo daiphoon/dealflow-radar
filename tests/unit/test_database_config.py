@@ -44,6 +44,46 @@ def test_review_workbench_requires_explicit_enable(monkeypatch: pytest.MonkeyPat
     assert Settings.from_env().review_workbench_enabled is True
 
 
+def test_authentication_defaults_to_demo_and_cloudbase_requires_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AUTH_PROVIDER", raising=False)
+    monkeypatch.delenv("CLOUDBASE_ENV_ID", raising=False)
+    assert Settings.from_env().auth_provider == "demo"
+
+    monkeypatch.setenv("AUTH_PROVIDER", "cloudbase")
+    with pytest.raises(ValueError, match="CLOUDBASE_ENV_ID"):
+        Settings.from_env()
+
+
+def test_cloudbase_authentication_configuration_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AUTH_PROVIDER", "cloudbase")
+    monkeypatch.setenv("CLOUDBASE_ENV_ID", "env-demo-123")
+    monkeypatch.setenv("CLOUDBASE_CLIENT_ID", "client-demo-456")
+    monkeypatch.setenv("CLOUDBASE_AUTH_TIMEOUT_SECONDS", "4")
+    monkeypatch.setenv("CLOUDBASE_AUTH_MAX_RESPONSE_BYTES", "32000")
+
+    settings = Settings.from_env()
+
+    assert settings.auth_provider == "cloudbase"
+    assert settings.cloudbase_auth_policy.env_id == "env-demo-123"
+    assert settings.cloudbase_auth_policy.client_id == "client-demo-456"
+    assert settings.cloudbase_auth_policy.timeout_seconds == 4
+    assert settings.cloudbase_auth_policy.max_response_bytes == 32_000
+
+
+def test_cloudbase_authentication_rejects_unsafe_environment_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AUTH_PROVIDER", "cloudbase")
+    monkeypatch.setenv("CLOUDBASE_ENV_ID", "https://attacker.invalid")
+
+    with pytest.raises(ValueError, match="CLOUDBASE_ENV_ID"):
+        Settings.from_env()
+
+
 def test_publication_policy_is_configured_from_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

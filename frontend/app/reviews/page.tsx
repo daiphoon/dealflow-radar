@@ -7,6 +7,7 @@ import {
   type ReviewWorkbenchItem,
   type SharingCandidate,
 } from "@/lib/api";
+import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
 
 import {
   submitIdentityResolution,
@@ -654,13 +655,13 @@ export default async function ReviewsPage({
         <section className="gap-panel review-security-note">
           <p className="eyebrow">安全边界</p>
           <p>
-            本页面默认关闭，仅可在本机私有验证环境显式开启。
-            <code>X-Demo-User-Id</code> 不是生产认证，不得将真实数据工作台暴露到公网。
+            本页面默认关闭，仅可在受控环境显式开启。CloudBase 只核验登录身份，审核权限仍由本平台角色和租户边界强制执行。
           </p>
         </section>
       </main>
     );
   } catch (error) {
+    await redirectIfAuthenticationRequired(error, "/reviews");
     const disabled = error instanceof ApiError && error.status === 404;
     return (
       <main className="shell page-stack">

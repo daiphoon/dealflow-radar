@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
@@ -170,6 +171,32 @@ class SourceMonitoringPolicy:
             raise ValueError("SOURCE_MONITOR_USER_AGENT must not be empty")
 
 
+_CLOUDBASE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
+
+
+@dataclass(frozen=True)
+class CloudBaseAuthPolicy:
+    env_id: str = ""
+    client_id: str = ""
+    timeout_seconds: int = 5
+    max_response_bytes: int = 64_000
+    user_agent: str = "DealflowRadarAuth/1.0"
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("CLOUDBASE_ENV_ID", self.env_id),
+            ("CLOUDBASE_CLIENT_ID", self.client_id),
+        ):
+            if value and not _CLOUDBASE_IDENTIFIER_PATTERN.fullmatch(value):
+                raise ValueError(f"{name} contains unsupported characters")
+        if self.timeout_seconds <= 0:
+            raise ValueError("CLOUDBASE_AUTH_TIMEOUT_SECONDS must be a positive integer")
+        if self.max_response_bytes <= 0:
+            raise ValueError("CLOUDBASE_AUTH_MAX_RESPONSE_BYTES must be a positive integer")
+        if not self.user_agent.strip():
+            raise ValueError("CLOUDBASE_AUTH_USER_AGENT must not be empty")
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
@@ -181,6 +208,7 @@ class Settings:
     source_monitor_scheduler_enabled: bool = False
     tianyancha_identity_calls_enabled: bool = False
     review_workbench_enabled: bool = False
+    auth_provider: str = "demo"
     refresh_policy: RefreshPolicy = field(default_factory=RefreshPolicy)
     publication_policy: PublicationPolicy = field(default_factory=PublicationPolicy)
     identity_policy: IdentityPolicy = field(default_factory=IdentityPolicy)
@@ -188,6 +216,13 @@ class Settings:
         default_factory=TianyanchaIdentityPolicy
     )
     source_monitoring_policy: SourceMonitoringPolicy = field(default_factory=SourceMonitoringPolicy)
+    cloudbase_auth_policy: CloudBaseAuthPolicy = field(default_factory=CloudBaseAuthPolicy)
+
+    def __post_init__(self) -> None:
+        if self.auth_provider not in {"demo", "cloudbase"}:
+            raise ValueError("AUTH_PROVIDER must be demo or cloudbase")
+        if self.auth_provider == "cloudbase" and not self.cloudbase_auth_policy.env_id:
+            raise ValueError("CLOUDBASE_ENV_ID is required when AUTH_PROVIDER=cloudbase")
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -210,6 +245,7 @@ class Settings:
                 os.getenv("TIANYANCHA_IDENTITY_CALLS_ENABLED", "false")
             ),
             review_workbench_enabled=_as_bool(os.getenv("REVIEW_WORKBENCH_ENABLED", "false")),
+            auth_provider=os.getenv("AUTH_PROVIDER", "demo").strip().lower(),
             refresh_policy=RefreshPolicy(
                 version=os.getenv("REFRESH_POLICY_VERSION", "demo-v1"),
                 recent_query_ttl_days=_as_positive_int("RECENT_QUERY_TTL_DAYS", 14),
@@ -274,5 +310,12 @@ class Settings:
                     "SOURCE_MONITOR_USER_AGENT",
                     "DealflowRadarSourceMonitor/1.0 (controlled low-frequency monitoring)",
                 ),
+            ),
+            cloudbase_auth_policy=CloudBaseAuthPolicy(
+                env_id=os.getenv("CLOUDBASE_ENV_ID", "").strip(),
+                client_id=os.getenv("CLOUDBASE_CLIENT_ID", "").strip(),
+                timeout_seconds=_as_positive_int("CLOUDBASE_AUTH_TIMEOUT_SECONDS", 5),
+                max_response_bytes=_as_positive_int("CLOUDBASE_AUTH_MAX_RESPONSE_BYTES", 64_000),
+                user_agent=os.getenv("CLOUDBASE_AUTH_USER_AGENT", "DealflowRadarAuth/1.0"),
             ),
         )

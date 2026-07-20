@@ -65,6 +65,18 @@ a {
   gap: 20px;
 }
 
+.header-auth-link,
+.header-auth-button {
+  border: 0;
+  color: var(--accent);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+}
+
 .site-nav {
   gap: 16px;
 }
@@ -110,6 +122,65 @@ a {
   display: grid;
   gap: 24px;
   padding: 48px 0 72px;
+}
+
+.auth-page {
+  display: grid;
+  min-height: calc(100vh - 65px);
+  place-items: center;
+  padding: 48px 0;
+}
+
+.auth-card {
+  width: min(520px, 100%);
+  padding: 36px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: rgb(255 255 255 / 94%);
+  box-shadow: var(--shadow);
+}
+
+.auth-card h1 {
+  margin: 8px 0 14px;
+  font-family: ui-serif, "Songti SC", Georgia, serif;
+  font-size: 38px;
+  font-weight: 600;
+}
+
+.auth-copy,
+.auth-note {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.auth-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.auth-form label {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.auth-form input {
+  width: 100%;
+  padding: 13px 14px;
+  border: 1px solid #bdc9c4;
+  border-radius: 12px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+}
+
+.auth-form .button {
+  width: 100%;
+}
+
+.auth-note {
+  margin: 24px 0 0;
+  font-size: 12px;
 }
 
 .hero {
