@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { getCompany, type Event, type Investment } from "@/lib/api";
+import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -303,7 +304,8 @@ export default async function CompanyDetailPage({
         </section>
       </main>
     );
-  } catch {
+  } catch (error) {
+    await redirectIfAuthenticationRequired(error, `/companies/${encodeURIComponent(id)}`);
     return (
       <main className="shell page-stack">
         <Link className="back-link" href="/">

@@ -10,6 +10,7 @@ import {
   type SourceCheckRun,
   type TrustedSource,
 } from "@/lib/api";
+import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
 
 import {
   submitCandidateDecision,
@@ -605,6 +606,7 @@ export default async function MonitoringPage({
       </main>
     );
   } catch (error) {
+    await redirectIfAuthenticationRequired(error, "/monitoring");
     const forbidden = error instanceof ApiError && error.status === 403;
     return (
       <main className="shell page-stack">

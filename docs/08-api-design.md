@@ -4,7 +4,17 @@
 
 版本前缀 `/api/v1`；JSON 字段使用英文；写操作要求认证、授权、审计和幂等键。列表使用游标分页。同步读取不得调用外部搜索或模型。所有公司响应包含 `data_as_of`、`last_checked_at`、`freshness_status`、`information_gaps`；平台共享基础层与个人/机构私有叠加层分别授权，私密数据不能混入共享快照或共享缓存。
 
-第 2 阶段仅使用 `X-Demo-User-Id` 注入固定虚构测试身份，用于验证 RBAC 与基金隔离；缺失或无效身份返回 `401`。该 Header 不是生产认证方案，真实数据验证前必须替换为正式身份系统。
+认证有两个明确模式：`AUTH_PROVIDER=demo` 仅在本地和 CI 接受 `X-Demo-User-Id`；`AUTH_PROVIDER=cloudbase` 只接受有效 Bearer token，并完全忽略 Demo Header。CloudBase 只证明身份，API 仍从本地用户、角色、基金授权和 RLS 判断业务权限。无效或过期身份统一返回 `401`，有效 CloudBase 身份但没有唯一 active 本地邀请返回 `403 invitation_required`，身份服务故障返回 `503 authentication_unavailable`。
+
+邀请制认证接口为：
+
+- `POST /api/v1/auth/email/verification`：固定向 CloudBase 已存在账户发送邮箱验证码；不存在账户返回不可区分的通用响应；
+- `POST /api/v1/auth/email/login`：验证码换 token，并在该受控路径中完成唯一的首次本地邀请映射和登录审计；
+- `POST /api/v1/auth/token/refresh`：轮换 token 并按已绑定 subject 重新检查本地账户状态，不允许首次邮箱绑定；
+- `GET /api/v1/auth/me`：返回本地 user/tenant 身份，不返回 CloudBase group 作为业务角色；
+- `POST /api/v1/auth/logout`：撤销 CloudBase 会话并追加退出审计。
+
+前端仅通过 Next.js 服务端动作调用登录接口，token 保存为 `HttpOnly` Cookie；不能进入 URL、浏览器 JavaScript、数据库或日志。同步公司查询仍不调用天眼查、搜索或模型。
 
 ## 2. 端点草案
 
@@ -31,7 +41,7 @@
 | `GET /reports/portfolio-weekly` | 固定模板周报 | 按事实水位读取已生成结果 |
 | `GET /usage` | 成本仪表盘 | 聚合租户/公司/Provider/有效事件成本 |
 
-人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`；政府身份 JSON 通过 `python -m scripts.import_official_identity_json` 导入；天眼查授权身份通过 `python -m scripts.import_tianyancha_identities` 在独立受控进程查询并导入。三者均未开放上传或同步查询 API。原因是当前 `X-Demo-User-Id` 只适用于测试，不足以保护真实文件上传或外部调用；网页/API 导入须等正式认证、上传隔离、文件审计和许可校验完成后再实现。`GET /companies` 继续返回基金授权列表；`GET /companies/search?q=` 和共享公司详情不再要求基金关系，但仍要求有效测试身份，且永不触发天眼查调用。
+人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`；政府身份 JSON 通过 `python -m scripts.import_official_identity_json` 导入；天眼查授权身份通过 `python -m scripts.import_tianyancha_identities` 在独立受控进程查询并导入。三者均未开放网页上传或同步查询 API；即使 CloudBase 身份已接入，上传隔离、文件审计和许可校验仍须单独验收。`GET /companies` 继续返回基金授权列表；`GET /companies/search?q=` 和共享公司详情不要求基金关系，但要求有效身份，且永不触发天眼查调用。
 
 当前详情响应使用 `events` 表示平台共享已审核事实、`private_events` 表示当前机构可见的已确认信息、`unconfirmed_leads` 表示当前个人或机构 owner 可见的未确认线索，`investments` 只在基金授权存在时返回记录。证据引用和原始文档分别做作用域过滤；共享事件只序列化独立展示引用的来源名称、URL、日期、状态和许可短摘录，不读取私有原文档。无基金用户不会因共享详情请求触发机构私有刷新状态或任务。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放；普通审核区要求 `reviewer`，共享晋升区另要求 `platform_admin`，该开关不能替代认证。
 

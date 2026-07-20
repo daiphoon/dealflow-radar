@@ -67,7 +67,22 @@ class Tenant(TimestampMixin, Base):
 
 class User(TimestampMixin, Base):
     __tablename__ = "users"
-    __table_args__ = (UniqueConstraint("tenant_id", "email", name="uq_users_tenant_email"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "email", name="uq_users_tenant_email"),
+        Index(
+            "uq_users_auth_identity",
+            "auth_provider",
+            "auth_subject",
+            unique=True,
+            postgresql_where=text("auth_provider IS NOT NULL AND auth_subject IS NOT NULL"),
+            sqlite_where=text("auth_provider IS NOT NULL AND auth_subject IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "(auth_provider IS NULL AND auth_subject IS NULL) OR "
+            "(auth_provider = 'cloudbase' AND auth_subject IS NOT NULL)",
+            name="ck_user_auth_identity_pair",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
@@ -75,6 +90,43 @@ class User(TimestampMixin, Base):
     display_name: Mapped[str] = mapped_column(String(120))
     status: Mapped[str] = mapped_column(String(32), default="active")
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    auth_provider: Mapped[str | None] = mapped_column(String(32))
+    auth_subject: Mapped[str | None] = mapped_column(String(255))
+
+
+class AuthenticationAuditLog(Base):
+    __tablename__ = "authentication_audit_logs"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('identity_linked', 'session_started', "
+            "'session_refreshed', 'session_ended')",
+            name="ck_authentication_audit_event_type",
+        ),
+        CheckConstraint(
+            "outcome IN ('succeeded', 'failed')",
+            name="ck_authentication_audit_outcome",
+        ),
+        Index(
+            "ix_authentication_audit_tenant_created",
+            "tenant_id",
+            "created_at",
+        ),
+        Index(
+            "ix_authentication_audit_user_created",
+            "user_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    provider: Mapped[str] = mapped_column(String(32))
+    subject_hash: Mapped[str] = mapped_column(String(64))
+    event_type: Mapped[str] = mapped_column(String(32))
+    outcome: Mapped[str] = mapped_column(String(16))
+    reason_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class Role(TimestampMixin, Base):

@@ -1,5 +1,9 @@
 import "server-only";
 
+import { cookies } from "next/headers";
+
+import { ACCESS_TOKEN_COOKIE, authProvider } from "@/lib/auth-session";
+
 export type CompanyListItem = {
   id: string;
   legal_name: string;
@@ -256,10 +260,18 @@ export class ApiError extends Error {
   }
 }
 
+async function authenticationHeaders(): Promise<Record<string, string>> {
+  if (authProvider === "cloudbase") {
+    const accessToken = (await cookies()).get(ACCESS_TOKEN_COOKIE)?.value;
+    return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+  }
+  return { "X-Demo-User-Id": demoUserId };
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     cache: "no-store",
-    headers: { "X-Demo-User-Id": demoUserId },
+    headers: await authenticationHeaders(),
   });
   if (!response.ok) {
     throw new ApiError(response.status);
@@ -272,8 +284,8 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
     method: "POST",
     cache: "no-store",
     headers: {
+      ...(await authenticationHeaders()),
       "Content-Type": "application/json",
-      "X-Demo-User-Id": demoUserId,
     },
     body: JSON.stringify(body),
   });
@@ -288,8 +300,8 @@ async function patchJson<T>(path: string, body: unknown): Promise<T> {
     method: "PATCH",
     cache: "no-store",
     headers: {
+      ...(await authenticationHeaders()),
       "Content-Type": "application/json",
-      "X-Demo-User-Id": demoUserId,
     },
     body: JSON.stringify(body),
   });

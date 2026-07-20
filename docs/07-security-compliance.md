@@ -30,6 +30,14 @@ Worker 遵守 robots.txt，使用明确 User-Agent，不登录、不提交表单
 
 公开 Demo 只使用虚构公司和基金。受控影子验证可以使用真实公开公司身份和公开来源，但不得放入真实投资金额、持股、内部估值、投资人身份或未授权资料。
 
+## CloudBase 身份认证边界
+
+CloudBase 只核验登录身份，不承载 PostgreSQL 数据、tenant、基金、角色、RLS 或业务权限。正式模式由 `AUTH_PROVIDER=cloudbase` 显式启用；FastAPI 随后完全忽略 `X-Demo-User-Id`。首次绑定只允许发生在刚完成邮箱验证码交换的登录请求中；普通 Bearer 请求和 token 刷新只能按已经绑定的 CloudBase subject 加载 active 本地用户。CloudBase 返回的 group、前端 Cookie 和界面隐藏均不能授予业务权限。
+
+邮箱验证码固定使用邀请制 `target=USER`；CloudBase 账户和本地用户必须均已预先创建。`/user/me` 的 active 状态、subject 和顶层邮箱是身份映射输入；原生邮箱账户的 `providers` 不是可靠的第三方身份源列表，不作为首次绑定的独立证明。跨 tenant 重复邮箱、无本地邀请、用户或 tenant 停用、subject 冲突都失败关闭。access/refresh token 只进入 Next.js 服务端的 `HttpOnly + SameSite=Strict` Cookie，生产环境加 `Secure`；不得写入 URL、数据库、日志或 Git。认证审计只保存 subject 哈希并追加记录身份绑定、开始、刷新和退出。
+
+CloudBase 身份请求是登录基础设施调用，不受业务数据 `EXTERNAL_CALLS_ENABLED` 开关控制；它也不能触发天眼查、搜索、模型、自动刷新或自动发布。默认 `AUTH_PROVIDER=demo` 只用于本地和 CI；对外环境禁止通过 Demo Header 回退。CloudBase 要求图片验证码时 V1 失败关闭，不绕过安全挑战。
+
 ## 2. 角色与授权
 
 当前预置角色为平台管理员、机构管理员、基金管理员、投资人、专业顾问、审核员和只读用户。目标个人通道以用户所有权和有效个人权益授权，不要求创建虚假机构角色。权限由动作和范围组成，不以角色名硬编码业务逻辑。
@@ -54,9 +62,9 @@ Worker 遵守 robots.txt，使用明确 User-Agent，不登录、不提交表单
 
 共享快照构建器只读平台共享事件和指标；基金投资概览及个人/机构私有数据在响应层按授权单独拼装，不能缓存为全局公司快照。没有基金授权但具有有效共享档案权益的用户仍可读取共享基础层。
 
-当前 20 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`、两张共享决定审计表，以及 `trusted_sources`、`source_check_runs`、`candidate_documents`。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权，`system_restricted` 不向普通应用用户或平台管理员开放。共享事件和共享证据引用只有平台管理员可写；共享决定审计表只允许平台管理员读取和追加。私有别名、外部文档记录和文档去重键按 owner 分区唯一，避免不同客户因同名或同一来源记录相互阻塞。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
+当前 21 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`、两张共享决定审计表、`trusted_sources`、`source_check_runs`、`candidate_documents`，以及认证审计表。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权，`system_restricted` 不向普通应用用户或平台管理员开放。共享事件和共享证据引用只有平台管理员可写；共享决定审计表只允许平台管理员读取和追加。认证审计允许本人追加和读取、同 tenant 平台管理员读取，没有更新或删除策略。私有别名、外部文档记录和文档去重键按 owner 分区唯一，避免不同客户因同名或同一来源记录相互阻塞。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
 
-当前权益校验仍由受控 Demo 登录资格代替，正式个人订阅、机构赞助权益和生产认证尚未实现；因此本能力仅适合本地或受控邀请验证。迁移账户仍可作为表所有者绕过策略，必须继续与日常 `NOBYPASSRLS` 应用账户分离。
+当前 CloudBase 认证只替换身份凭证，个人订阅与机构赞助权益尚未实现；M3 完成真实收码和四角色验收前仍只适合本地或受控邀请验证。迁移账户仍可作为表所有者绕过策略，必须继续与日常 `NOBYPASSRLS` 应用账户分离。
 
 ## 4. 事件、证据与原始文档授权
 

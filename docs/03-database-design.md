@@ -4,14 +4,14 @@
 
 PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；不修改已应用迁移。UUID 主键、UTC `timestamptz`、显式外键和状态约束为默认。原始事实追加保存，派生快照可重建。个人、机构与基金私有行必须通过应用授权和 PostgreSQL 行级安全（RLS）双重限制。
 
-本文件同时描述当前 `0014` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询、受控共享事实晋升、授权工商身份 Provider、受控可信来源监测、候选研究交接和低频调度审计已经实现；标记为“目标”的 organization、watchlist、正式认证和商业权益对象仍未实现。当前 `tenant` 继续作为技术隔离边界，当前用户仍是 tenant 绑定的 Demo 身份。
+本文件同时描述当前 `0015` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询、受控共享事实晋升、授权工商身份 Provider、受控可信来源监测、候选研究交接、低频调度审计和 CloudBase 身份映射已经实现；标记为“目标”的 organization、watchlist 和商业权益对象仍未实现。当前 `tenant` 继续作为技术隔离边界，CloudBase 只提供外部身份，业务授权仍由本地用户、角色、基金授权和 RLS 决定。
 
 ## 2. 表目录：身份、投资与权限
 
 | 表 | 职责与关键字段 | 约束与关键索引 |
 | --- | --- | --- |
 | `tenants` | 当前技术隔离和 RLS 上下文；短期承载机构作用域 | PK `id`；本阶段不物理改名，不为个人查询创建虚假基金 |
-| `users` | 当前为 tenant 绑定 Demo 身份；目标为一个自然人的全局账户 | 当前唯一 `(tenant_id, email)`；未来迁移前先处理重复身份 |
+| `users` | tenant 绑定的本地业务账户；可选 `auth_provider/auth_subject` 关联 CloudBase 身份 | 唯一 `(tenant_id, email)` 与非空 `(auth_provider, auth_subject)`；首次按邮箱绑定要求全库唯一 active 候选，歧义失败关闭 |
 | `organizations`（目标） | 机构客户和机构私有数据的业务所有者；短期由 tenant 承载 | 不在本阶段建表；未来与 tenant 的映射另行迁移 |
 | `organization_memberships`（目标） | 用户加入机构的成员关系、角色、状态和有效期 | 唯一 `(organization_id, user_id)`；用户可加入多个机构 |
 | `roles` | `id`, `code`, `permissions`, `scope_type` | 唯一 `code`; 检查 scope |
@@ -60,6 +60,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `review_queue` | 事件或实体提及、触发规则、状态、分配人、决定和理由 | `event_id` 与 `entity_mention_id` 必须且只能存在一个；每个对象唯一；状态索引 |
 | `event_sharing_decisions` | 平台管理员的晋升、拒绝和撤回决定；操作者、理由、私有来源事件、目标共享事件、共享表述和策略版本 | 幂等键唯一；来源/共享事件和操作者索引；只追加，不允许应用角色更新或删除 |
 | `event_sharing_decision_evidence` | 每次共享决定采用的私有证据引用和当时展示快照 | 每个决定与来源证据唯一；只追加；不授予原文档共享权限 |
+| `authentication_audit_logs` | CloudBase 身份绑定、会话开始、刷新和结束的追加式审计；只保存 subject 哈希 | user/tenant 外键；事件/结果检查；用户自读自写、同 tenant 平台管理员只读 RLS；应用角色不能更新或删除 |
 | `usage_ledger` | task/run/company/tenant/provider、调用量、Token、估算/实际费用、有效产出 | 用量幂等键唯一；tenant/company/provider/日期索引 |
 | `usage_records`（目标） | 查询、报告、刷新和席位等产品权益消耗 | 订阅主体、用户、动作、时间窗和幂等键；与成本 ledger 分离 |
 | `prompt_versions` | prompt code、版本、模板哈希、Schema 版本、状态 | 唯一 `(prompt_code, version)`；活动版本条件唯一 |
@@ -72,6 +73,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 ```mermaid
 erDiagram
   TENANTS ||--o{ USERS : contains
+  USERS ||--o{ AUTHENTICATION_AUDIT_LOGS : authenticates
   TENANTS ||--o{ FUNDS : owns
   TENANTS ||--o{ RESEARCH_IMPORTS : owns
   USERS ||--o{ RESEARCH_IMPORTS : imports

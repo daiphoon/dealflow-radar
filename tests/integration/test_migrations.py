@@ -19,7 +19,23 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     command.upgrade(config, "head")
     command.check(config)
     engine = create_engine(database_url)
-    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 25
+    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 26
+    user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
+    assert {"auth_provider", "auth_subject"} <= user_columns
+    assert "uq_users_auth_identity" in {
+        index["name"] for index in inspect(engine).get_indexes("users")
+    }
+    assert "authentication_audit_logs" in inspect(engine).get_table_names()
+    assert {
+        "tenant_id",
+        "user_id",
+        "provider",
+        "subject_hash",
+        "event_type",
+        "outcome",
+        "reason_code",
+        "created_at",
+    } <= {column["name"] for column in inspect(engine).get_columns("authentication_audit_logs")}
     assert "heartbeat_at" in {
         column["name"] for column in inspect(engine).get_columns("refresh_jobs")
     }
@@ -238,3 +254,9 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "ADD COLUMN scheduled_for" in ddl
     assert "ADD COLUMN candidate_document_id" in ddl
     assert "uq_raw_document_candidate_handoff" in ddl
+    assert "ADD COLUMN auth_provider" in ddl
+    assert "CREATE UNIQUE INDEX uq_users_auth_identity" in ddl
+    assert "CREATE TABLE authentication_audit_logs" in ddl
+    assert "ALTER TABLE authentication_audit_logs ENABLE ROW LEVEL SECURITY" in ddl
+    assert "CREATE POLICY authentication_audit_logs_insert" in ddl
+    assert "CREATE POLICY authentication_audit_logs_read" in ddl
