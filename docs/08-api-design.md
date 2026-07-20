@@ -22,6 +22,13 @@
 | --- | --- | --- |
 | `GET /companies` | 当前授权公司列表 | 当前仍按基金权限；后续个人列表与 watchlist 单独设计 |
 | `GET /companies/search?q=` | 搜索平台共享公司 | 已实现；信用代码、工商全称或已核实别名精确匹配，只查数据库，不自动建公司 |
+| `GET /me/watchlist` | 当前用户的默认关注清单 | 仅返回本人记录；关注不授予公司读取权限 |
+| `POST/DELETE /me/watchlist/{company_id}` | 关注或取消关注共享公司 | 只允许已核验共享公司，服务端执行 20 家测试上限 |
+| `POST /me/company-requests/inclusion` | 无结果时请求人工收录 | 不自动创建/绑定公司，不同步访问外部来源 |
+| `POST /me/company-requests/refresh/{company_id}` | 请求人工更新共享公司 | 与收录申请合计每月 5 次，同目标 24 小时冷却，不创建自动刷新任务 |
+| `GET /me/company-requests` | 查看本人申请状态 | 其他个人和机构不可见 |
+| `GET /me/usage` | 当前测试权益用量 | 查询、关注、报告和申请分别返回已用、上限和剩余 |
+| `GET/PATCH /platform/company-requests` | 平台处理用户主动提交的申请 | 仅 `platform_admin`；不扩张到个人关注或用量读取 |
 | `GET /companies/{id}` | 公司详情 | 已实现共享基础层独立读取，并按基金/owner 授权叠加私有层 |
 | `GET /companies/{id}/changes?since=` | 上次查看后变化 | 只返回版本化事实变化和纠正撤回 |
 | `GET /companies/{id}/events` | 事件时间线 | 按有效权益和记录作用域返回事件；业务状态不代替授权 |
@@ -43,7 +50,7 @@
 
 人工研究导入 V1 仅实现本机命令 `python -m scripts.import_research_json`；政府身份 JSON 通过 `python -m scripts.import_official_identity_json` 导入；天眼查授权身份通过 `python -m scripts.import_tianyancha_identities` 在独立受控进程查询并导入。三者均未开放网页上传或同步查询 API；即使 CloudBase 身份已接入，上传隔离、文件审计和许可校验仍须单独验收。`GET /companies` 继续返回基金授权列表；`GET /companies/search?q=` 和共享公司详情不要求基金关系，但要求有效身份，且永不触发天眼查调用。
 
-当前详情响应使用 `events` 表示平台共享已审核事实、`private_events` 表示当前机构可见的已确认信息、`unconfirmed_leads` 表示当前个人或机构 owner 可见的未确认线索，`investments` 只在基金授权存在时返回记录。证据引用和原始文档分别做作用域过滤；共享事件只序列化独立展示引用的来源名称、URL、日期、状态和许可短摘录，不读取私有原文档。无基金用户不会因共享详情请求触发机构私有刷新状态或任务。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放；普通审核区要求 `reviewer`，共享晋升区另要求 `platform_admin`，该开关不能替代认证。
+当前详情响应使用 `events` 表示平台共享已审核事实、`private_events` 表示当前机构可见的已确认信息、`unconfirmed_leads` 表示当前个人或机构 owner 可见的未确认线索，`investments` 只在基金授权存在时返回记录；`is_platform_shared` 只用于决定是否展示个人关注/更新入口，不暴露私有记录。证据引用和原始文档分别做作用域过滤；共享事件只序列化独立展示引用的来源名称、URL、日期、状态和许可短摘录，不读取私有原文档。无基金用户不会因共享详情请求触发机构私有刷新状态或任务。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放；普通审核区要求 `reviewer`，共享晋升区另要求 `platform_admin`，该开关不能替代认证。
 
 链接展示按 `link_display_allowed` 和检查状态决定：健康链接显示检查时间；合法但未检查的 URL 可点击并明确警告；失效链接只保留历史来源信息；不安全或许可受限链接不返回为可点击链接。链接可点击不表示证据内容已完成实质核验。
 
@@ -70,7 +77,7 @@
 
 - 第一版只支持统一社会信用代码精确搜索、工商全称和已核实别名搜索；模糊名称不自动绑定或创建公司。
 - 搜索只返回当前用户具备有效访问资格的平台共享目录，不返回个人或机构私有主体、线索或计数。
-- 搜索无结果时未来可返回“请求收录”入口，但同步请求不访问外部数据源。
+- 搜索无结果时提供“请求收录”入口，但只写入人工队列，同步请求不访问外部数据源。
 - 公司是否在个人 watchlist 或某基金中，不影响其共享目录读取资格。
 
 ### 详情组合
@@ -81,7 +88,7 @@
 - `personal_overlay`：仅当前用户的关注、备注、查看水位和个人线索；
 - `organization_overlays`：仅当前用户有机构及资源授权的基金投资、机构线索和私有资料。
 
-watchlist、个人备注和正式 organization overlay 尚未实现；授权顺序已经固定为“共享基础层独立判断，私有层逐层叠加”。无基金授权不再导致共享公司详情整体不可访问。
+单一默认 watchlist 已实现；个人备注、多清单和正式 organization overlay 尚未实现。授权顺序仍固定为“共享基础层独立判断，私有层逐层叠加”，无基金授权不再导致共享公司详情整体不可访问。
 
 ### 防枚举
 

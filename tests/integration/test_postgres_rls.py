@@ -361,14 +361,16 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
                         'company_snapshots', 'event_sharing_decisions',
                         'event_sharing_decision_evidence', 'trusted_sources',
                         'source_check_runs', 'candidate_documents',
-                        'authentication_audit_logs'
+                        'authentication_audit_logs',
+                        'personal_watchlist_items', 'personal_company_requests',
+                        'personal_usage_records'
                     )
                       AND relrowsecurity
                     """
                 )
             )
         assert role == (False, False, False, False, False)
-        assert enabled_rls_tables == 21
+        assert enabled_rls_tables == 24
         assert _visible_counts(connection) == (0, 0, 0, 0, 0)
         assert _visible_counts(connection, ALPHA_USER_ID, ALPHA_TENANT_ID) == (10, 1, 10, 1, 0)
         assert _visible_counts(connection, BETA_USER_ID, BETA_TENANT_ID) == (1, 1, 0, 0, 0)
@@ -1128,6 +1130,203 @@ def test_authentication_audit_rls_is_self_scoped_and_append_only() -> None:
         engine.dispose()
 
 
+def test_personal_retention_rls_is_owner_private_and_requests_are_explicitly_admin_reviewable() -> (
+    None
+):
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    engine = create_engine(POSTGRES_RLS_DATABASE_URL, pool_pre_ping=True)
+    connection = engine.connect()
+    transaction = connection.begin()
+    company_id = str(demo_uuid("company-示例星河科技一号有限公司"))
+    personal_request_id = "94af856a-a089-4055-9dca-0a427daf20fe"
+    beta_request_id = "5b8c9b46-12e0-4ee2-8141-8d81596e1588"
+    try:
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(NO_ACCESS_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO personal_watchlist_items (
+                    id, owner_user_id, company_id, created_at, updated_at
+                ) VALUES (
+                    :id, :owner_user_id, :company_id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": "117ea380-dc73-4e8f-a0c4-8b60c2611fef",
+                "owner_user_id": str(NO_ACCESS_USER_ID),
+                "company_id": company_id,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO personal_usage_records (
+                    id, owner_user_id, operation, period_key,
+                    resource_id, idempotency_key, created_at
+                ) VALUES (
+                    :id, :owner_user_id, 'company_search', '2026-07',
+                    NULL, :idempotency_key, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": "d2e68eab-8b40-4a62-80ea-3bf716791423",
+                "owner_user_id": str(NO_ACCESS_USER_ID),
+                "idempotency_key": "a" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO personal_company_requests (
+                    id, owner_user_id, request_type, company_id,
+                    requested_name, requested_credit_code, target_key,
+                    status, reviewed_by_id, reviewed_at, decision_reason,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, :owner_user_id, 'refresh', :company_id,
+                    '示例星河科技一号有限公司', '91310000MA1K000006',
+                    :target_key, 'pending', NULL, NULL, NULL,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": personal_request_id,
+                "owner_user_id": str(NO_ACCESS_USER_ID),
+                "company_id": company_id,
+                "target_key": f"company:{company_id}",
+            },
+        )
+        with pytest.raises(DBAPIError):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO personal_watchlist_items (
+                            id, owner_user_id, company_id, created_at, updated_at
+                        ) VALUES (
+                            :id, :owner_user_id, :company_id,
+                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {
+                        "id": "fd52a03d-eab7-4d41-9487-5c993856bdcb",
+                        "owner_user_id": str(BETA_USER_ID),
+                        "company_id": company_id,
+                    },
+                )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(BETA_USER_ID), "tenant_id": str(BETA_TENANT_ID)},
+        )
+        assert connection.scalar(text("SELECT count(*) FROM personal_watchlist_items")) == 0
+        assert connection.scalar(text("SELECT count(*) FROM personal_usage_records")) == 0
+        assert connection.scalar(text("SELECT count(*) FROM personal_company_requests")) == 0
+        connection.execute(
+            text(
+                """
+                INSERT INTO personal_company_requests (
+                    id, owner_user_id, request_type, company_id,
+                    requested_name, requested_credit_code, target_key,
+                    status, reviewed_by_id, reviewed_at, decision_reason,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, :owner_user_id, 'refresh', :company_id,
+                    '示例星河科技一号有限公司', '91310000MA1K000006',
+                    :target_key, 'pending', NULL, NULL, NULL,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": beta_request_id,
+                "owner_user_id": str(BETA_USER_ID),
+                "company_id": company_id,
+                "target_key": f"company:{company_id}",
+            },
+        )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(NO_ACCESS_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        assert connection.scalar(text("SELECT count(*) FROM personal_company_requests")) == 1
+        connection.execute(
+            text(
+                """
+                INSERT INTO user_role_assignments (
+                    id, user_id, role_id, scope_id, valid_until, created_at, updated_at
+                )
+                SELECT :id, :user_id, roles.id, NULL, NULL,
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM roles WHERE roles.code = 'platform_admin'
+                ON CONFLICT DO NOTHING
+                """
+            ),
+            {
+                "id": "c4d7a935-f453-425c-8909-4ba8659ce720",
+                "user_id": str(ALPHA_USER_ID),
+            },
+        )
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        assert connection.scalar(text("SELECT count(*) FROM personal_company_requests")) == 2
+        assert connection.scalar(text("SELECT count(*) FROM personal_watchlist_items")) == 0
+        assert connection.scalar(text("SELECT count(*) FROM personal_usage_records")) == 0
+        updated = connection.execute(
+            text(
+                """
+                UPDATE personal_company_requests
+                SET status = 'completed', reviewed_by_id = :reviewer_id,
+                    reviewed_at = CURRENT_TIMESTAMP, decision_reason = 'RLS admin review',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = :id
+                """
+            ),
+            {"reviewer_id": str(ALPHA_USER_ID), "id": beta_request_id},
+        )
+        assert updated.rowcount == 1
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(NO_ACCESS_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        assert connection.scalar(text("SELECT count(*) FROM personal_company_requests")) == 1
+        owner_update = connection.execute(
+            text("UPDATE personal_company_requests SET status = 'completed' WHERE id = :id"),
+            {"id": personal_request_id},
+        )
+        assert owner_update.rowcount == 0
+    finally:
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
 def test_cloudbase_login_uses_postgres_rls_application_role() -> None:
     assert POSTGRES_RLS_DATABASE_URL is not None
     settings = replace(
@@ -1177,4 +1376,59 @@ def test_cloudbase_login_uses_postgres_rls_application_role() -> None:
             )
         )
         assert {"identity_linked", "session_started", "session_ended"} <= event_types
+    engine.dispose()
+
+
+def test_personal_request_api_keeps_rls_response_after_commit() -> None:
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    settings = replace(
+        Settings.from_env(),
+        database_url=POSTGRES_RLS_DATABASE_URL,
+        auth_provider="demo",
+        external_calls_enabled=False,
+        paid_api_calls_enabled=False,
+        auto_refresh_enabled=False,
+    )
+    engine = create_engine(POSTGRES_RLS_DATABASE_URL, pool_pre_ping=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO user_role_assignments (
+                    id, user_id, role_id, scope_id, valid_until, created_at, updated_at
+                )
+                SELECT :id, :user_id, roles.id, NULL, NULL,
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM roles WHERE roles.code = 'platform_admin'
+                ON CONFLICT DO NOTHING
+                """
+            ),
+            {"id": str(uuid4()), "user_id": str(ALPHA_USER_ID)},
+        )
+
+    with TestClient(create_app(settings)) as client:
+        owner_headers = {"X-Demo-User-Id": str(NO_ACCESS_USER_ID)}
+        created = client.post(
+            "/api/v1/me/company-requests/inclusion",
+            headers=owner_headers,
+            json={"company_name": f"PostgreSQL RLS 申请响应测试 {uuid4().hex}"},
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["status"] == "pending"
+
+        reviewed = client.patch(
+            f"/api/v1/platform/company-requests/{created.json()['id']}",
+            headers={"X-Demo-User-Id": str(ALPHA_USER_ID)},
+            json={"status": "completed", "reason": "验证提交后仍可安全返回响应"},
+        )
+        assert reviewed.status_code == 200, reviewed.text
+        assert reviewed.json()["status"] == "completed"
+        assert reviewed.json()["reviewed_by_id"] == str(ALPHA_USER_ID)
     engine.dispose()

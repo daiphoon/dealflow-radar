@@ -198,6 +198,26 @@ class CloudBaseAuthPolicy:
 
 
 @dataclass(frozen=True)
+class PersonalEntitlementPolicy:
+    monthly_search_limit: int = 100
+    watchlist_company_limit: int = 20
+    monthly_report_limit: int = 10
+    monthly_request_limit: int = 5
+    request_cooldown_hours: int = 24
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("PERSONAL_MONTHLY_SEARCH_LIMIT", self.monthly_search_limit),
+            ("PERSONAL_WATCHLIST_COMPANY_LIMIT", self.watchlist_company_limit),
+            ("PERSONAL_MONTHLY_REPORT_LIMIT", self.monthly_report_limit),
+            ("PERSONAL_MONTHLY_REQUEST_LIMIT", self.monthly_request_limit),
+            ("PERSONAL_REQUEST_COOLDOWN_HOURS", self.request_cooldown_hours),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+
+
+@dataclass(frozen=True)
 class Settings:
     database_url: str
     app_mode: str
@@ -217,6 +237,9 @@ class Settings:
     )
     source_monitoring_policy: SourceMonitoringPolicy = field(default_factory=SourceMonitoringPolicy)
     cloudbase_auth_policy: CloudBaseAuthPolicy = field(default_factory=CloudBaseAuthPolicy)
+    personal_entitlement_policy: PersonalEntitlementPolicy = field(
+        default_factory=PersonalEntitlementPolicy
+    )
 
     def __post_init__(self) -> None:
         if self.auth_provider not in {"demo", "cloudbase"}:
@@ -317,5 +340,12 @@ class Settings:
                 timeout_seconds=_as_positive_int("CLOUDBASE_AUTH_TIMEOUT_SECONDS", 5),
                 max_response_bytes=_as_positive_int("CLOUDBASE_AUTH_MAX_RESPONSE_BYTES", 64_000),
                 user_agent=os.getenv("CLOUDBASE_AUTH_USER_AGENT", "DealflowRadarAuth/1.0"),
+            ),
+            personal_entitlement_policy=PersonalEntitlementPolicy(
+                monthly_search_limit=_as_positive_int("PERSONAL_MONTHLY_SEARCH_LIMIT", 100),
+                watchlist_company_limit=_as_positive_int("PERSONAL_WATCHLIST_COMPANY_LIMIT", 20),
+                monthly_report_limit=_as_positive_int("PERSONAL_MONTHLY_REPORT_LIMIT", 10),
+                monthly_request_limit=_as_positive_int("PERSONAL_MONTHLY_REQUEST_LIMIT", 5),
+                request_cooldown_hours=_as_positive_int("PERSONAL_REQUEST_COOLDOWN_HOURS", 24),
             ),
         )

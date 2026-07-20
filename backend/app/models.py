@@ -267,6 +267,104 @@ class CompanyAlias(TimestampMixin, Base):
     verification_status: Mapped[str] = mapped_column(String(32), default="verified")
 
 
+class PersonalWatchlistItem(TimestampMixin, Base):
+    __tablename__ = "personal_watchlist_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id",
+            "company_id",
+            name="uq_personal_watchlist_owner_company",
+        ),
+        Index("ix_personal_watchlist_owner_created", "owner_user_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), index=True
+    )
+
+
+class PersonalCompanyRequest(TimestampMixin, Base):
+    __tablename__ = "personal_company_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "request_type IN ('inclusion', 'refresh')",
+            name="ck_personal_company_request_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'in_review', 'completed', 'rejected')",
+            name="ck_personal_company_request_status",
+        ),
+        CheckConstraint(
+            "(request_type = 'inclusion' AND company_id IS NULL "
+            "AND (requested_name IS NOT NULL OR requested_credit_code IS NOT NULL)) OR "
+            "(request_type = 'refresh' AND "
+            "(company_id IS NOT NULL OR requested_name IS NOT NULL "
+            "OR requested_credit_code IS NOT NULL))",
+            name="ck_personal_company_request_target",
+        ),
+        Index(
+            "uq_personal_company_request_active_target",
+            "owner_user_id",
+            "target_key",
+            unique=True,
+            postgresql_where=text("status IN ('pending', 'in_review')"),
+            sqlite_where=text("status IN ('pending', 'in_review')"),
+        ),
+        Index(
+            "ix_personal_company_request_owner_created",
+            "owner_user_id",
+            "created_at",
+        ),
+        Index("ix_personal_company_request_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    request_type: Mapped[str] = mapped_column(String(16))
+    company_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("companies.id", ondelete="SET NULL"), index=True
+    )
+    requested_name: Mapped[str | None] = mapped_column(String(240))
+    requested_credit_code: Mapped[str | None] = mapped_column(String(32))
+    target_key: Mapped[str] = mapped_column(String(280))
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    reviewed_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class PersonalUsageRecord(Base):
+    __tablename__ = "personal_usage_records"
+    __table_args__ = (
+        CheckConstraint(
+            "operation IN ('company_search', 'company_request', 'company_report')",
+            name="ck_personal_usage_operation",
+        ),
+        Index(
+            "ix_personal_usage_owner_period_operation",
+            "owner_user_id",
+            "period_key",
+            "operation",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    operation: Mapped[str] = mapped_column(String(32))
+    period_key: Mapped[str] = mapped_column(String(7))
+    resource_id: Mapped[UUID | None] = mapped_column(Uuid)
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class Investment(TimestampMixin, Base):
     __tablename__ = "investments"
     __table_args__ = (

@@ -1,6 +1,13 @@
 import Link from "next/link";
 
-import { getCompanies, searchCompanies } from "@/lib/api";
+import { requestCompanyInclusion } from "@/app/personal-actions";
+import {
+  ApiError,
+  getCompanies,
+  getPersonalUsage,
+  searchCompanies,
+  type CompanySearchResult,
+} from "@/lib/api";
 import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
 
 export const dynamic = "force-dynamic";
@@ -32,15 +39,38 @@ function formatDate(value: string | null): string {
 export default async function CompanyListPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string }>;
+  searchParams: Promise<{ q?: string; result?: string; error?: string }>;
 }) {
-  const { q = "" } = await searchParams;
+  const { q = "", result, error: actionError } = await searchParams;
   const query = q.trim();
   try {
-    const [companies, searchResults] = await Promise.all([
-      getCompanies(),
-      query ? searchCompanies(query) : Promise.resolve([]),
-    ]);
+    const companies = await getCompanies();
+    let searchResults: CompanySearchResult[] = [];
+    let searchLimitReached = false;
+    if (query) {
+      try {
+        searchResults = await searchCompanies(query);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 429) {
+          searchLimitReached = true;
+        } else {
+          throw error;
+        }
+      }
+    }
+    const usage = await getPersonalUsage();
+    const looksLikeCreditCode = /^[0-9A-Z]{18}$/i.test(query);
+    const feedback = result
+      ? result === "inclusion_requested"
+        ? "收录申请已进入人工处理队列；系统没有自动创建或绑定公司。"
+        : "相同申请仍在处理或处于 24 小时冷却期，本次没有重复计数。"
+      : actionError
+        ? actionError === "limit_reached"
+          ? "本月收录或更新申请额度已用完。"
+          : actionError === "already_available"
+            ? "该公司已经在共享目录中，请直接精确查询。"
+            : "申请未提交，请检查输入后重试。"
+        : null;
     return (
       <main className="shell page-stack">
         <section className="hero">
@@ -52,13 +82,21 @@ export default async function CompanyListPage({
           </p>
         </section>
 
+        {feedback ? (
+          <p className={`feedback ${result ? "feedback-success" : "feedback-error"}`}>
+            {feedback}
+          </p>
+        ) : null}
+
         <section className="panel" aria-labelledby="company-search-title">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">个人查询路径</p>
               <h2 id="company-search-title">搜索平台共享目录</h2>
             </div>
-            <span className="muted">无需先创建基金或投资关系</span>
+            <span className="muted">
+              本月查询 {usage.searches.used}/{usage.searches.limit}
+            </span>
           </div>
           <form className="search-form" method="get" role="search">
             <label htmlFor="company-query">公司工商全称、信用代码或已核实别名</label>
@@ -80,12 +118,43 @@ export default async function CompanyListPage({
           {query ? (
             <div className="search-results" aria-live="polite">
               <div className="search-summary">
-                <strong>{searchResults.length} 条精确结果</strong>
+                <strong>{searchLimitReached ? "查询额度已用完" : `${searchResults.length} 条精确结果`}</strong>
                 <span className="muted">“{query}”</span>
               </div>
-              {searchResults.length === 0 ? (
+              {searchLimitReached ? (
                 <div className="empty-state">
-                  共享目录中没有精确匹配；本次查询不会自动创建或绑定公司。
+                  本月 {usage.searches.limit} 次测试查询额度已用完；这是一项服务端限制，刷新页面不会绕过。
+                </div>
+              ) : searchResults.length === 0 ? (
+                <div className="empty-state">
+                  <p>共享目录中没有精确匹配；本次查询没有自动创建或绑定公司。</p>
+                  <form action={requestCompanyInclusion} className="inclusion-request-form">
+                    <input name="return_query" type="hidden" value={query} />
+                    <label>
+                      工商全称（如已知）
+                      <input
+                        defaultValue={looksLikeCreditCode ? "" : query}
+                        maxLength={240}
+                        name="company_name"
+                        placeholder="请输入准确的工商全称"
+                      />
+                    </label>
+                    <label>
+                      统一社会信用代码（如已知）
+                      <input
+                        defaultValue={looksLikeCreditCode ? query.toUpperCase() : ""}
+                        maxLength={32}
+                        name="credit_code"
+                        placeholder="可留空"
+                      />
+                    </label>
+                    <button className="button button-approve" type="submit">
+                      提交人工收录申请
+                    </button>
+                    <span className="muted">
+                      本月申请 {usage.company_requests.used}/{usage.company_requests.limit}
+                    </span>
+                  </form>
                 </div>
               ) : (
                 <div className="company-grid">

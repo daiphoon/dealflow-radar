@@ -26,6 +26,23 @@ from backend.app.auth import (
 from backend.app.config import Settings
 from backend.app.database import build_engine, build_session_factory, set_request_context
 from backend.app.models import ReviewQueue, Tenant, User, utc_now
+from backend.app.personal_features import (
+    PersonalFeatureAccessError,
+    PersonalFeatureLimitError,
+    PersonalFeatureNotFoundError,
+    PersonalRequestConflictError,
+    PersonalRequestTransitionError,
+    add_personal_watchlist_item,
+    create_inclusion_request,
+    create_refresh_request,
+    decide_platform_company_request,
+    get_personal_usage_summary,
+    list_personal_company_requests,
+    list_personal_watchlist,
+    list_platform_company_requests,
+    record_company_search,
+    remove_personal_watchlist_item,
+)
 from backend.app.providers import MockResearchProvider
 from backend.app.schemas import (
     AuthEmailLoginIn,
@@ -45,6 +62,11 @@ from backend.app.schemas import (
     IdentityResolutionIn,
     IdentityResolutionOut,
     IngestResult,
+    PersonalCompanyRequestDecisionIn,
+    PersonalCompanyRequestOut,
+    PersonalInclusionRequestIn,
+    PersonalUsageSummaryOut,
+    PersonalWatchlistItemOut,
     RefreshResult,
     ReviewDecisionIn,
     ReviewOut,
@@ -367,7 +389,187 @@ def create_app(
         user: User = Depends(get_current_user),
         session: Session = Depends(get_session),
     ) -> list[CompanySearchResult]:
-        return search_companies(session, user, q, app.state.settings.refresh_policy)
+        try:
+            settings = app.state.settings
+            record_company_search(session, user, settings.personal_entitlement_policy)
+            results = search_companies(session, user, q, settings.refresh_policy)
+            session.commit()
+            return results
+        except PersonalFeatureLimitError as error:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "personal_usage_limit_reached",
+                    "feature": error.feature,
+                    "limit": error.limit,
+                },
+            ) from error
+
+    @app.get("/api/v1/me/usage", response_model=PersonalUsageSummaryOut)
+    def personal_usage(
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalUsageSummaryOut:
+        return get_personal_usage_summary(
+            session,
+            user,
+            app.state.settings.personal_entitlement_policy,
+        )
+
+    @app.get("/api/v1/me/watchlist", response_model=list[PersonalWatchlistItemOut])
+    def personal_watchlist(
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> list[PersonalWatchlistItemOut]:
+        return list_personal_watchlist(
+            session,
+            user,
+            app.state.settings.refresh_policy,
+        )
+
+    @app.post(
+        "/api/v1/me/watchlist/{company_id}",
+        response_model=PersonalWatchlistItemOut,
+    )
+    def personal_watchlist_add(
+        company_id: UUID,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalWatchlistItemOut:
+        try:
+            settings = app.state.settings
+            return add_personal_watchlist_item(
+                session,
+                user,
+                company_id,
+                settings.personal_entitlement_policy,
+                settings.refresh_policy,
+            )
+        except PersonalFeatureNotFoundError as error:
+            raise HTTPException(status_code=404, detail="company not found") from error
+        except PersonalFeatureLimitError as error:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "personal_usage_limit_reached",
+                    "feature": error.feature,
+                    "limit": error.limit,
+                },
+            ) from error
+
+    @app.delete("/api/v1/me/watchlist/{company_id}", status_code=204)
+    def personal_watchlist_remove(
+        company_id: UUID,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> Response:
+        remove_personal_watchlist_item(session, user, company_id)
+        return Response(status_code=204)
+
+    @app.get(
+        "/api/v1/me/company-requests",
+        response_model=list[PersonalCompanyRequestOut],
+    )
+    def personal_company_requests(
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> list[PersonalCompanyRequestOut]:
+        return list_personal_company_requests(session, user)
+
+    @app.post(
+        "/api/v1/me/company-requests/inclusion",
+        response_model=PersonalCompanyRequestOut,
+    )
+    def personal_inclusion_request(
+        payload: PersonalInclusionRequestIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalCompanyRequestOut:
+        try:
+            return create_inclusion_request(
+                session,
+                user,
+                app.state.settings.personal_entitlement_policy,
+                company_name=payload.company_name,
+                credit_code=payload.credit_code,
+            )
+        except PersonalRequestConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except PersonalFeatureLimitError as error:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "personal_usage_limit_reached",
+                    "feature": error.feature,
+                    "limit": error.limit,
+                },
+            ) from error
+
+    @app.post(
+        "/api/v1/me/company-requests/refresh/{company_id}",
+        response_model=PersonalCompanyRequestOut,
+    )
+    def personal_refresh_request(
+        company_id: UUID,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalCompanyRequestOut:
+        try:
+            return create_refresh_request(
+                session,
+                user,
+                app.state.settings.personal_entitlement_policy,
+                company_id,
+            )
+        except PersonalFeatureNotFoundError as error:
+            raise HTTPException(status_code=404, detail="company not found") from error
+        except PersonalFeatureLimitError as error:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "personal_usage_limit_reached",
+                    "feature": error.feature,
+                    "limit": error.limit,
+                },
+            ) from error
+
+    @app.get(
+        "/api/v1/platform/company-requests",
+        response_model=list[PersonalCompanyRequestOut],
+    )
+    def platform_company_requests(
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> list[PersonalCompanyRequestOut]:
+        try:
+            return list_platform_company_requests(session, user)
+        except PersonalFeatureAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+
+    @app.patch(
+        "/api/v1/platform/company-requests/{request_id}",
+        response_model=PersonalCompanyRequestOut,
+    )
+    def platform_company_request_decision(
+        request_id: UUID,
+        payload: PersonalCompanyRequestDecisionIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalCompanyRequestOut:
+        try:
+            return decide_platform_company_request(
+                session,
+                user,
+                request_id,
+                status=payload.status,
+                reason=payload.reason,
+            )
+        except PersonalFeatureAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except PersonalFeatureNotFoundError as error:
+            raise HTTPException(status_code=404, detail="request not found") from error
+        except PersonalRequestTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
     @app.get("/api/v1/companies/{company_id}", response_model=CompanyDetail)
     def company_detail(

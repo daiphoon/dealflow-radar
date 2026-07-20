@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class EvidenceOut(BaseModel):
@@ -85,6 +85,7 @@ class CompanySearchResult(BaseModel):
 
 class CompanyDetail(BaseModel):
     id: UUID
+    is_platform_shared: bool
     legal_name: str
     credit_code: str | None
     registered_region: str | None
@@ -99,6 +100,65 @@ class CompanyDetail(BaseModel):
     events: list[EventOut]
     private_events: list[EventOut]
     unconfirmed_leads: list[EventOut]
+
+
+class PersonalWatchlistItemOut(BaseModel):
+    id: UUID
+    company_id: UUID
+    legal_name: str
+    credit_code: str | None
+    registered_region: str | None
+    identity_status: str
+    freshness_status: str
+    last_checked_at: datetime | None
+    followed_at: datetime
+
+
+class PersonalInclusionRequestIn(BaseModel):
+    company_name: str | None = Field(default=None, min_length=2, max_length=240)
+    credit_code: str | None = Field(default=None, min_length=2, max_length=32)
+
+    @model_validator(mode="after")
+    def require_company_identifier(self) -> PersonalInclusionRequestIn:
+        if not (self.company_name and self.company_name.strip()) and not (
+            self.credit_code and self.credit_code.strip()
+        ):
+            raise ValueError("company_name or credit_code is required")
+        return self
+
+
+class PersonalCompanyRequestDecisionIn(BaseModel):
+    status: Literal["in_review", "completed", "rejected"]
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class PersonalCompanyRequestOut(BaseModel):
+    id: UUID
+    owner_user_id: UUID
+    request_type: Literal["inclusion", "refresh"]
+    company_id: UUID | None
+    requested_name: str | None
+    requested_credit_code: str | None
+    status: Literal["pending", "in_review", "completed", "rejected"]
+    reviewed_by_id: UUID | None
+    reviewed_at: datetime | None
+    decision_reason: str | None
+    created_at: datetime
+    reused: bool = False
+
+
+class PersonalQuotaOut(BaseModel):
+    used: int
+    limit: int
+    remaining: int
+
+
+class PersonalUsageSummaryOut(BaseModel):
+    period_key: str
+    searches: PersonalQuotaOut
+    watchlist_companies: PersonalQuotaOut
+    reports: PersonalQuotaOut
+    company_requests: PersonalQuotaOut
 
 
 class ReviewDecisionIn(BaseModel):

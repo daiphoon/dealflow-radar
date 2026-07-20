@@ -22,9 +22,10 @@
 - 到期来源可由默认 dry-run 的一次性调度命令小批量入队，连续失败指数退避，复用现有 Worker 重试和租约恢复；
 - 应用层作用域过滤及 PostgreSQL RLS 双重保护，私有别名、文档、提及、事件、证据和快照均有明确 owner；
 - CloudBase 邀请制邮箱认证已形成代码路径：正式模式不再信任 Demo Header，CloudBase 只核验身份，本地角色、基金授权与 RLS 继续决定业务权限；
+- 个人用户可将共享公司加入单一默认关注清单、提交人工收录/更新申请并查看处理状态；测试查询、关注和申请上限由服务端执行；
 - 外部搜索、模型、付费 API、自动刷新、自动发布和审核工作台默认关闭。
 
-本机已完成 PostgreSQL 16 迁移、Schema 漂移检查、非表所有者 `NOBYPASSRLS` 账户的租户/基金隔离，以及 API 和服务端渲染页面的端到端验证。该版本仍不能视为生产可用：CloudBase 真实环境收码和四类受邀账户验收、生产部署、个人留存与订阅权益尚未完成；来源监测也没有通用全网搜索、语义事实自动生成或自动共享。
+本机已完成 PostgreSQL 16 迁移、Schema 漂移检查、非表所有者 `NOBYPASSRLS` 账户的租户/基金隔离，以及 API 和服务端渲染页面的端到端验证；真实 CloudBase 无基金个人已完成收码、登录、刷新、退出和共享查询验收。该版本仍不能视为生产可用：个人“上次查看后的变化”和固定报告、其他三类真实 CloudBase 角色回归、生产部署与商业订阅权益尚未完成；来源监测也没有通用全网搜索、语义事实自动生成或自动共享。
 
 ## 本地启动
 
@@ -58,6 +59,12 @@ export CLOUDBASE_CLIENT_ID='replace_with_client_id_or_leave_empty'
 访问 `http://localhost:3000/login`，验证码登录成功后 access/refresh token 只保存于 Next.js 的 `HttpOnly` Cookie。本地认证验收期间不要混用 `localhost` 和 `127.0.0.1`，浏览器会把两者视为不同的 Cookie 站点。CloudBase group 不会映射成业务角色；API 仍从 PostgreSQL 加载 tenant、角色与基金授权，并设置既有 RLS 上下文。`AUTH_PROVIDER=cloudbase` 时 `X-Demo-User-Id` 完全无效。
 
 CloudBase 身份请求不等于公司信息外部查询，不会调用天眼查，也不会开启 `EXTERNAL_CALLS_ENABLED`、`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED` 或 `AUTO_PUBLISH_ENABLED`。完整配置、四角色验收、故障回退和控制台操作见[运维手册](docs/12-operations-runbook.md)；边界见 [ADR-0012](docs/DECISIONS/ADR-0012-cloudbase-identity-local-authorization.md)。
+
+### 个人关注与测试权益
+
+所有已登录的受邀测试用户暂时获得相同测试额度：每个上海自然月查询 100 次、关注 20 家、固定报告 10 次、收录或人工更新申请合计 5 次；同一目标申请 24 小时内复用原记录。可通过环境变量 `PERSONAL_MONTHLY_SEARCH_LIMIT`、`PERSONAL_WATCHLIST_COMPANY_LIMIT`、`PERSONAL_MONTHLY_REPORT_LIMIT`、`PERSONAL_MONTHLY_REQUEST_LIMIT` 和 `PERSONAL_REQUEST_COOLDOWN_HOURS` 调整。它们只是 M4 邀请测试策略，不是商业套餐或付费订阅。
+
+访问 `/watchlist` 查看当前账户的关注和申请。关注只允许已核验平台共享公司，不授予公司或基金数据访问权；搜索无结果时提交收录申请只会写入人工队列，不会自动创建公司、调用天眼查、触发模型或发布事实。个人关注和用量仅本人可见；用户明确提交的申请允许平台管理员处理。
 
 缓存参数由 `REFRESH_POLICY_VERSION`、`RECENT_QUERY_TTL_DAYS` 和 `REFRESH_REQUEST_COOLDOWN_HOURS` 配置。Demo 默认分别为 `demo-v1`、14 天和 24 小时；`AUTO_REFRESH_ENABLED=false` 时仍会准确显示过期状态，但不会因页面访问创建任务。即使开启自动入队，同步请求也不会调用搜索、模型或付费 API。
 

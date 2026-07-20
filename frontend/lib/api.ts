@@ -141,6 +141,7 @@ export type Investment = {
 
 export type CompanyDetail = {
   id: string;
+  is_platform_shared: boolean;
   legal_name: string;
   credit_code: string | null;
   registered_region: string | null;
@@ -155,6 +156,47 @@ export type CompanyDetail = {
   events: Event[];
   private_events: Event[];
   unconfirmed_leads: Event[];
+};
+
+export type PersonalWatchlistItem = {
+  id: string;
+  company_id: string;
+  legal_name: string;
+  credit_code: string | null;
+  registered_region: string | null;
+  identity_status: string;
+  freshness_status: string;
+  last_checked_at: string | null;
+  followed_at: string;
+};
+
+export type PersonalCompanyRequest = {
+  id: string;
+  owner_user_id: string;
+  request_type: "inclusion" | "refresh";
+  company_id: string | null;
+  requested_name: string | null;
+  requested_credit_code: string | null;
+  status: "pending" | "in_review" | "completed" | "rejected";
+  reviewed_by_id: string | null;
+  reviewed_at: string | null;
+  decision_reason: string | null;
+  created_at: string;
+  reused: boolean;
+};
+
+export type PersonalQuota = {
+  used: number;
+  limit: number;
+  remaining: number;
+};
+
+export type PersonalUsageSummary = {
+  period_key: string;
+  searches: PersonalQuota;
+  watchlist_companies: PersonalQuota;
+  reports: PersonalQuota;
+  company_requests: PersonalQuota;
 };
 
 export type TrustedSource = {
@@ -255,8 +297,20 @@ const demoUserId =
   process.env.DEMO_USER_ID ?? "ac07da52-7378-5762-a1af-74e43d1baeba";
 
 export class ApiError extends Error {
-  constructor(public readonly status: number) {
+  constructor(
+    public readonly status: number,
+    public readonly detail: unknown = null,
+  ) {
     super(`API request failed with status ${status}`);
+  }
+}
+
+async function apiError(response: Response): Promise<ApiError> {
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    return new ApiError(response.status, payload.detail ?? null);
+  } catch {
+    return new ApiError(response.status);
   }
 }
 
@@ -274,7 +328,7 @@ async function getJson<T>(path: string): Promise<T> {
     headers: await authenticationHeaders(),
   });
   if (!response.ok) {
-    throw new ApiError(response.status);
+    throw await apiError(response);
   }
   return (await response.json()) as T;
 }
@@ -290,7 +344,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!response.ok) {
-    throw new ApiError(response.status);
+    throw await apiError(response);
   }
   return (await response.json()) as T;
 }
@@ -306,9 +360,20 @@ async function patchJson<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!response.ok) {
-    throw new ApiError(response.status);
+    throw await apiError(response);
   }
   return (await response.json()) as T;
+}
+
+async function deleteRequest(path: string): Promise<void> {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    method: "DELETE",
+    cache: "no-store",
+    headers: await authenticationHeaders(),
+  });
+  if (!response.ok) {
+    throw await apiError(response);
+  }
 }
 
 export function getCompanies(): Promise<CompanyListItem[]> {
@@ -322,6 +387,37 @@ export function searchCompanies(query: string): Promise<CompanySearchResult[]> {
 
 export function getCompany(companyId: string): Promise<CompanyDetail> {
   return getJson(`/api/v1/companies/${encodeURIComponent(companyId)}`);
+}
+
+export function getPersonalUsage(): Promise<PersonalUsageSummary> {
+  return getJson("/api/v1/me/usage");
+}
+
+export function getPersonalWatchlist(): Promise<PersonalWatchlistItem[]> {
+  return getJson("/api/v1/me/watchlist");
+}
+
+export function addPersonalWatchlistCompany(companyId: string): Promise<PersonalWatchlistItem> {
+  return postJson(`/api/v1/me/watchlist/${encodeURIComponent(companyId)}`, {});
+}
+
+export function removePersonalWatchlistCompany(companyId: string): Promise<void> {
+  return deleteRequest(`/api/v1/me/watchlist/${encodeURIComponent(companyId)}`);
+}
+
+export function getPersonalCompanyRequests(): Promise<PersonalCompanyRequest[]> {
+  return getJson("/api/v1/me/company-requests");
+}
+
+export function createPersonalInclusionRequest(payload: {
+  company_name: string | null;
+  credit_code: string | null;
+}): Promise<PersonalCompanyRequest> {
+  return postJson("/api/v1/me/company-requests/inclusion", payload);
+}
+
+export function createPersonalRefreshRequest(companyId: string): Promise<PersonalCompanyRequest> {
+  return postJson(`/api/v1/me/company-requests/refresh/${encodeURIComponent(companyId)}`, {});
 }
 
 export function getReviewWorkbench(): Promise<ReviewWorkbenchItem[]> {

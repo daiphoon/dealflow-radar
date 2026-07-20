@@ -19,7 +19,7 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     command.upgrade(config, "head")
     command.check(config)
     engine = create_engine(database_url)
-    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 26
+    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 29
     user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
     assert {"auth_provider", "auth_subject"} <= user_columns
     assert "uq_users_auth_identity" in {
@@ -260,3 +260,9 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "ALTER TABLE authentication_audit_logs ENABLE ROW LEVEL SECURITY" in ddl
     assert "CREATE POLICY authentication_audit_logs_insert" in ddl
     assert "CREATE POLICY authentication_audit_logs_read" in ddl
+    assert "CREATE TABLE personal_watchlist_items" in ddl
+    assert "CREATE TABLE personal_company_requests" in ddl
+    assert "CREATE TABLE personal_usage_records" in ddl
+    assert "personal_watchlist_items_owner_read" in ddl
+    assert "personal_company_requests_platform_admin_update" in ddl
+    assert "personal_usage_records_owner_insert" in ddl

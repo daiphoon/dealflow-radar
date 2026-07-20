@@ -289,6 +289,38 @@ a {
   outline: 3px solid rgb(20 92 71 / 12%);
 }
 
+.inclusion-request-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+  text-align: left;
+}
+
+.inclusion-request-form label {
+  display: grid;
+  gap: 7px;
+  color: #42504b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.inclusion-request-form input {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid #bdc9c4;
+  border-radius: 10px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+  font-weight: 400;
+}
+
+.inclusion-request-form .button,
+.inclusion-request-form .muted {
+  align-self: end;
+}
+
 .button-search {
   background: var(--accent);
 }
@@ -401,6 +433,94 @@ a {
   font-size: 14px;
   font-weight: 700;
   text-decoration: none;
+}
+
+.personal-detail-controls {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+  text-align: right;
+}
+
+.quota-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.quota-card {
+  display: grid;
+  gap: 8px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.quota-card span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.quota-card strong {
+  color: var(--accent);
+  font-size: 24px;
+}
+
+.watchlist-card a {
+  text-decoration: none;
+}
+
+.watchlist-card .card-footer {
+  width: 100%;
+}
+
+.watchlist-card .text-button {
+  color: var(--danger);
+}
+
+.request-list {
+  display: grid;
+  gap: 12px;
+}
+
+.request-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fbfcfa;
+}
+
+.request-card > div {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+}
+
+.request-card > div:nth-child(2) {
+  justify-items: end;
+}
+
+.request-card > p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.review-status-in_review {
+  color: #725014;
+  background: #fff0ce;
+}
+
+.review-status-completed {
+  color: #0d6247;
+  background: #dff3e9;
 }
 
 .investment-grid {
@@ -1043,7 +1163,10 @@ dd {
   .review-detail-grid,
   .source-config-form,
   .monitor-metadata,
-  .monitor-run-grid {
+  .monitor-run-grid,
+  .inclusion-request-form,
+  .quota-grid,
+  .request-card {
     grid-template-columns: 1fr;
   }
 
@@ -1058,6 +1181,12 @@ dd {
   .evidence-footer {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .personal-detail-controls,
+  .request-card > div:nth-child(2) {
+    justify-items: start;
+    text-align: left;
   }
 
   .header-inner {

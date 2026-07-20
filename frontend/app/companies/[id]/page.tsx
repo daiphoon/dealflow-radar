@@ -1,6 +1,17 @@
 import Link from "next/link";
 
-import { getCompany, type Event, type Investment } from "@/lib/api";
+import {
+  followCompany,
+  requestCompanyRefresh,
+  unfollowCompany,
+} from "@/app/personal-actions";
+import {
+  getCompany,
+  getPersonalUsage,
+  getPersonalWatchlist,
+  type Event,
+  type Investment,
+} from "@/lib/api";
 import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
 
 export const dynamic = "force-dynamic";
@@ -191,17 +202,46 @@ function EventCard({
 
 export default async function CompanyDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ result?: string; error?: string }>;
 }) {
   const { id } = await params;
+  const { result, error: actionError } = await searchParams;
   try {
-    const company = await getCompany(id);
+    const [company, watchlist, usage] = await Promise.all([
+      getCompany(id),
+      getPersonalWatchlist(),
+      getPersonalUsage(),
+    ]);
+    const isFollowed = watchlist.some((item) => item.company_id === company.id);
+    const feedback = result
+      ? result === "followed"
+        ? "已加入个人关注。关注仅用于整理，不改变公司或私有数据权限。"
+        : result === "unfollowed"
+          ? "已取消关注；公司共享档案仍可继续查询。"
+          : result === "refresh_requested"
+            ? "人工更新申请已进入队列，本次没有触发外部查询。"
+            : "相同申请仍在处理或处于 24 小时冷却期，本次没有重复计数。"
+      : actionError
+        ? actionError === "limit_reached"
+          ? "当前测试权益额度已用完。"
+          : actionError === "not_available"
+            ? "该公司当前不能加入个人关注或申请更新。"
+            : "操作失败，请稍后重试。"
+        : null;
     return (
       <main className="shell page-stack">
         <Link className="back-link" href="/">
           ← 返回公司查询
         </Link>
+
+        {feedback ? (
+          <p className={`feedback ${result ? "feedback-success" : "feedback-error"}`}>
+            {feedback}
+          </p>
+        ) : null}
 
         <section className="hero detail-hero">
           <div>
@@ -219,9 +259,33 @@ export default async function CompanyDetailPage({
               </a>
             ) : null}
           </div>
-          <span className={`status status-${company.freshness_status}`}>
-            {freshnessLabels[company.freshness_status] ?? company.freshness_status}
-          </span>
+          <div className="personal-detail-controls">
+            <span className={`status status-${company.freshness_status}`}>
+              {freshnessLabels[company.freshness_status] ?? company.freshness_status}
+            </span>
+            {company.is_platform_shared ? (
+              <>
+                <form action={isFollowed ? unfollowCompany : followCompany}>
+                  <input name="company_id" type="hidden" value={company.id} />
+                  <button className="button button-secondary" type="submit">
+                    {isFollowed ? "取消个人关注" : "加入个人关注"}
+                  </button>
+                </form>
+                <form action={requestCompanyRefresh}>
+                  <input name="company_id" type="hidden" value={company.id} />
+                  <button className="button button-secondary" type="submit">
+                    申请人工更新
+                  </button>
+                </form>
+                <span className="muted">
+                  已关注 {usage.watchlist_companies.used}/{usage.watchlist_companies.limit} ·
+                  本月申请 {usage.company_requests.used}/{usage.company_requests.limit}
+                </span>
+              </>
+            ) : (
+              <span className="muted">机构私有公司不进入个人关注列表</span>
+            )}
+          </div>
         </section>
 
         {company.investments.length > 0 ? (
