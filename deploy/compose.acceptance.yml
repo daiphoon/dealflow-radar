@@ -1,0 +1,57 @@
+services:
+  acceptance-db:
+    image: postgres:16
+    ports:
+      - "127.0.0.1:${ACCEPTANCE_DB_PORT:-55432}:5432"
+    environment:
+      POSTGRES_DB: equity_radar
+      POSTGRES_USER: m5_owner
+      POSTGRES_PASSWORD: ${POSTGRES_ACCEPTANCE_PASSWORD:?POSTGRES_ACCEPTANCE_PASSWORD is required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U m5_owner -d equity_radar"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app
+
+  restore-db:
+    image: postgres:16
+    ports:
+      - "127.0.0.1:${RESTORE_DB_PORT:-55433}:5432"
+    environment:
+      POSTGRES_DB: equity_radar_restore_test
+      POSTGRES_USER: restore_owner
+      POSTGRES_PASSWORD: ${POSTGRES_RESTORE_PASSWORD:?POSTGRES_RESTORE_PASSWORD is required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U restore_owner -d equity_radar_restore_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app
+
+  migrate:
+    depends_on:
+      acceptance-db:
+        condition: service_healthy
+
+  bootstrap-role:
+    depends_on:
+      acceptance-db:
+        condition: service_healthy
+
+  api:
+    depends_on:
+      acceptance-db:
+        condition: service_healthy
+
+  backup:
+    depends_on:
+      acceptance-db:
+        condition: service_healthy
+
+  restore-test:
+    depends_on:
+      restore-db:
+        condition: service_healthy

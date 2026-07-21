@@ -94,5 +94,39 @@ jobs:
       - name: Check and build frontend
         working-directory: frontend
         run: |
+          npm audit --audit-level=high
           npm run typecheck
           npm run build
+
+      - name: Validate production deployment configuration
+        env:
+          APP_MODE: production
+          DATABASE_ADMIN_URL: postgresql+psycopg://m5_owner:m5_acceptance_owner_password@acceptance-db:5432/equity_radar
+          DATABASE_URL: postgresql+psycopg://equity_app:m5_acceptance_app_password@acceptance-db:5432/equity_radar
+          APP_DATABASE_USER: equity_app
+          APP_DATABASE_PASSWORD: m5_acceptance_app_password
+        run: |
+          docker compose \
+            --env-file deploy/acceptance.env.example \
+            -f compose.production.yml \
+            -f deploy/compose.acceptance.yml \
+            config -q
+
+      - name: Build production container images
+        env:
+          APP_MODE: production
+          DATABASE_ADMIN_URL: postgresql+psycopg://m5_owner:m5_acceptance_owner_password@acceptance-db:5432/equity_radar
+          DATABASE_URL: postgresql+psycopg://equity_app:m5_acceptance_app_password@acceptance-db:5432/equity_radar
+          APP_DATABASE_USER: equity_app
+          APP_DATABASE_PASSWORD: m5_acceptance_app_password
+        run: |
+          docker compose \
+            --env-file deploy/acceptance.env.example \
+            -f compose.production.yml \
+            -f deploy/compose.acceptance.yml \
+            build api frontend
+          docker compose \
+            --env-file deploy/acceptance.env.example \
+            -f compose.production.yml \
+            -f deploy/compose.acceptance.yml \
+            run --rm --no-deps preflight

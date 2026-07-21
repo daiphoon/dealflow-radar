@@ -188,3 +188,12 @@
 - 实际命令：迁移前后 `pg_dump -Fc`、`pg_restore -l`、SHA-256 与隔离库实际恢复；`alembic upgrade 0017`、`alembic current`、`alembic check`；非表所有者 `equity_app` 的新表授权与 RLS 负向查询；本机 FastAPI/Next.js 的无基金个人和机构 API、页面及控制台冒烟；迁移前后关键数据、用量和服务状态核对。
 - 测试结果：迁移前备份恢复为 `0015`，迁移后备份恢复为 `0017`；原有 12 家公司、3 个基金、13 条投资、12 条事件/原文/证据均未减少，两家真实公司与本地影子验证基金的两条关联保持不变。无基金个人完成精确查询、关注、重复更新申请复用、查看水位和幂等固定报告；个人详情及报告不含投资或私有线索，其他用户读取报告返回 404；同租户其他用户和其他租户通过 RLS 均看不到该个人记录；机构页面只叠加本基金投资。页面无横向溢出，控制台无警告或错误。本轮业务外部调用增量、付费调用、模型 Token、估算费用、刷新任务和自动发布均为 0，四个业务安全开关保持关闭。
 - 未解决阻塞：没有 M4 阻塞。持久化库保留 1 条 Demo 关注、1 条待处理 Demo 更新申请、2 个用户的查看水位/回执和 1 份个人 Demo 报告作为可重复查看的本地验收数据；真实新增共享事实后的“再次回访提示”未为本轮伪造数据，继续由已通过的确定性测试和既有浏览器验收覆盖。M5 启动前仍需项目负责人决定部署环境和备份策略。
+
+## 2026-07-21｜M5A 零云费用基础设施基线
+
+- 日期：2026-07-21
+- 任务：在不购买香港服务器或创建任何云资源的前提下，建立可迁移的生产后端/前端镜像、Caddy 单一入口、正式模式配置预检、数据库 readiness、受限数据库账户、备份与隔离恢复工具，并用一次性本机 PostgreSQL 和虚构数据完成生产式验收；M5B 上海真实部署仍为独立闸门。
+- 关键文件：`backend/Dockerfile`、`frontend/Dockerfile`、`compose.production.yml`、`deploy/`、`scripts/check_production_config.py`、`backend/app/config.py`、`backend/app/main.py`、`.github/workflows/ci.yml`、`tests/unit/test_production_preflight.py`、`tests/integration/test_demo_vertical_slice.py`、`README.md`、`docs/10-implementation-plan.md`、`docs/11-test-strategy.md` 和 `docs/12-operations-runbook.md`。
+- 实际命令：Ruff 与格式检查；完整 Pytest；隔离 PostgreSQL 受限账户 RLS 套件；SQLite `base → 0017 → base`；PostgreSQL `alembic current/check`；前端依赖审计、TypeScript 和生产构建；生产 Compose 解析、后端/前端镜像构建及预检；虚构数据迁移、应用角色初始化、`pg_dump -Fc`、SHA-256、`pg_restore -l` 和隔离恢复；数据库停止/恢复 readiness；正式模式伪造 Demo Header；Caddy 响应头、容器用户/能力、镜像层密钥扫描和本机浏览器冒烟。
+- 测试结果：Ruff 与格式通过；默认 Pytest 187 项通过、9 项显式 PostgreSQL 测试按预期跳过，隔离 PostgreSQL RLS 9 项通过，仅有 FastAPI TestClient 上游弃用警告；SQLite 迁移往返、PostgreSQL `0017` 和 Schema 漂移检查通过；前端依赖审计 0 个已知漏洞，TypeScript、Next.js 构建和两类生产镜像构建通过。数据库停止时 `/health=200`、`/ready=503`，恢复后 `/ready=200`；伪造 Demo Header 返回 401。备份 `dealflow-radar-20260721T063315Z.dump` 为 308974 字节，SHA-256 为 `bdde2e2f7050629e78d4f51bee626171ca4d7a2db75105a7dec578b65df0f662`，恢复库与源库均为 `0017`，公司/事件/原文/用户/关注/报告数量一致。浏览器确认生产镜像登录页可读，未登录首页重定向到登录页；八个初始安全开关关闭，临时库用量台账的外部调用、模型 Token 和费用均为 0，未自动发布。首次 CI 已完成全部常规测试和镜像构建，但 Job 的 Demo 环境覆盖了验收 env 文件，生产预检按设计失败；修复仅把两个生产构件步骤隔离到虚构 production 环境，不改变常规测试或业务运行配置。
+- 未解决阻塞：M5A 不证明真实域名证书、上海主机防火墙、异机加密备份、备份保留、告警送达、主机重启恢复或四类真实 CloudBase 账户权限；这些必须在 M5B 单独验收，M5B 前不得邀请外部用户。M5A 本机备份仅含虚构数据且未加密，验收后删除；正式环境不得直接数据库 downgrade。Caddy 官方镜像仍以 root 运行，但根文件系统只读、禁止提权、移除全部能力后仅加回绑定 80/443 所需能力；是否改为定制非 root 边缘镜像可在 M5B 根据实际主机方案评估，不阻塞本基线。

@@ -242,10 +242,17 @@ class Settings:
     )
 
     def __post_init__(self) -> None:
+        if self.app_mode not in {"demo", "production"}:
+            raise ValueError("APP_MODE must be demo or production")
         if self.auth_provider not in {"demo", "cloudbase"}:
             raise ValueError("AUTH_PROVIDER must be demo or cloudbase")
         if self.auth_provider == "cloudbase" and not self.cloudbase_auth_policy.env_id:
             raise ValueError("CLOUDBASE_ENV_ID is required when AUTH_PROVIDER=cloudbase")
+        if self.app_mode == "production":
+            if self.auth_provider != "cloudbase":
+                raise ValueError("production mode requires AUTH_PROVIDER=cloudbase")
+            if not self.database_url.startswith(("postgresql://", "postgresql+psycopg://")):
+                raise ValueError("production mode requires PostgreSQL DATABASE_URL")
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -254,7 +261,7 @@ class Settings:
                 "DATABASE_URL",
                 "postgresql+psycopg://equity_app:replace_app_password@localhost:5432/equity_radar",
             ),
-            app_mode=os.getenv("APP_MODE", "demo"),
+            app_mode=os.getenv("APP_MODE", "demo").strip().lower(),
             external_calls_enabled=_as_bool(os.getenv("EXTERNAL_CALLS_ENABLED", "false")),
             paid_api_calls_enabled=_as_bool(os.getenv("PAID_API_CALLS_ENABLED", "false")),
             auto_refresh_enabled=_as_bool(os.getenv("AUTO_REFRESH_ENABLED", "false")),

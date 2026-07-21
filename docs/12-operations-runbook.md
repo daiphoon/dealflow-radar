@@ -1,6 +1,6 @@
-# 12 运维手册（设计）
+# 12 运维手册
 
-当前已有可本地运行的 Demo；本手册定义当前能力和后续部署的最小操作边界。
+当前已有可本地运行的 Demo 和 M5A 生产构件；本手册区分已实际验收的本机流程与尚未授权执行的 M5B 真实部署。
 
 ## 1. 部署前检查
 
@@ -12,7 +12,79 @@
 6. 外部 Provider 逐个完成许可、价格、预算和 `dry-run` 审批后才启用。
 7. 对外环境必须使用 `AUTH_PROVIDER=cloudbase`；`AUTH_PROVIDER=demo` 和 `X-Demo-User-Id` 只允许本机/CI。
 
-Docker Compose 文件只依赖标准容器、环境变量和卷，可迁移到不同主机；反向代理与证书由部署环境提供，不绑定云厂商 SDK。
+Docker Compose 文件只依赖标准容器、环境变量和卷，可迁移到不同主机；Caddy 在真实域名环境自动申请和续期 HTTPS 证书，不绑定云厂商 SDK。CloudBase 仍只负责身份认证，PostgreSQL、tenant、基金、RLS 和业务权限不迁移到 CloudBase。
+
+### M5A 零云费用生产式验收
+
+M5A 只在本机使用虚构数据验证生产构件，不购买服务器、不创建云数据库、不申请证书，也不对局域网或互联网开放。验收覆盖生产镜像、配置失败关闭、迁移、受限数据库账户、备份恢复、数据库故障和登录页；它不能替代 M5B 的上海真实部署验收。
+
+```bash
+m5() {
+  docker compose \
+    --env-file deploy/acceptance.env.example \
+    -f compose.production.yml \
+    -f deploy/compose.acceptance.yml "$@"
+}
+
+m5 config -q
+m5 build api frontend
+m5 up -d acceptance-db restore-db
+m5 run --rm --no-deps preflight
+m5 run --rm migrate
+m5 run --rm migrate python -m scripts.seed_demo
+m5 run --rm bootstrap-role
+m5 up -d api frontend proxy
+m5 ps
+```
+
+验收环境仅绑定 `127.0.0.1`，统一访问 `http://localhost:3100/login`。`/health` 只证明进程存活，`/ready` 还会实际执行数据库查询；停止测试数据库时应分别返回 `200` 和 `503`，数据库恢复后 `/ready` 应恢复为 `200`。容器内后端使用 `app`、前端使用 `node`，API 和前端端口不直接发布，只有 Caddy 入口可被本机访问。正式模式必须拒绝伪造的 `X-Demo-User-Id`。
+
+数据库备份采用 PostgreSQL 自定义格式并生成 SHA-256，恢复命令只接受 `/backups` 下的纯文件名，且目标数据库名称必须以 `_restore_test` 结尾：
+
+```bash
+m5 run --rm backup
+backup_path="$(ls -t backups/m5a-acceptance/*.dump | head -n 1)"
+export BACKUP_FILE="${backup_path##*/}"
+m5 run --rm restore-test
+unset BACKUP_FILE
+```
+
+必须再核对源库与隔离恢复库的 Alembic 版本及关键表数量。上述备份含虚构数据、保存在本机且未加密，只用于 M5A 工具验收；不得把这种做法照搬到真实数据环境。验收结束可用下面命令删除一次性容器和卷，该命令禁止用于真实部署：
+
+```bash
+m5 down -v --remove-orphans
+unset -f m5
+```
+
+### M5B 上海环境部署顺序（尚未授权执行）
+
+1. 项目负责人先确认上海服务器与 PostgreSQL 方案、域名和备案、备份存放位置及保留期，再购买或接受云服务条款；
+2. 复制 `deploy/production.env.example` 为 Git 忽略的 `deploy/production.env`，填写真实值并执行 `chmod 600 deploy/production.env`；不得把 Secret 放入命令历史、镜像、日志或 Git；
+3. 为 `BACKEND_IMAGE` 和 `FRONTEND_IMAGE` 使用固定提交对应的不可变标签，不使用漂移的 `latest`；
+4. 运行无网络、无数据库写入的 `preflight`，确认生产模式、CloudBase、PostgreSQL、HTTPS 和八个初始安全开关；
+5. 升级前创建数据库与许可范围内文件资产的异机加密备份，并在隔离数据库实际恢复；
+6. 用迁移账户执行 `migrate`，再用 `bootstrap-role` 收敛无超级用户、无 `BYPASSRLS` 的应用账户；API 永远使用受限应用账户；
+7. 启动 API、前端和 Caddy，验证真实证书、防火墙、`/health`、`/ready`、日志轮转、磁盘/服务告警和主机重启恢复；
+8. 用个人、基金、其他租户和平台管理员四类受邀 CloudBase 账户执行浏览器和 RLS 负向验收，全部通过后才可进入 M6。
+
+生产 Compose 的最小命令形态如下，但 M5B 决策完成前不要执行：
+
+```bash
+prod() {
+  docker compose --env-file deploy/production.env -f compose.production.yml "$@"
+}
+
+prod config -q
+prod build api frontend
+prod run --rm --no-deps preflight
+prod run --rm backup
+prod run --rm migrate
+prod run --rm bootstrap-role
+prod up -d api frontend proxy
+prod ps
+```
+
+升级失败时停止新版本容器，保留备份和日志，优先把两个镜像标签切回上一已验证提交，再运行 `prod up -d api frontend proxy`。不得为了快速回滚直接执行 Alembic downgrade；已存在真实或跨作用域数据时，降级可能丢失表或改写去重键。数据库结构不向前兼容时必须停止并另行评估，不能伪造迁移成功。真实停服只执行 `prod down`，不得带 `-v`。
 
 ## 2. 日常健康指标
 

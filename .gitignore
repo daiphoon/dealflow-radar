@@ -24,4 +24,6 @@ coverage/
 data/private/
 data/storage/
 backups/
+deploy/*.env
+deploy/*.secret
 .DS_Store

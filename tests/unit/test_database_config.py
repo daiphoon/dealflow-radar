@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.engine import make_url
 
-from backend.app.config import PublicationPolicy, Settings
+from backend.app.config import CloudBaseAuthPolicy, PublicationPolicy, Settings
 from scripts.bootstrap_local_database import bootstrap_application_role
 
 
@@ -70,6 +70,40 @@ def test_authentication_defaults_to_demo_and_cloudbase_requires_environment(
     monkeypatch.setenv("AUTH_PROVIDER", "cloudbase")
     with pytest.raises(ValueError, match="CLOUDBASE_ENV_ID"):
         Settings.from_env()
+
+
+def test_production_mode_requires_cloudbase_and_postgresql() -> None:
+    with pytest.raises(ValueError, match="AUTH_PROVIDER=cloudbase"):
+        Settings(
+            database_url="postgresql+psycopg://app:secret@db/example",
+            app_mode="production",
+            external_calls_enabled=False,
+            paid_api_calls_enabled=False,
+            auto_refresh_enabled=False,
+        )
+
+    with pytest.raises(ValueError, match="PostgreSQL DATABASE_URL"):
+        Settings(
+            database_url="sqlite:///production.db",
+            app_mode="production",
+            external_calls_enabled=False,
+            paid_api_calls_enabled=False,
+            auto_refresh_enabled=False,
+            auth_provider="cloudbase",
+            cloudbase_auth_policy=CloudBaseAuthPolicy(env_id="env-production"),
+        )
+
+    settings = Settings(
+        database_url="postgresql+psycopg://app:secret@db/example",
+        app_mode="production",
+        external_calls_enabled=False,
+        paid_api_calls_enabled=False,
+        auto_refresh_enabled=False,
+        auth_provider="cloudbase",
+        cloudbase_auth_policy=CloudBaseAuthPolicy(env_id="env-production"),
+    )
+
+    assert settings.app_mode == "production"
 
 
 def test_cloudbase_authentication_configuration_is_bounded(

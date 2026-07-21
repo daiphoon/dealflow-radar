@@ -1,0 +1,194 @@
+name: dealflow-radar-production
+
+x-backend-environment: &backend-environment
+  APP_MODE: ${APP_MODE:-production}
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+  AUTH_PROVIDER: ${AUTH_PROVIDER:-cloudbase}
+  CLOUDBASE_ENV_ID: ${CLOUDBASE_ENV_ID:?CLOUDBASE_ENV_ID is required}
+  CLOUDBASE_CLIENT_ID: ${CLOUDBASE_CLIENT_ID:-}
+  CLOUDBASE_AUTH_TIMEOUT_SECONDS: ${CLOUDBASE_AUTH_TIMEOUT_SECONDS:-5}
+  CLOUDBASE_AUTH_MAX_RESPONSE_BYTES: ${CLOUDBASE_AUTH_MAX_RESPONSE_BYTES:-64000}
+  CLOUDBASE_AUTH_USER_AGENT: ${CLOUDBASE_AUTH_USER_AGENT:-DealflowRadarAuth/1.0}
+  EXTERNAL_CALLS_ENABLED: ${EXTERNAL_CALLS_ENABLED:-false}
+  PAID_API_CALLS_ENABLED: ${PAID_API_CALLS_ENABLED:-false}
+  AUTO_REFRESH_ENABLED: ${AUTO_REFRESH_ENABLED:-false}
+  AUTO_PUBLISH_ENABLED: ${AUTO_PUBLISH_ENABLED:-false}
+  TRUSTED_SOURCE_CALLS_ENABLED: ${TRUSTED_SOURCE_CALLS_ENABLED:-false}
+  SOURCE_MONITOR_SCHEDULER_ENABLED: ${SOURCE_MONITOR_SCHEDULER_ENABLED:-false}
+  TIANYANCHA_IDENTITY_CALLS_ENABLED: ${TIANYANCHA_IDENTITY_CALLS_ENABLED:-false}
+  REVIEW_WORKBENCH_ENABLED: ${REVIEW_WORKBENCH_ENABLED:-false}
+  PERSONAL_MONTHLY_SEARCH_LIMIT: ${PERSONAL_MONTHLY_SEARCH_LIMIT:-100}
+  PERSONAL_WATCHLIST_COMPANY_LIMIT: ${PERSONAL_WATCHLIST_COMPANY_LIMIT:-20}
+  PERSONAL_MONTHLY_REPORT_LIMIT: ${PERSONAL_MONTHLY_REPORT_LIMIT:-10}
+  PERSONAL_MONTHLY_REQUEST_LIMIT: ${PERSONAL_MONTHLY_REQUEST_LIMIT:-5}
+  PERSONAL_REQUEST_COOLDOWN_HOURS: ${PERSONAL_REQUEST_COOLDOWN_HOURS:-24}
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "5"
+
+services:
+  api:
+    <<: *service-defaults
+    image: ${BACKEND_IMAGE:-dealflow-radar-backend:local}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment: *backend-environment
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - app
+
+  frontend:
+    <<: *service-defaults
+    image: ${FRONTEND_IMAGE:-dealflow-radar-frontend:local}
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      API_BASE_URL: http://api:8000
+      AUTH_PROVIDER: ${AUTH_PROVIDER:-cloudbase}
+    expose:
+      - "3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/login').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - app
+
+  proxy:
+    <<: *service-defaults
+    image: caddy:2.10.2-alpine
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS is required}
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${HTTP_PORT:-80}:80"
+      - "${BIND_ADDRESS:-0.0.0.0}:${HTTPS_PORT:-443}:443"
+      - "${BIND_ADDRESS:-0.0.0.0}:${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    networks:
+      - app
+
+  preflight:
+    image: ${BACKEND_IMAGE:-dealflow-radar-backend:local}
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      <<: *backend-environment
+      SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS is required}
+      ALLOW_INSECURE_LOCALHOST: ${ALLOW_INSECURE_LOCALHOST:-false}
+      DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL:?DATABASE_ADMIN_URL is required}
+      BACKUP_DATABASE_URL: ${BACKUP_DATABASE_URL:?BACKUP_DATABASE_URL is required}
+      APP_DATABASE_USER: ${APP_DATABASE_USER:?APP_DATABASE_USER is required}
+      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:?APP_DATABASE_PASSWORD is required}
+    command: ["python", "-m", "scripts.check_production_config"]
+    restart: "no"
+
+  migrate:
+    image: ${BACKEND_IMAGE:-dealflow-radar-backend:local}
+    profiles: ["tools"]
+    environment:
+      <<: *backend-environment
+      DATABASE_URL: ${DATABASE_ADMIN_URL:?DATABASE_ADMIN_URL is required}
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    networks:
+      - app
+
+  bootstrap-role:
+    image: ${BACKEND_IMAGE:-dealflow-radar-backend:local}
+    profiles: ["tools"]
+    environment:
+      DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL:?DATABASE_ADMIN_URL is required}
+      APP_DATABASE_USER: ${APP_DATABASE_USER:?APP_DATABASE_USER is required}
+      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:?APP_DATABASE_PASSWORD is required}
+    command: ["python", "-m", "scripts.bootstrap_local_database"]
+    restart: "no"
+    networks:
+      - app
+
+  backup:
+    image: postgres:16
+    profiles: ["tools"]
+    environment:
+      BACKUP_DATABASE_URL: ${BACKUP_DATABASE_URL:?BACKUP_DATABASE_URL is required}
+      BACKUP_DIR: /backups
+    volumes:
+      - ${BACKUP_DIRECTORY:-./backups/deployment}:/backups
+      - ./deploy/backup.sh:/usr/local/bin/dealflow-backup:ro
+    command: ["/usr/local/bin/dealflow-backup"]
+    restart: "no"
+    networks:
+      - app
+
+  restore-test:
+    image: postgres:16
+    profiles: ["tools"]
+    environment:
+      RESTORE_TEST_DATABASE_URL: ${RESTORE_TEST_DATABASE_URL:?RESTORE_TEST_DATABASE_URL is required}
+      BACKUP_FILE: ${BACKUP_FILE:-}
+    volumes:
+      - ${BACKUP_DIRECTORY:-./backups/deployment}:/backups:ro
+      - ./deploy/restore-test.sh:/usr/local/bin/dealflow-restore-test:ro
+    command: ["/usr/local/bin/dealflow-restore-test"]
+    restart: "no"
+    networks:
+      - app
+
+networks:
+  app:
+
+volumes:
+  caddy_data:
+  caddy_config:
