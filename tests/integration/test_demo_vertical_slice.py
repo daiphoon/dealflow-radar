@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from backend.app.demo import (
     ALPHA_FUND_ID,
@@ -44,6 +45,21 @@ def ingest(client: TestClient) -> dict[str, object]:
     response = client.post("/api/v1/demo/ingest", headers=ALPHA_HEADERS)
     assert response.status_code == 200
     return response.json()
+
+
+def test_liveness_and_database_readiness(
+    client: TestClient, migrated_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert client.get("/health").json() == {"status": "ok", "mode": "demo"}
+    assert client.get("/ready").json() == {"status": "ready", "database": "reachable"}
+
+    def fail_connection() -> None:
+        raise OperationalError("SELECT 1", {}, RuntimeError("database unavailable"))
+
+    monkeypatch.setattr(migrated_app.state.engine, "connect", fail_connection)
+    unavailable = client.get("/ready")
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"detail": "database_unavailable"}
 
 
 def test_ingest_is_idempotent_and_records_zero_external_cost(

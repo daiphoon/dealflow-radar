@@ -4,7 +4,8 @@ from collections.abc import Iterator
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.app.auth import (
@@ -210,6 +211,15 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok", "mode": resolved.app_mode}
+
+    @app.get("/ready")
+    def readiness() -> dict[str, str]:
+        try:
+            with app.state.engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+        except SQLAlchemyError as error:
+            raise HTTPException(status_code=503, detail="database_unavailable") from error
+        return {"status": "ready", "database": "reachable"}
 
     def require_cloudbase_provider() -> IdentityProvider:
         if resolved.auth_provider != "cloudbase" or app.state.identity_provider is None:

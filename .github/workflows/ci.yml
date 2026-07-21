@@ -94,5 +94,27 @@ jobs:
       - name: Check and build frontend
         working-directory: frontend
         run: |
+          npm audit --audit-level=high
           npm run typecheck
           npm run build
+
+      - name: Validate production deployment configuration
+        run: |
+          docker compose \
+            --env-file deploy/acceptance.env.example \
+            -f compose.production.yml \
+            -f deploy/compose.acceptance.yml \
+            config -q
+
+      - name: Build production container images
+        run: |
+          docker compose \
+            --env-file deploy/acceptance.env.example \
+            -f compose.production.yml \
+            -f deploy/compose.acceptance.yml \
+            build api frontend
+          docker compose \
+            --env-file deploy/acceptance.env.example \
+            -f compose.production.yml \
+            -f deploy/compose.acceptance.yml \
+            run --rm --no-deps preflight
