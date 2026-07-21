@@ -1,0 +1,109 @@
+services:
+  database:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DATABASE:?POSTGRES_DATABASE is required}
+      POSTGRES_USER: ${POSTGRES_OWNER_USER:?POSTGRES_OWNER_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_OWNER_PASSWORD:?POSTGRES_OWNER_PASSWORD is required}
+    volumes:
+      - production_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "${POSTGRES_OWNER_USER}" -d "${POSTGRES_DATABASE}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    stop_grace_period: 60s
+    networks:
+      - app
+
+  restore-db:
+    image: postgres:16
+    profiles: ["restore"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_RESTORE_DATABASE:?POSTGRES_RESTORE_DATABASE is required}
+      POSTGRES_USER: ${POSTGRES_RESTORE_USER:?POSTGRES_RESTORE_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_RESTORE_PASSWORD:?POSTGRES_RESTORE_PASSWORD is required}
+    volumes:
+      - production_restore_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "${POSTGRES_RESTORE_USER}" -d "${POSTGRES_RESTORE_DATABASE}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - app
+
+  api:
+    depends_on:
+      database:
+        condition: service_healthy
+
+  migrate:
+    depends_on:
+      database:
+        condition: service_healthy
+
+  bootstrap-role:
+    depends_on:
+      database:
+        condition: service_healthy
+
+  preflight:
+    environment:
+      DEPLOYMENT_PROFILE: ${DEPLOYMENT_PROFILE:-single_host}
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:?POSTGRES_DATABASE is required}
+      POSTGRES_OWNER_USER: ${POSTGRES_OWNER_USER:?POSTGRES_OWNER_USER is required}
+      POSTGRES_OWNER_PASSWORD: ${POSTGRES_OWNER_PASSWORD:?POSTGRES_OWNER_PASSWORD is required}
+      BACKUP_REQUIRE_ENCRYPTION: ${BACKUP_REQUIRE_ENCRYPTION:-true}
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:?BACKUP_AGE_RECIPIENT is required}
+      COS_BUCKET_ALIAS: ${COS_BUCKET_ALIAS:?COS_BUCKET_ALIAS is required}
+      COS_BACKUP_PREFIX: ${COS_BACKUP_PREFIX:-dealflow-radar/postgres}
+
+  backup:
+    image: dealflow-radar-backup-tools:local
+    build:
+      context: .
+      dockerfile: deploy/backup-tools.Dockerfile
+    environment:
+      BACKUP_REQUIRE_ENCRYPTION: ${BACKUP_REQUIRE_ENCRYPTION:-true}
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:?BACKUP_AGE_RECIPIENT is required}
+    depends_on:
+      database:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  restore-test:
+    image: dealflow-radar-backup-tools:local
+    build:
+      context: .
+      dockerfile: deploy/backup-tools.Dockerfile
+    profiles: ["restore"]
+    environment:
+      BACKUP_AGE_IDENTITY_FILE: /run/secrets/backup-age-identity
+    volumes:
+      - ${BACKUP_AGE_IDENTITY_PATH:?BACKUP_AGE_IDENTITY_PATH is required}:/run/secrets/backup-age-identity:ro
+    depends_on:
+      restore-db:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  production_postgres_data:
+  production_restore_data:

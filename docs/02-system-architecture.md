@@ -150,3 +150,5 @@ Demo 采用 FastAPI、Pydantic、SQLAlchemy、Alembic、PostgreSQL、Next.js、�
 ## 8. 可迁移部署
 
 容器只依赖标准环境变量、PostgreSQL 和挂载卷；域名、TLS、备份目标和 Secret 由部署环境注入。可部署在任意合规云服务器或合作者服务器，不写入云厂商专属 SDK；不使用家庭 Ubuntu 服务器，不以 Tailscale 作为访问或运维前提。详细运行流程见[运维手册](12-operations-runbook.md)。
+
+邀请测试的 M5B 采用独立 Compose 覆盖文件把 PostgreSQL 与应用放在同一上海主机，数据库没有主机端口，通用生产 Compose 仍可切换外部托管数据库。备份工具只把 `pg_dump` 临时明文写入受限目录，随后用 `age` 公钥加密并删除临时明文；COS 上传在宿主机使用已单独配置的官方 COSCLI，只接受 `.dump.age` 及校验元数据。解密私钥不进入生产主机。该单机拓扑不提供高可用，完整边界见 [ADR-0013](DECISIONS/ADR-0013-single-host-invitation-deployment.md)。

@@ -14,5 +14,6 @@
 | [ADR-0010](ADR-0010-licensed-business-identity-verification.md) | 授权商业工商数据可作为独立身份核验依据，但不得冒充政府官方来源或降低事件发布门槛 |
 | [ADR-0011](ADR-0011-global-company-identity-index.md) | 公司主档跨个人、机构和基金全局复用，已核验法定名称进入共享身份索引 |
 | [ADR-0012](ADR-0012-cloudbase-identity-local-authorization.md) | CloudBase 仅核验身份，用户邀请、角色、基金授权和 RLS 继续由本地系统管理 |
+| [ADR-0013](ADR-0013-single-host-invitation-deployment.md) | 邀请测试采用上海单机部署、客户端加密 COS 异机备份和独立的商业上线合规闸门 |
 
 状态均为“已接受”，适用于 `DEMO / VALIDATION`。改变决定需新增 ADR，不回改历史理由。
