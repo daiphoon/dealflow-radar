@@ -31,7 +31,7 @@ CloudBase 只接入身份认证，不创建或迁移数据库、云函数、业�
 3. 确认本地 `users` 中存在相同邮箱的唯一 active 记录，且对应 tenant 为 active；不得用同一邮箱跨 tenant 建两个待绑定用户；
 4. 不把 CloudBase group 当作本地角色，不在 CloudBase 迁移基金或公司权限。
 
-数据库先备份并升级到 `0015`。后端与前端使用相同的服务端环境配置；环境 ID 和客户端 ID 不是业务权限凭证，但仍应由部署配置管理，不写死在代码：
+数据库先备份并升级到当前 Alembic head（当前代码基线为 `0017`；`0015` 只是 CloudBase 认证首次落地时的历史基线）。后端与前端使用相同的服务端环境配置；环境 ID 和客户端 ID 不是业务权限凭证，但仍应由部署配置管理，不写死在代码：
 
 ```bash
 export AUTH_PROVIDER=cloudbase
@@ -47,7 +47,7 @@ export AUTO_PUBLISH_ENABLED=false
 
 至少验证：伪造 Demo Header 无效、四类用户权限符合本地角色和基金授权、无基金用户仍可查共享公司、其他 tenant 看不到私有数据、会话过期可刷新、退出后需要重新登录、`authentication_audit_logs` 有绑定/登录/刷新/退出记录。若出现 `authentication_challenge_required`，说明 CloudBase 要求图片验证码；V1 必须停止，不得绕过，另行评估官方安全挑战接入。
 
-故障时先保留 `0015` 数据库结构并回退应用。`AUTH_PROVIDER=demo` 只能作为绑定 `127.0.0.1` 的本地排障手段，不能用于已对外开放的环境。解绑或换绑 subject 不得直接清空字段，应先核对审计并另行执行受控纠错。
+故障时优先回退到与现有向前兼容数据库结构匹配的应用版本，不直接执行数据库 downgrade；`0016/0017` 已产生个人关注、申请、查看回执和报告后，降级会删除这些表及数据，必须先备份并单独评估。`AUTH_PROVIDER=demo` 只能作为绑定 `127.0.0.1` 的本地排障手段，不能用于已对外开放的环境。解绑或换绑 subject 不得直接清空字段，应先核对审计并另行执行受控纠错。
 
 ### Mock Worker V1（仅 Demo）
 

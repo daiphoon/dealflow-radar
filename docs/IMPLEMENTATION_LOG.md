@@ -179,3 +179,12 @@
 - 实际命令：`uv run --frozen ruff check backend migrations scripts tests`；`uv run --frozen ruff format --check backend migrations scripts tests`；`uv run --frozen pytest -q`；隔离 SQLite 空库升级至 `0017`、`alembic check`、`0017 → 0016 → 0017`；一次性 PostgreSQL 16 空库执行同样迁移往返、虚构数据导入、`NOBYPASSRLS` 应用角色和 RLS 套件；`npm audit --audit-level=high`、`npm run typecheck`、`npm run build`；临时 SQLite 虚构数据下的个人首次查看、共享事实晋升、二次查看、报告生成、其他用户拒绝和基金叠加浏览器验收；`git diff --check`。
 - 测试结果：Ruff 与格式检查通过；默认 Pytest 177 项通过、9 项显式 PostgreSQL 测试按预期跳过；隔离 PostgreSQL 的 27 张受保护表与 9 项 RLS/API 测试通过；SQLite/PostgreSQL 迁移、Schema 漂移和 `0017` 往返通过；TypeScript、Next.js 生产构建通过，依赖审计 0 个已知高风险漏洞。浏览器确认链接预取不会标记已读、新共享事实只提示一次、报告不含投资和私有候选、其他用户读取返回 404、机构用户仍能看到授权基金叠加，页面无横向溢出且控制台无警告或错误。严格自查修复了 Next.js 预取提前写入已读、React 开发模式重复 effect 卡在加载、公司切换后不重新记录、报告公司名未冻结以及新鲜度未按生成时点重算的问题。业务外部调用、付费调用、模型 Token、估算费用和自动发布均为 0。
 - 未解决阻塞：无。报告按产品决策保留生成时点快照，后续纠正或撤回不回写旧报告，界面已明示需以最新公司详情为准。PDF、多观察清单、个人备注、通知、商业订阅/支付和 LLM 报告不在 M4；FastAPI TestClient 上游弃用警告仍存在，不影响当前结果。
+
+## 2026-07-21｜M4 本地落地验收
+
+- 日期：2026-07-21
+- 任务：在不开发新功能的前提下，将持久化本地 PostgreSQL 从 `0015` 升级到 `0017`，验证个人关注、更新申请、查看回执、固定报告、机构基金叠加和跨用户/跨租户隔离，并保留可恢复的迁移前后备份。
+- 关键文件：`docs/10-implementation-plan.md`、`docs/12-operations-runbook.md`、`docs/IMPLEMENTATION_LOG.md`；数据库备份位于 Git 忽略的 `backups/m4-local-acceptance/`，不进入仓库。
+- 实际命令：迁移前后 `pg_dump -Fc`、`pg_restore -l`、SHA-256 与隔离库实际恢复；`alembic upgrade 0017`、`alembic current`、`alembic check`；非表所有者 `equity_app` 的新表授权与 RLS 负向查询；本机 FastAPI/Next.js 的无基金个人和机构 API、页面及控制台冒烟；迁移前后关键数据、用量和服务状态核对。
+- 测试结果：迁移前备份恢复为 `0015`，迁移后备份恢复为 `0017`；原有 12 家公司、3 个基金、13 条投资、12 条事件/原文/证据均未减少，两家真实公司与本地影子验证基金的两条关联保持不变。无基金个人完成精确查询、关注、重复更新申请复用、查看水位和幂等固定报告；个人详情及报告不含投资或私有线索，其他用户读取报告返回 404；同租户其他用户和其他租户通过 RLS 均看不到该个人记录；机构页面只叠加本基金投资。页面无横向溢出，控制台无警告或错误。本轮业务外部调用增量、付费调用、模型 Token、估算费用、刷新任务和自动发布均为 0，四个业务安全开关保持关闭。
+- 未解决阻塞：没有 M4 阻塞。持久化库保留 1 条 Demo 关注、1 条待处理 Demo 更新申请、2 个用户的查看水位/回执和 1 份个人 Demo 报告作为可重复查看的本地验收数据；真实新增共享事实后的“再次回访提示”未为本轮伪造数据，继续由已通过的确定性测试和既有浏览器验收覆盖。M5 启动前仍需项目负责人决定部署环境和备份策略。
