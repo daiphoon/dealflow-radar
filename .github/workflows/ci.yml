@@ -111,6 +111,17 @@ jobs:
             -f compose.production.yml \
             -f deploy/compose.acceptance.yml \
             config -q
+          docker compose --profile tools --profile restore \
+            --env-file deploy/single-host.env.example \
+            -f compose.production.yml \
+            -f deploy/compose.single-host.yml \
+            config -q
+          docker compose --profile tools --profile restore \
+            --env-file deploy/single-host.env.example \
+            -f compose.production.yml \
+            -f deploy/compose.single-host.yml \
+            config --format json | python -c \
+              'import json,sys; config=json.load(sys.stdin); database=config["services"]["database"]; backup=config["services"]["backup"]; assert not database.get("ports"); assert set(database["networks"]) == {"app"}; assert backup["read_only"] is True; assert backup["cap_drop"] == ["ALL"]'
 
       - name: Build production container images
         env:
@@ -125,6 +136,11 @@ jobs:
             -f compose.production.yml \
             -f deploy/compose.acceptance.yml \
             build api frontend
+          docker compose \
+            --env-file deploy/single-host.env.example \
+            -f compose.production.yml \
+            -f deploy/compose.single-host.yml \
+            build backup
           docker compose \
             --env-file deploy/acceptance.env.example \
             -f compose.production.yml \

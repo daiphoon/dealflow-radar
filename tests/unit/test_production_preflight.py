@@ -53,6 +53,8 @@ def test_production_preflight_accepts_safe_initial_configuration(
         "app_mode": "production",
         "auth_provider": "cloudbase",
         "database": "postgresql",
+        "deployment_profile": "external_database",
+        "backup_protection": "operator_managed",
         "site_scheme": "https",
         "initial_safety_switches": "closed",
     }
@@ -111,4 +113,62 @@ def test_production_preflight_separates_database_credentials(
     monkeypatch.setenv("APP_DATABASE_PASSWORD", "admin-secret")
 
     with pytest.raises(RuntimeError, match="users must differ"):
+        check_production_config()
+
+
+def _set_single_host_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_valid_environment(monkeypatch)
+    monkeypatch.setenv("DEPLOYMENT_PROFILE", "single_host")
+    monkeypatch.setenv("POSTGRES_DATABASE", "equity_radar")
+    monkeypatch.setenv("POSTGRES_OWNER_USER", "migration_user")
+    monkeypatch.setenv("POSTGRES_OWNER_PASSWORD", "admin-secret")
+    monkeypatch.setenv(
+        "DATABASE_ADMIN_URL",
+        "postgresql+psycopg://migration_user:admin-secret@database/equity_radar",
+    )
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+psycopg://equity_app:app-secret@database/equity_radar"
+    )
+    monkeypatch.setenv(
+        "BACKUP_DATABASE_URL",
+        "postgresql://migration_user:admin-secret@database/equity_radar",
+    )
+    monkeypatch.setenv("BACKUP_REQUIRE_ENCRYPTION", "true")
+    monkeypatch.setenv("BACKUP_AGE_RECIPIENT", "age1safeoperatorrecipient")
+    monkeypatch.setenv("COS_BUCKET_ALIAS", "private-backups")
+    monkeypatch.setenv("COS_BACKUP_PREFIX", "dealflow-radar/postgres")
+
+
+def test_production_preflight_accepts_single_host_with_encrypted_backup_requirement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_single_host_environment(monkeypatch)
+
+    result = check_production_config()
+
+    assert result["deployment_profile"] == "single_host"
+    assert result["backup_protection"] == "client_encryption_required"
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        (
+            "DATABASE_URL",
+            "postgresql+psycopg://equity_app:app-secret@db/equity_radar",
+            "internal database",
+        ),
+        ("BACKUP_REQUIRE_ENCRYPTION", "false", "encrypted backups"),
+        ("BACKUP_AGE_RECIPIENT", "not-an-age-recipient", "age public recipient"),
+        ("COS_BUCKET_ALIAS", "private/backups", "unsupported characters"),
+        ("COS_BACKUP_PREFIX", "../postgres", "safe relative"),
+    ],
+)
+def test_production_preflight_rejects_unsafe_single_host_configuration(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str, message: str
+) -> None:
+    _set_single_host_environment(monkeypatch)
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(RuntimeError, match=message):
         check_production_config()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from urllib.parse import urlsplit
 
 from sqlalchemy.engine import URL, make_url
@@ -19,6 +20,8 @@ INITIAL_DISABLED_SWITCHES = (
     "REVIEW_WORKBENCH_ENABLED",
 )
 PLACEHOLDER_MARKERS = ("replace_", "replace-", "changeme", "example.com", "example.invalid")
+SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+SAFE_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9/_-]+$")
 
 
 def _required(name: str) -> str:
@@ -107,11 +110,52 @@ def check_production_config() -> dict[str, object]:
     if str(backup_url.password) != str(admin_url.password):
         raise RuntimeError("BACKUP_DATABASE_URL password must match DATABASE_ADMIN_URL")
 
+    deployment_profile = os.getenv("DEPLOYMENT_PROFILE", "external_database").strip()
+    if deployment_profile not in {"external_database", "single_host"}:
+        raise RuntimeError("DEPLOYMENT_PROFILE must be external_database or single_host")
+    backup_protection = "operator_managed"
+    if deployment_profile == "single_host":
+        postgres_database = _required("POSTGRES_DATABASE")
+        postgres_owner_user = _required("POSTGRES_OWNER_USER")
+        postgres_owner_password = _required("POSTGRES_OWNER_PASSWORD")
+        if (
+            str(admin_url.host) != "database"
+            or str(app_url.host) != "database"
+            or str(backup_url.host) != "database"
+        ):
+            raise RuntimeError("single-host database URLs must use the internal database service")
+        if str(admin_url.database) != postgres_database:
+            raise RuntimeError("POSTGRES_DATABASE must match DATABASE_ADMIN_URL")
+        if (
+            str(admin_url.username) != postgres_owner_user
+            or str(admin_url.password) != postgres_owner_password
+        ):
+            raise RuntimeError("PostgreSQL owner credentials must match DATABASE_ADMIN_URL")
+        if os.getenv("BACKUP_REQUIRE_ENCRYPTION", "false").strip().lower() != "true":
+            raise RuntimeError("single-host deployment requires encrypted backups")
+        age_recipient = _required("BACKUP_AGE_RECIPIENT")
+        if not age_recipient.startswith("age1") or any(char.isspace() for char in age_recipient):
+            raise RuntimeError("BACKUP_AGE_RECIPIENT must be an age public recipient")
+        bucket_alias = _required("COS_BUCKET_ALIAS")
+        backup_prefix = os.getenv("COS_BACKUP_PREFIX", "dealflow-radar/postgres").strip()
+        if not SAFE_NAME_PATTERN.fullmatch(bucket_alias):
+            raise RuntimeError("COS_BUCKET_ALIAS contains unsupported characters")
+        if (
+            not SAFE_PREFIX_PATTERN.fullmatch(backup_prefix)
+            or backup_prefix.startswith("/")
+            or backup_prefix.endswith("/")
+            or ".." in backup_prefix
+        ):
+            raise RuntimeError("COS_BACKUP_PREFIX must be a safe relative object prefix")
+        backup_protection = "client_encryption_required"
+
     return {
         "status": "ok",
         "app_mode": settings.app_mode,
         "auth_provider": settings.auth_provider,
         "database": "postgresql",
+        "deployment_profile": deployment_profile,
+        "backup_protection": backup_protection,
         "site_scheme": site_scheme,
         "initial_safety_switches": "closed",
     }

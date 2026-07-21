@@ -1,6 +1,6 @@
 # 12 运维手册
 
-当前已有可本地运行的 Demo 和 M5A 生产构件；本手册区分已实际验收的本机流程与尚未授权执行的 M5B 真实部署。
+当前已有可本地运行的 Demo、已验收的 M5A 生产构件和 M5B 单机部署前置配置；本手册区分本机验证与尚未创建资源的 M5B 真实部署。
 
 ## 1. 部署前检查
 
@@ -58,8 +58,12 @@ unset -f m5
 
 ### M5B 上海环境部署顺序（尚未授权执行）
 
-1. 项目负责人先确认上海服务器与 PostgreSQL 方案、域名和备案、备份存放位置及保留期，再购买或接受云服务条款；
-2. 复制 `deploy/production.env.example` 为 Git 忽略的 `deploy/production.env`，填写真实值并执行 `chmod 600 deploy/production.env`；不得把 Secret 放入命令历史、镜像、日志或 Git；
+已接受的目标架构是上海轻量服务器、同机 PostgreSQL、个人主体备案和客户端加密 COS 备份。候选主域名为 `dealflowradar.cn`，建议同时注册 `dealflowradar.com`；两者在实际付款前都必须重新查询，不得把候选名称写成已持有资产。个人备案只服务非经营性邀请验证，M7 收费上线前必须重新完成企业主体和经营许可审查。
+
+腾讯云要求可用于备案的中国大陆轻量服务器至少购买三个月，资源只在项目负责人再次明确购买后创建。真实执行顺序如下：
+
+1. 购买上海轻量服务器和域名，完成域名实名、ICP 备案和 DNS；创建私有 COS 桶、14 个每日加 8 个每周恢复点的生命周期策略，以及只允许指定前缀读写的最小权限 COSCLI 凭据；
+2. 复制 `deploy/single-host.env.example` 为 Git 忽略的 `deploy/single-host.env`，填写真实值并执行 `chmod 600 deploy/single-host.env`；不得把 Secret 放入命令历史、镜像、日志或 Git；
 3. 为 `BACKEND_IMAGE` 和 `FRONTEND_IMAGE` 使用固定提交对应的不可变标签，不使用漂移的 `latest`；
 4. 运行无网络、无数据库写入的 `preflight`，确认生产模式、CloudBase、PostgreSQL、HTTPS 和八个初始安全开关；
 5. 升级前创建数据库与许可范围内文件资产的异机加密备份，并在隔离数据库实际恢复；
@@ -67,21 +71,45 @@ unset -f m5
 7. 启动 API、前端和 Caddy，验证真实证书、防火墙、`/health`、`/ready`、日志轮转、磁盘/服务告警和主机重启恢复；
 8. 用个人、基金、其他租户和平台管理员四类受邀 CloudBase 账户执行浏览器和 RLS 负向验收，全部通过后才可进入 M6。
 
-生产 Compose 的最小命令形态如下，但 M5B 决策完成前不要执行：
+单机方案使用专用环境文件和 Compose 覆盖。先复制示例并替换全部占位值，三个数据库密码必须彼此不同；写入数据库 URL 的密码如含保留字符，必须进行百分号编码：
 
 ```bash
 prod() {
-  docker compose --env-file deploy/production.env -f compose.production.yml "$@"
+  docker compose \
+    --env-file deploy/single-host.env \
+    -f compose.production.yml \
+    -f deploy/compose.single-host.yml "$@"
 }
 
 prod config -q
-prod build api frontend
+prod build api frontend backup
 prod run --rm --no-deps preflight
 prod run --rm backup
 prod run --rm migrate
 prod run --rm bootstrap-role
 prod up -d api frontend proxy
 prod ps
+```
+
+`age` 私钥必须在独立管理终端生成并离线备份，只把公钥形式的 recipient 写入 `BACKUP_AGE_RECIPIENT`。`BACKUP_AGE_IDENTITY_PATH` 只在隔离恢复时临时指向私钥文件；生产服务器日常运行不得保存该文件。备份成功后目录中只应出现 `.dump.age`、`.sha256` 和 `.plain.sha256`，不能留下 `.dump`：
+
+```bash
+prod run --rm backup
+export BACKUP_DIR='./backups/production'
+export BACKUP_FILE='替换为实际的.dump.age文件名'
+export COSCLI_CONFIG_PATH='./deploy/coscli.secret'
+export COS_BUCKET_ALIAS='替换为私有桶别名'
+export COS_BACKUP_PREFIX='dealflow-radar/postgres'
+./deploy/upload-backup-cos.sh
+unset BACKUP_DIR BACKUP_FILE COSCLI_CONFIG_PATH COS_BUCKET_ALIAS COS_BACKUP_PREFIX
+```
+
+COSCLI 配置必须通过官方工具交互生成并执行 `chmod 600`，不要把 Secret ID 或 Secret Key 放进上述命令。上传脚本不会删除本地文件，也不会上传解密私钥；实际 COS 创建前只能用假命令测试，不能宣称异机备份完成。首次恢复验收必须从 COS 下载加密文件到隔离环境，校验后临时挂载离线私钥，并使用 `--profile restore` 启动独立恢复库：
+
+```bash
+export BACKUP_FILE='替换为从COS下载的.dump.age文件名'
+prod --profile restore run --rm restore-test
+unset BACKUP_FILE
 ```
 
 升级失败时停止新版本容器，保留备份和日志，优先把两个镜像标签切回上一已验证提交，再运行 `prod up -d api frontend proxy`。不得为了快速回滚直接执行 Alembic downgrade；已存在真实或跨作用域数据时，降级可能丢失表或改写去重键。数据库结构不向前兼容时必须停止并另行评估，不能伪造迁移成功。真实停服只执行 `prod down`，不得带 `-v`。
