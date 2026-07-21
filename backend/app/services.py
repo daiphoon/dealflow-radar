@@ -2647,6 +2647,7 @@ def get_company_detail(
     )
     detail = CompanyDetail(
         id=company.id,
+        is_platform_shared=shared_company,
         legal_name=company.legal_name,
         credit_code=company.credit_code,
         registered_region=company.registered_region,

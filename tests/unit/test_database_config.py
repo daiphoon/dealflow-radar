@@ -36,6 +36,22 @@ def test_refresh_policy_rejects_non_positive_intervals(monkeypatch: pytest.Monke
         Settings.from_env()
 
 
+def test_personal_test_entitlements_are_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PERSONAL_MONTHLY_SEARCH_LIMIT", "101")
+    monkeypatch.setenv("PERSONAL_WATCHLIST_COMPANY_LIMIT", "21")
+    monkeypatch.setenv("PERSONAL_MONTHLY_REPORT_LIMIT", "11")
+    monkeypatch.setenv("PERSONAL_MONTHLY_REQUEST_LIMIT", "6")
+    monkeypatch.setenv("PERSONAL_REQUEST_COOLDOWN_HOURS", "25")
+
+    policy = Settings.from_env().personal_entitlement_policy
+
+    assert policy.monthly_search_limit == 101
+    assert policy.watchlist_company_limit == 21
+    assert policy.monthly_report_limit == 11
+    assert policy.monthly_request_limit == 6
+    assert policy.request_cooldown_hours == 25
+
+
 def test_review_workbench_requires_explicit_enable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("REVIEW_WORKBENCH_ENABLED", raising=False)
     assert Settings.from_env().review_workbench_enabled is False
