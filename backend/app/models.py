@@ -365,6 +365,87 @@ class PersonalUsageRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class PersonalCompanyViewState(TimestampMixin, Base):
+    __tablename__ = "personal_company_view_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id",
+            "company_id",
+            name="uq_personal_company_view_owner_company",
+        ),
+        Index(
+            "ix_personal_company_view_owner_updated",
+            "owner_user_id",
+            "updated_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), index=True
+    )
+    last_viewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PersonalEventViewReceipt(Base):
+    __tablename__ = "personal_event_view_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id",
+            "event_id",
+            name="uq_personal_event_view_owner_event",
+        ),
+        Index(
+            "ix_personal_event_view_owner_seen",
+            "owner_user_id",
+            "first_seen_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    event_id: Mapped[UUID] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class PersonalCompanyReport(Base):
+    __tablename__ = "personal_company_reports"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id",
+            "idempotency_key",
+            name="uq_personal_company_report_owner_idempotency",
+        ),
+        Index(
+            "ix_personal_company_report_owner_created",
+            "owner_user_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), index=True
+    )
+    company_legal_name: Mapped[str] = mapped_column(String(240))
+    report_version: Mapped[str] = mapped_column(String(32))
+    idempotency_key: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(280))
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    markdown: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    source_event_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class Investment(TimestampMixin, Base):
     __tablename__ = "investments"
     __table_args__ = (

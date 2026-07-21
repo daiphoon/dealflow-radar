@@ -14,21 +14,30 @@ from backend.app.models import (
     Company,
     CompanyAlias,
     CompanySnapshot,
+    Event,
+    PersonalCompanyReport,
     PersonalCompanyRequest,
+    PersonalCompanyViewState,
+    PersonalEventViewReceipt,
     PersonalUsageRecord,
     PersonalWatchlistItem,
     User,
     utc_now,
 )
 from backend.app.schemas import (
+    EventOut,
+    PersonalCompanyReportOut,
+    PersonalCompanyReportSummaryOut,
     PersonalCompanyRequestOut,
+    PersonalCompanyViewOut,
     PersonalQuotaOut,
     PersonalUsageSummaryOut,
     PersonalWatchlistItemOut,
 )
-from backend.app.services import user_has_role
+from backend.app.services import platform_shared_event_out, user_has_role
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+_REPORT_VERSION = "personal-company-v1"
 
 
 class PersonalFeatureLimitError(Exception):
@@ -514,3 +523,304 @@ def decide_platform_company_request(
     output = _request_out(request)
     session.commit()
     return output
+
+
+def _unseen_shared_events(
+    session: Session,
+    user: User,
+    company_id: UUID,
+) -> list[Event]:
+    seen_event_ids = select(PersonalEventViewReceipt.event_id).where(
+        PersonalEventViewReceipt.owner_user_id == user.id
+    )
+    return list(
+        session.scalars(
+            select(Event)
+            .where(
+                Event.company_id == company_id,
+                Event.status == "published",
+                Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+                Event.owner_user_id.is_(None),
+                Event.owner_tenant_id.is_(None),
+                ~Event.id.in_(seen_event_ids),
+            )
+            .order_by(Event.created_at.asc(), Event.id.asc())
+        )
+    )
+
+
+def record_personal_company_view(
+    session: Session,
+    user: User,
+    company_id: UUID,
+) -> PersonalCompanyViewOut:
+    if _shared_company(session, company_id) is None:
+        raise PersonalFeatureNotFoundError("company not found")
+    _lock_user(session, user)
+    state = session.scalar(
+        select(PersonalCompanyViewState)
+        .where(
+            PersonalCompanyViewState.owner_user_id == user.id,
+            PersonalCompanyViewState.company_id == company_id,
+        )
+        .with_for_update()
+    )
+    first_view = state is None
+    previous_viewed_at = state.last_viewed_at if state is not None else None
+    unseen_events = _unseen_shared_events(session, user, company_id)
+    event_outputs = (
+        []
+        if first_view
+        else [platform_shared_event_out(session, event, user) for event in unseen_events]
+    )
+    viewed_at = utc_now()
+    session.add_all(
+        [
+            PersonalEventViewReceipt(
+                owner_user_id=user.id,
+                event_id=event.id,
+                first_seen_at=viewed_at,
+            )
+            for event in unseen_events
+        ]
+    )
+    if state is None:
+        session.add(
+            PersonalCompanyViewState(
+                owner_user_id=user.id,
+                company_id=company_id,
+                last_viewed_at=viewed_at,
+            )
+        )
+    else:
+        state.last_viewed_at = viewed_at
+    output = PersonalCompanyViewOut(
+        company_id=company_id,
+        first_view=first_view,
+        previous_viewed_at=previous_viewed_at,
+        viewed_at=viewed_at,
+        new_events=event_outputs,
+    )
+    session.commit()
+    return output
+
+
+def _single_line(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _event_date_label(event: EventOut) -> str:
+    if event.occurred_at is not None:
+        return event.occurred_at.date().isoformat()
+    if event.published_on is not None:
+        return event.published_on.isoformat()
+    if event.published_at is not None:
+        return event.published_at.date().isoformat()
+    return "日期未公开"
+
+
+def _report_markdown(
+    company: Company,
+    snapshot: CompanySnapshot | None,
+    events: list[EventOut],
+    as_of: datetime,
+    refresh_policy: RefreshPolicy,
+) -> str:
+    lines = [
+        f"# {_single_line(company.legal_name)}",
+        "",
+        "> 本报告由已审核的平台共享事实按固定模板生成，不含投资建议、机构私有数据或未确认线索。",
+        "",
+        "## 工商主体身份",
+        "",
+        f"- 工商全称：{_single_line(company.legal_name)}",
+        f"- 统一社会信用代码：{company.credit_code or '暂无可靠公开数据'}",
+        f"- 注册地区：{company.registered_region or '暂无可靠公开数据'}",
+        f"- 工商主体身份：{'已核验' if company.identity_status == 'verified' else '待核验'}",
+        f"- 报告生成时间：{as_of.astimezone(_SHANGHAI).strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        "",
+        "## 已审核平台共享事件",
+        "",
+    ]
+    if not events:
+        lines.append("暂无已审核的平台共享事件。")
+    for event in events:
+        lines.extend(
+            [
+                f"### {_event_date_label(event)}｜{_single_line(event.title)}",
+                "",
+                f"- 分类：{event.event_type}",
+                f"- 方向：{event.direction}",
+                f"- 风险级别：{event.risk_severity}",
+                f"- 重要性：{event.materiality_score}/100",
+                f"- 可信度：{event.confidence_score}",
+                "",
+                event.summary.strip(),
+                "",
+                "证据引用：",
+            ]
+        )
+        if not event.evidence:
+            lines.append("- 暂无允许展示的证据引用。")
+        for evidence in event.evidence:
+            source_name = _single_line(evidence.source_name)
+            if evidence.link_display_allowed:
+                url = evidence.final_url or evidence.canonical_url
+                lines.append(f"- {source_name}：<{url}>（链接状态：{evidence.url_health_status}）")
+            else:
+                lines.append(f"- {source_name}（链接不开放；状态：{evidence.url_health_status}）")
+        lines.append("")
+    lines.extend(["## 数据状态与信息缺口", ""])
+    if snapshot is None:
+        lines.append("- 尚无平台共享公司快照。")
+    else:
+        lines.append(f"- 数据新鲜度：{_freshness_status(snapshot, refresh_policy, as_of)}")
+        lines.append(f"- 最后检查时间：{_aware_utc(snapshot.last_checked_at).isoformat()}")
+        for gap in snapshot.information_gaps:
+            lines.append(f"- 信息缺口：{_single_line(gap)}")
+    lines.extend(
+        [
+            "",
+            "---",
+            "本报告是生成时点的只读快照；后续新增、纠正或撤回请以公司最新详情为准。",
+        ]
+    )
+    return "\n".join(lines).strip() + "\n"
+
+
+def _report_summary_out(
+    report: PersonalCompanyReport,
+) -> PersonalCompanyReportSummaryOut:
+    return PersonalCompanyReportSummaryOut(
+        id=report.id,
+        company_id=report.company_id,
+        company_legal_name=report.company_legal_name,
+        report_version=report.report_version,
+        title=report.title,
+        as_of=report.as_of,
+        content_hash=report.content_hash,
+        source_event_count=len(report.source_event_ids),
+        created_at=report.created_at,
+    )
+
+
+def _report_out(
+    report: PersonalCompanyReport,
+    *,
+    reused: bool = False,
+) -> PersonalCompanyReportOut:
+    summary = _report_summary_out(report)
+    return PersonalCompanyReportOut(
+        **summary.model_dump(),
+        markdown=report.markdown,
+        source_event_ids=[UUID(event_id) for event_id in report.source_event_ids],
+        reused=reused,
+    )
+
+
+def create_personal_company_report(
+    session: Session,
+    user: User,
+    policy: PersonalEntitlementPolicy,
+    refresh_policy: RefreshPolicy,
+    company_id: UUID,
+    *,
+    idempotency_key: str,
+) -> PersonalCompanyReportOut:
+    company = _shared_company(session, company_id)
+    if company is None:
+        raise PersonalFeatureNotFoundError("company not found")
+    _lock_user(session, user)
+    existing = session.scalar(
+        select(PersonalCompanyReport).where(
+            PersonalCompanyReport.owner_user_id == user.id,
+            PersonalCompanyReport.idempotency_key == idempotency_key,
+        )
+    )
+    if existing is not None:
+        if existing.company_id != company_id:
+            raise PersonalRequestConflictError("idempotency key belongs to another report")
+        return _report_out(existing, reused=True)
+
+    event_rows = list(
+        session.scalars(
+            select(Event)
+            .where(
+                Event.company_id == company_id,
+                Event.status == "published",
+                Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+                Event.owner_user_id.is_(None),
+                Event.owner_tenant_id.is_(None),
+            )
+            .order_by(Event.occurred_at.desc(), Event.created_at.desc(), Event.id.asc())
+        )
+    )
+    events = [platform_shared_event_out(session, event, user) for event in event_rows]
+    snapshot = session.scalar(
+        select(CompanySnapshot).where(
+            CompanySnapshot.company_id == company_id,
+            CompanySnapshot.is_current.is_(True),
+            CompanySnapshot.visibility_scope == PLATFORM_SHARED_SCOPE,
+            CompanySnapshot.owner_user_id.is_(None),
+            CompanySnapshot.owner_tenant_id.is_(None),
+        )
+    )
+    as_of = utc_now()
+    markdown = _report_markdown(company, snapshot, events, as_of, refresh_policy)
+    report = PersonalCompanyReport(
+        owner_user_id=user.id,
+        company_id=company.id,
+        company_legal_name=company.legal_name,
+        report_version=_REPORT_VERSION,
+        idempotency_key=idempotency_key,
+        title=f"{_single_line(company.legal_name)}信息报告",
+        as_of=as_of,
+        markdown=markdown,
+        content_hash=_sha256(markdown),
+        source_event_ids=[str(event.id) for event in events],
+        created_at=as_of,
+    )
+    session.add(report)
+    session.flush()
+    _record_usage(
+        session,
+        user,
+        operation="company_report",
+        limit=policy.monthly_report_limit,
+        resource_id=report.id,
+        idempotency_key=_sha256(f"company-report:{report.id}"),
+        now=as_of,
+    )
+    output = _report_out(report)
+    session.commit()
+    return output
+
+
+def list_personal_company_reports(
+    session: Session,
+    user: User,
+) -> list[PersonalCompanyReportSummaryOut]:
+    reports = list(
+        session.scalars(
+            select(PersonalCompanyReport)
+            .where(PersonalCompanyReport.owner_user_id == user.id)
+            .order_by(PersonalCompanyReport.created_at.desc())
+        )
+    )
+    return [_report_summary_out(report) for report in reports]
+
+
+def get_personal_company_report(
+    session: Session,
+    user: User,
+    report_id: UUID,
+) -> PersonalCompanyReportOut:
+    report = session.scalar(
+        select(PersonalCompanyReport).where(
+            PersonalCompanyReport.id == report_id,
+            PersonalCompanyReport.owner_user_id == user.id,
+        )
+    )
+    if report is None:
+        raise PersonalFeatureNotFoundError("report not found")
+    return _report_out(report)

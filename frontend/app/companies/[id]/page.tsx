@@ -1,7 +1,10 @@
+import { randomBytes } from "node:crypto";
+
 import Link from "next/link";
 
 import {
   followCompany,
+  generateCompanyReport,
   requestCompanyRefresh,
   unfollowCompany,
 } from "@/app/personal-actions";
@@ -13,6 +16,8 @@ import {
   type Investment,
 } from "@/lib/api";
 import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
+
+import { PersonalChangePanel } from "./personal-change-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -210,12 +215,13 @@ export default async function CompanyDetailPage({
   const { id } = await params;
   const { result, error: actionError } = await searchParams;
   try {
-    const [company, watchlist, usage] = await Promise.all([
-      getCompany(id),
+    const company = await getCompany(id);
+    const [watchlist, usage] = await Promise.all([
       getPersonalWatchlist(),
       getPersonalUsage(),
     ]);
     const isFollowed = watchlist.some((item) => item.company_id === company.id);
+    const reportIdempotencyKey = randomBytes(32).toString("hex");
     const feedback = result
       ? result === "followed"
         ? "已加入个人关注。关注仅用于整理，不改变公司或私有数据权限。"
@@ -277,9 +283,21 @@ export default async function CompanyDetailPage({
                     申请人工更新
                   </button>
                 </form>
+                <form action={generateCompanyReport}>
+                  <input name="company_id" type="hidden" value={company.id} />
+                  <input
+                    name="idempotency_key"
+                    type="hidden"
+                    value={reportIdempotencyKey}
+                  />
+                  <button className="button button-secondary" type="submit">
+                    生成固定报告
+                  </button>
+                </form>
                 <span className="muted">
                   已关注 {usage.watchlist_companies.used}/{usage.watchlist_companies.limit} ·
-                  本月申请 {usage.company_requests.used}/{usage.company_requests.limit}
+                  本月申请 {usage.company_requests.used}/{usage.company_requests.limit} · 本月报告
+                  {usage.reports.used}/{usage.reports.limit}
                 </span>
               </>
             ) : (
@@ -303,6 +321,8 @@ export default async function CompanyDetailPage({
             </div>
           </section>
         ) : null}
+
+        {company.is_platform_shared ? <PersonalChangePanel companyId={company.id} /> : null}
 
         <section className="panel">
           <div className="panel-heading">

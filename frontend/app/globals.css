@@ -468,6 +468,13 @@ a {
   font-size: 24px;
 }
 
+.quota-card a {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
 .watchlist-card a {
   text-decoration: none;
 }
@@ -511,6 +518,84 @@ a {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+.report-list {
+  display: grid;
+  gap: 12px;
+}
+
+.report-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fbfcfa;
+}
+
+.report-list-item h3,
+.report-list-item p {
+  margin: 0;
+}
+
+.report-list-actions,
+.back-links,
+.report-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.report-list-actions a {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.report-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.report-meta {
+  justify-content: flex-end;
+}
+
+.report-meta span {
+  padding: 7px 10px;
+  border-radius: 10px;
+  color: #34443e;
+  background: #e7ece9;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.report-notice p {
+  margin-bottom: 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.report-markdown {
+  max-width: 100%;
+  margin: 0;
+  padding: 20px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: #26332f;
+  background: #f7f8f6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .review-status-in_review {
@@ -1178,13 +1263,16 @@ dd {
   .detail-hero,
   .panel-heading,
   .review-card-heading,
-  .evidence-footer {
+  .evidence-footer,
+  .report-list-item,
+  .report-hero {
     align-items: flex-start;
     flex-direction: column;
   }
 
   .personal-detail-controls,
-  .request-card > div:nth-child(2) {
+  .request-card > div:nth-child(2),
+  .report-meta {
     justify-items: start;
     text-align: left;
   }

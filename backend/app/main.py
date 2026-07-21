@@ -34,13 +34,17 @@ from backend.app.personal_features import (
     PersonalRequestTransitionError,
     add_personal_watchlist_item,
     create_inclusion_request,
+    create_personal_company_report,
     create_refresh_request,
     decide_platform_company_request,
+    get_personal_company_report,
     get_personal_usage_summary,
+    list_personal_company_reports,
     list_personal_company_requests,
     list_personal_watchlist,
     list_platform_company_requests,
     record_company_search,
+    record_personal_company_view,
     remove_personal_watchlist_item,
 )
 from backend.app.providers import MockResearchProvider
@@ -62,9 +66,13 @@ from backend.app.schemas import (
     IdentityResolutionIn,
     IdentityResolutionOut,
     IngestResult,
+    PersonalCompanyReportOut,
+    PersonalCompanyReportSummaryOut,
     PersonalCompanyRequestDecisionIn,
     PersonalCompanyRequestOut,
+    PersonalCompanyViewOut,
     PersonalInclusionRequestIn,
+    PersonalReportCreateIn,
     PersonalUsageSummaryOut,
     PersonalWatchlistItemOut,
     RefreshResult,
@@ -570,6 +578,77 @@ def create_app(
             raise HTTPException(status_code=404, detail="request not found") from error
         except PersonalRequestTransitionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/api/v1/me/companies/{company_id}/view",
+        response_model=PersonalCompanyViewOut,
+    )
+    def personal_company_view(
+        company_id: UUID,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalCompanyViewOut:
+        try:
+            return record_personal_company_view(session, user, company_id)
+        except PersonalFeatureNotFoundError as error:
+            raise HTTPException(status_code=404, detail="company not found") from error
+
+    @app.post(
+        "/api/v1/me/companies/{company_id}/reports",
+        response_model=PersonalCompanyReportOut,
+    )
+    def personal_company_report_create(
+        company_id: UUID,
+        payload: PersonalReportCreateIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalCompanyReportOut:
+        try:
+            return create_personal_company_report(
+                session,
+                user,
+                app.state.settings.personal_entitlement_policy,
+                app.state.settings.refresh_policy,
+                company_id,
+                idempotency_key=payload.idempotency_key,
+            )
+        except PersonalFeatureNotFoundError as error:
+            raise HTTPException(status_code=404, detail="company not found") from error
+        except PersonalRequestConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except PersonalFeatureLimitError as error:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "personal_usage_limit_reached",
+                    "feature": error.feature,
+                    "limit": error.limit,
+                },
+            ) from error
+
+    @app.get(
+        "/api/v1/me/reports",
+        response_model=list[PersonalCompanyReportSummaryOut],
+    )
+    def personal_company_reports(
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> list[PersonalCompanyReportSummaryOut]:
+        return list_personal_company_reports(session, user)
+
+    @app.get(
+        "/api/v1/me/reports/{report_id}",
+        response_model=PersonalCompanyReportOut,
+    )
+    def personal_company_report(
+        report_id: UUID,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalCompanyReportOut:
+        try:
+            return get_personal_company_report(session, user, report_id)
+        except PersonalFeatureNotFoundError as error:
+            raise HTTPException(status_code=404, detail="report not found") from error
 
     @app.get("/api/v1/companies/{company_id}", response_model=CompanyDetail)
     def company_detail(

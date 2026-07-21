@@ -6,12 +6,15 @@ import { redirect } from "next/navigation";
 import {
   ApiError,
   addPersonalWatchlistCompany,
+  createPersonalCompanyReport,
   createPersonalInclusionRequest,
   createPersonalRefreshRequest,
+  recordPersonalCompanyView,
   removePersonalWatchlistCompany,
 } from "@/lib/api";
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const sha256Pattern = /^[0-9a-f]{64}$/;
 
 function actionError(error: unknown): string {
   if (error instanceof ApiError) {
@@ -83,4 +86,28 @@ export async function requestCompanyRefresh(formData: FormData): Promise<void> {
   }
   revalidatePath("/watchlist");
   redirect(`/companies/${companyId}?result=${result}`);
+}
+
+export async function generateCompanyReport(formData: FormData): Promise<void> {
+  const companyId = String(formData.get("company_id") ?? "");
+  const idempotencyKey = String(formData.get("idempotency_key") ?? "");
+  if (!uuidPattern.test(companyId) || !sha256Pattern.test(idempotencyKey)) {
+    redirect("/?error=invalid_input");
+  }
+  let reportId: string;
+  let result: string;
+  try {
+    const report = await createPersonalCompanyReport(companyId, idempotencyKey);
+    reportId = report.id;
+    result = report.reused ? "report_reused" : "report_generated";
+  } catch (error) {
+    redirect(`/companies/${companyId}?error=${actionError(error)}`);
+  }
+  revalidatePath("/reports");
+  redirect(`/reports/${reportId}?result=${result}`);
+}
+
+export async function loadPersonalCompanyChanges(companyId: string) {
+  if (!uuidPattern.test(companyId)) throw new Error("invalid company id");
+  return recordPersonalCompanyView(companyId);
 }

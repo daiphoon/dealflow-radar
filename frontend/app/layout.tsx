@@ -28,6 +28,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
               <nav className="site-nav" aria-label="主导航">
                 <Link href="/">公司查询</Link>
                 <Link href="/watchlist">我的关注</Link>
+                <Link href="/reports">我的报告</Link>
                 <Link href="/reviews">人工审核</Link>
                 <Link href="/monitoring">来源监测</Link>
               </nav>
