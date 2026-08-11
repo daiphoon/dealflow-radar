@@ -215,3 +215,12 @@
 - 实际命令：Markdown 链接与地域旧文案检查、生产 Compose 配置解析、相关文档差异检查和 `git diff --check`。
 - 测试结果：当前单机生产 Compose 与全部 profile 解析通过，地域旧文案仅保留在历史 ADR/实施记录或明确的取代说明中，`git diff --check` 通过；未修改业务代码、数据库、迁移或本地数据，未创建云资源、未产生外部业务调用或费用。GitHub CI 以本 PR 的远端检查为准。
 - 未解决阻塞：香港服务器套餐、带宽、期限、价格、COS 地域和实际购买仍需项目负责人确认；真实 HTTPS、端口收口、异机恢复、告警、重启、大陆网络质量和四类 CloudBase 账户仍未验收，M5B 尚未完成。
+
+## 2026-08-11｜前端安全依赖修复
+
+- 日期：2026-08-11
+- 任务：修复 GitHub CI 新披露的 Next.js 及传递依赖高风险漏洞；将 Next.js 从 `16.2.10` 精确升级至 `16.3.0`，移除会把 PostCSS 固定在受影响版本的旧覆盖，不改业务代码或其他直接依赖。
+- 关键文件：`frontend/package.json`、`frontend/package-lock.json`、`frontend/next-env.d.ts`、`docs/IMPLEMENTATION_LOG.md`。
+- 实际命令：`npm install`；`npm ls next react react-dom nanoid postcss sharp --all`；`npm audit --audit-level=high`；Node.js 24 与 Node.js 20 下的 TypeScript 和 Next.js 生产构建；`git diff --check`。本机 Docker Desktop 未运行，因此容器镜像构建交由 GitHub CI 验证。
+- 测试结果：Next.js 为 `16.3.0`、PostCSS 为 `8.5.23`、Nano ID 为 `3.3.18`、Sharp 为 `0.35.3`；依赖审计为 0 个已知漏洞，TypeScript 和生产构建通过；未调用业务外部 Provider、付费 API 或模型，未修改数据库。
+- 未解决阻塞：本地未执行 Docker 镜像构建；GitHub CI 结果以本 PR 的远端检查记录为准。
