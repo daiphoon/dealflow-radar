@@ -206,3 +206,12 @@
 - 实际命令：Ruff 与格式检查；完整 Pytest；SQLite `base → 0017 → base` 与 Schema 漂移；前端依赖审计、TypeScript 和生产构建；生产及单机 Compose 解析和结构断言；备份工具镜像构建；两次一次性 PostgreSQL 16 的 `0017` 迁移、虚构数据导入、真实 `age` 加密备份、独立恢复库恢复、版本/公司数量和数据库端口核对；`git diff --check`。
 - 测试结果：完整 Pytest 200 项通过、9 项显式 PostgreSQL 测试按预期跳过，仅有 FastAPI TestClient 上游弃用警告；SQLite 迁移往返与漂移检查通过；前端依赖审计 0 个已知高风险漏洞，TypeScript 和 Next.js 构建通过。加固后的临时 PostgreSQL 源库和恢复库均为 `0017`、均含 10 家虚构公司；最终目录只含 `.dump.age` 及两份校验元数据，没有明文 `.dump`，数据库没有主机端口。自查修复了把“要求异机备份”误写成“异机备份已完成”的状态语义，并增加加密失败清理、符号链接拒绝、COSCLI 配置权限、只读工具容器和移除能力。临时容器、卷、备份和私钥全部删除；现有本地数据库未修改，业务外部调用、付费调用、模型 Token、自动刷新和自动发布均为 0。
 - 未解决阻塞：尚未购买或创建域名、上海服务器、COS 桶和凭据，未执行真实 HTTPS、ICP备案、COS 上传/下载、生命周期、异机恢复、告警、主机重启或四类真实 CloudBase 账户验收，因此 M5B 仍未完成且不得进入 M6。候选域名 `dealflowradar.cn` 和 `dealflowradar.com` 只经 WHOIS/RDAP 初查，购买时必须再次确认。GitHub CI 结果以本 PR 的远端检查记录为准，不以本地结果代替。
+
+## 2026-08-11｜前端安全依赖修复
+
+- 日期：2026-08-11
+- 任务：修复 GitHub CI 新披露的 Next.js 及传递依赖高风险漏洞；将 Next.js 从 `16.2.10` 精确升级至 `16.3.0`，移除会把 PostCSS 固定在受影响版本的旧覆盖，不改业务代码或其他直接依赖。
+- 关键文件：`frontend/package.json`、`frontend/package-lock.json`、`frontend/next-env.d.ts`、`docs/IMPLEMENTATION_LOG.md`。
+- 实际命令：`npm install`；`npm ls next react react-dom nanoid postcss sharp --all`；`npm audit --audit-level=high`；Node.js 24 与 Node.js 20 下的 TypeScript 和 Next.js 生产构建；`git diff --check`。本机 Docker Desktop 未运行，因此容器镜像构建交由 GitHub CI 验证。
+- 测试结果：Next.js 为 `16.3.0`、PostCSS 为 `8.5.23`、Nano ID 为 `3.3.18`、Sharp 为 `0.35.3`；依赖审计为 0 个已知漏洞，TypeScript 和生产构建通过；未调用业务外部 Provider、付费 API 或模型，未修改数据库。
+- 未解决阻塞：本地未执行 Docker 镜像构建；GitHub CI 结果以本 PR 的远端检查记录为准。
