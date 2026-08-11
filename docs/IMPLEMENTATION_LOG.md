@@ -207,6 +207,15 @@
 - 测试结果：完整 Pytest 200 项通过、9 项显式 PostgreSQL 测试按预期跳过，仅有 FastAPI TestClient 上游弃用警告；SQLite 迁移往返与漂移检查通过；前端依赖审计 0 个已知高风险漏洞，TypeScript 和 Next.js 构建通过。加固后的临时 PostgreSQL 源库和恢复库均为 `0017`、均含 10 家虚构公司；最终目录只含 `.dump.age` 及两份校验元数据，没有明文 `.dump`，数据库没有主机端口。自查修复了把“要求异机备份”误写成“异机备份已完成”的状态语义，并增加加密失败清理、符号链接拒绝、COSCLI 配置权限、只读工具容器和移除能力。临时容器、卷、备份和私钥全部删除；现有本地数据库未修改，业务外部调用、付费调用、模型 Token、自动刷新和自动发布均为 0。
 - 未解决阻塞：尚未购买或创建域名、上海服务器、COS 桶和凭据，未执行真实 HTTPS、ICP备案、COS 上传/下载、生命周期、异机恢复、告警、主机重启或四类真实 CloudBase 账户验收，因此 M5B 仍未完成且不得进入 M6。候选域名 `dealflowradar.cn` 和 `dealflowradar.com` 只经 WHOIS/RDAP 初查，购买时必须再次确认。GitHub CI 结果以本 PR 的远端检查记录为准，不以本地结果代替。
 
+## 2026-08-11｜M5B 香港邀请测试部署决策
+
+- 日期：2026-08-11
+- 任务：新增 ADR-0014，将 M5B 短期路线从上海个人备案调整为腾讯云中国香港邀请测试；保留单机 Compose、PostgreSQL 内网隔离和客户端加密异机备份，明确未来成立公司后再评估迁入大陆并办理企业 ICP 备案。本任务只更新架构和实施计划，不购买或创建云资源。
+- 关键文件：`docs/DECISIONS/ADR-0014-hong-kong-invitation-deployment.md`、`docs/10-implementation-plan.md`、`docs/12-operations-runbook.md`、`docs/02-system-architecture.md`、`docs/07-security-compliance.md`、`README.md`、`AGENTS.md` 和部署示例注释。
+- 实际命令：Markdown 链接与地域旧文案检查、生产 Compose 配置解析、相关文档差异检查和 `git diff --check`。
+- 测试结果：当前单机生产 Compose 与全部 profile 解析通过，地域旧文案仅保留在历史 ADR/实施记录或明确的取代说明中，`git diff --check` 通过；未修改业务代码、数据库、迁移或本地数据，未创建云资源、未产生外部业务调用或费用。GitHub CI 以本 PR 的远端检查为准。
+- 未解决阻塞：香港服务器套餐、带宽、期限、价格、COS 地域和实际购买仍需项目负责人确认；真实 HTTPS、端口收口、异机恢复、告警、重启、大陆网络质量和四类 CloudBase 账户仍未验收，M5B 尚未完成。
+
 ## 2026-08-11｜前端安全依赖修复
 
 - 日期：2026-08-11
