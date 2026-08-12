@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 
 import { authProvider, safeReturnPath } from "@/lib/auth-session";
 
@@ -91,7 +92,10 @@ export default async function LoginPage({
             </button>
           </form>
         )}
-        <p className="auth-note">登录不会迁移或复制现有 PostgreSQL 数据，也不会调用天眼查。</p>
+        <p className="auth-note">
+          登录不会迁移或复制现有 PostgreSQL 数据，也不会调用天眼查。登录前请阅读
+          <Link href="/trial-notice">《邀请测试说明与隐私告知》</Link>。
+        </p>
       </section>
     </main>
   );

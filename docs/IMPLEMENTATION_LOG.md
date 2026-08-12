@@ -224,3 +224,12 @@
 - 实际命令：`npm install`；`npm ls next react react-dom nanoid postcss sharp --all`；`npm audit --audit-level=high`；Node.js 24 与 Node.js 20 下的 TypeScript 和 Next.js 生产构建；`git diff --check`。本机 Docker Desktop 未运行，因此容器镜像构建交由 GitHub CI 验证。
 - 测试结果：Next.js 为 `16.3.0`、PostCSS 为 `8.5.23`、Nano ID 为 `3.3.18`、Sharp 为 `0.35.3`；依赖审计为 0 个已知漏洞，TypeScript 和生产构建通过；未调用业务外部 Provider、付费 API 或模型，未修改数据库。
 - 未解决阻塞：本地未执行 Docker 镜像构建；GitHub CI 结果以本 PR 的远端检查记录为准。
+
+## 2026-08-12｜M5B 香港邀请测试最终验收收口
+
+- 日期：2026-08-12
+- 任务：在已完成香港部署、四角色回归、加密 COS 恢复和主机重启验收的基础上，补齐免费资源告警、大陆三运营商持续拨测、未登录可读的邀请测试说明，以及健康检查/备份/COS 上传失败的飞书通知接线；不修改业务模型、数据库或迁移，不开启付费 Provider、自动刷新或自动发布。
+- 关键文件：`deploy/notify-feishu.sh`、`deploy/ops-alert.env.example`、`deploy/systemd/`、`frontend/app/trial-notice/page.tsx`、`frontend/app/login/page.tsx`、`frontend/app/layout.tsx`、`frontend/app/globals.css`、`frontend/next.config.ts`、`tests/unit/test_ops_alert_script.py`、`README.md`、`docs/07-security-compliance.md`、`docs/10-implementation-plan.md` 和 `docs/12-operations-runbook.md`。
+- 实际命令：腾讯云控制台创建轻量应用服务器系统盘告警和 15 天免费 CAT 页面性能任务；CAT 从上海电信、广州移动和北京联通三个 LastMile 节点运行；`uv run ruff check backend migrations scripts tests`、`uv run ruff format --check backend migrations scripts tests`、`uv run pytest -q`、`npm run typecheck`、`npm run build`、`npm audit --audit-level=high`、本地浏览器检查 `/trial-notice` 与登录页入口、远端 Ubuntu `systemd-analyze verify` 和 `git diff --check`。
+- 测试结果：系统盘利用率超过 75% 的策略 `policy-4dn96jd7` 已启用，系统预设接收人配置了邮件和短信渠道；本轮没有人为填满磁盘测试实际送达。CAT 任务 `task-2binh3i4` 显示 15 天免费试用且未升级付费版，每 5 分钟执行。首批 4 次大陆观测全部为正常，覆盖三家运营商，整体性能 717—36,983 ms，北京联通存在一次明显慢样本，继续留给 M6 观察。飞书脚本 dry-run、非法 URL 拒绝和 Webhook 不进入 curl 参数测试通过；完整 Pytest 204 项通过、9 项 PostgreSQL 显式测试按预期跳过，仅有既有 FastAPI TestClient 上游弃用警告；TypeScript、Next.js 生产构建和依赖审计通过，0 个已知漏洞。浏览器确认说明页和登录前链接可读；构建包含 `/trial-notice`。远端 `systemd-analyze verify` 能解析通知单元，只报告脚本尚未安装到目标路径的预期警告。Next.js 开发服务器曾自动生成嵌套代理说明文件，已删除并通过 `agentRules: false` 防止再次污染工作区，保持根 `AGENTS.md` 为唯一规则源。
+- 未解决阻塞：飞书自定义机器人 Webhook 尚未由项目负责人安全提供，因此通知接线只完成代码、测试和安装手册，尚未在香港服务器实际送达；本 PR 合并、部署并验证飞书测试消息前，M5B 仍保持“进行中”。CAT 免费试用剩余 15 天，到期会停止；不得未经确认升级专家版。系统盘/流量包告警与 CAT 免费拨测不产生业务 Provider、模型 Token或自动发布，当前业务安全开关继续保持关闭。
