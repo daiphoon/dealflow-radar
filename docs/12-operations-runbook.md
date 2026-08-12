@@ -1,6 +1,6 @@
 # 12 运维手册
 
-当前已有可本地运行的 Demo、已验收的 M5A 生产构件和 M5B 单机部署前置配置；ADR-0014 已确定下一步为腾讯云中国香港邀请测试环境，但云资源尚未购买。
+当前已有可本地运行的 Demo、已验收的 M5A 生产构件和腾讯云中国香港 M5B 邀请测试环境。香港环境已完成 HTTPS、端口收口、四类账户、主机重启、COS 加密备份下载与隔离恢复；本手册继续保留可重复部署和告警接线步骤。
 
 ## 1. 部署前检查
 
@@ -56,11 +56,11 @@ m5 down -v --remove-orphans
 unset -f m5
 ```
 
-### M5B 香港环境部署顺序（尚未购买资源）
+### M5B 香港环境部署顺序（已落地，保留作重建手册）
 
-已接受的目标架构是腾讯云中国香港服务器、同机 PostgreSQL、CloudBase 邀请认证和客户端加密 COS 备份。入口计划使用 `app.dealflowradar.cn`；香港资源不要求也不能用于大陆 ICP 备案，不接入中国大陆 CDN。该环境只服务邀请制 MVP，未来迁入大陆和收费前仍须成立并确认经营主体、完成企业备案和合规审查。
+当前架构是腾讯云中国香港服务器、同机 PostgreSQL、CloudBase 邀请认证和客户端加密 COS 备份。入口为 `app.dealflowradar.cn`；香港资源不要求也不能用于大陆 ICP 备案，不接入中国大陆 CDN。该环境只服务邀请制 MVP，未来迁入大陆和收费前仍须成立并确认经营主体、完成企业备案和合规审查。
 
-实际服务器套餐、带宽、期限、价格和 COS 地域由项目负责人购买前确认。真实执行顺序如下：
+服务器套餐、带宽、期限、价格和 COS 地域仍由项目负责人确认。重建时按以下顺序执行：
 
 1. 购买腾讯云中国香港服务器并固定公网地址；配置云安全组，只允许公网 `80/443`，SSH 仅走 Tailscale 或明确管理地址；创建私有 COS 桶、14 个每日加 8 个每周恢复点的生命周期策略，以及只允许指定前缀读写的最小权限 COSCLI 凭据；
 2. 复制 `deploy/single-host.env.example` 为 Git 忽略的 `deploy/single-host.env`，填写真实值并执行 `chmod 600 deploy/single-host.env`；不得把 Secret 放入命令历史、镜像、日志或 Git；
@@ -113,6 +113,43 @@ unset BACKUP_FILE
 ```
 
 升级失败时停止新版本容器，保留备份和日志，优先把两个镜像标签切回上一已验证提交，再运行 `prod up -d api frontend proxy`。不得为了快速回滚直接执行 Alembic downgrade；已存在真实或跨作用域数据时，降级可能丢失表或改写去重键。数据库结构不向前兼容时必须停止并另行评估，不能伪造迁移成功。真实停服只执行 `prod down`，不得带 `-v`。
+
+### M5B 告警和大陆网络拨测
+
+腾讯云可观测平台已经为香港轻量应用服务器启用系统盘利用率告警：超过 75% 时通过系统预设模板向 1 个接收人发送邮件和短信；账户原有的流量包余量告警保持启用。云拨测当前是 15 天免费试用，任务 `dealflow-radar-香港邀请测试-登录页` 每 5 分钟从上海电信、广州移动和北京联通三个 LastMile 节点访问登录页。首批 4 次观测全部标记正常，整体性能为 717—36,983 ms；其中北京联通出现一次 36,983 ms 的慢样本，说明“可访问”不等于“已经证明长期稳定”，M6 应继续观察分位数和失败率。试用到期会停止，未经项目负责人再次确认不得升级专家版或购买套餐。
+
+应用健康检查、数据库加密备份和 COS 上传失败使用独立飞书机器人通知。Webhook 是 Secret，只保存在服务器 `0600` 文件中；消息只包含环境、主机、失败的 systemd 单元和时间，不含用户、公司或业务正文。同一失败单元每小时最多触发两次通知，避免连续故障刷屏。
+
+合并本交付后，在服务器安装脚本和 systemd 接线：
+
+```bash
+cd /opt/dealflow-radar/current
+sudo install -o root -g root -m 0555 deploy/notify-feishu.sh \
+  /usr/local/sbin/dealflow-radar-notify-feishu
+sudo install -o root -g root -m 0644 deploy/systemd/dealflow-radar-alert@.service \
+  /etc/systemd/system/dealflow-radar-alert@.service
+for unit in \
+  dealflow-radar-health-check.service \
+  dealflow-radar-backup.service \
+  dealflow-radar-backup-upload@.service; do
+  sudo install -d -o root -g root -m 0755 "/etc/systemd/system/${unit}.d"
+  sudo install -o root -g root -m 0644 deploy/systemd/alert-on-failure.conf \
+    "/etc/systemd/system/${unit}.d/alert.conf"
+done
+sudo systemctl daemon-reload
+```
+
+先从 `deploy/ops-alert.env.example` 核对字段，再使用 `sudoedit /opt/dealflow-radar/shared/ops-alert.env` 安全写入飞书自定义机器人 Webhook，并执行 `sudo chmod 600`；不得把完整 URL 放进 shell 历史、Git 或聊天记录。未写入 Secret 前可执行本地 dry-run；写入后直接启动通知单元验证送达，不需要人为破坏 API 或备份：
+
+```bash
+OPS_ALERT_DRY_RUN=true \
+  /usr/local/sbin/dealflow-radar-notify-feishu dealflow-radar-health-check.service
+sudo systemctl start \
+  dealflow-radar-alert@dealflow-radar-health-check.service.service
+sudo journalctl -u 'dealflow-radar-alert@*' --since today --no-pager
+```
+
+飞书测试成功后核对三类源单元的 `OnFailure` 均非空。若通知脚本失败，源健康检查或备份仍保持原失败状态，详细原因留在 systemd journal；不得把 Webhook 打印到排障输出。
 
 ## 2. 日常健康指标
 

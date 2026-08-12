@@ -50,6 +50,12 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
           </div>
         </header>
         {children}
+        <footer className="site-footer">
+          <div className="shell site-footer-inner">
+            <span>邀请制 Demo / Validation</span>
+            <Link href="/trial-notice">邀请测试说明与隐私告知</Link>
+          </div>
+        </footer>
       </body>
     </html>
   );
