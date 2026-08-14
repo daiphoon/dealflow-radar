@@ -11,7 +11,7 @@
 - `POST /api/v1/auth/email/verification`：固定向 CloudBase 已存在账户发送邮箱验证码；不存在账户返回不可区分的通用响应；
 - `POST /api/v1/auth/email/login`：验证码换 token，并在该受控路径中完成唯一的首次本地邀请映射和登录审计；
 - `POST /api/v1/auth/token/refresh`：轮换 token 并按已绑定 subject 重新检查本地账户状态，不允许首次邮箱绑定；
-- `GET /api/v1/auth/me`：返回本地 user/tenant 身份，不返回 CloudBase group 作为业务角色；
+- `GET /api/v1/auth/me`：返回本地 user/tenant 身份和仍在有效期内的本地角色代码，供界面隐藏无关入口；不返回 CloudBase group 作为业务角色，服务端接口仍独立鉴权；
 - `POST /api/v1/auth/logout`：撤销 CloudBase 会话并追加退出审计。
 
 前端仅通过 Next.js 服务端动作调用登录接口，token 保存为 `HttpOnly` Cookie；不能进入 URL、浏览器 JavaScript、数据库或日志。同步公司查询仍不调用天眼查、搜索或模型。
@@ -29,7 +29,7 @@
 | `GET /me/company-requests` | 查看本人申请状态 | 其他个人和机构不可见 |
 | `GET /me/usage` | 当前测试权益用量 | 查询、关注、报告和申请分别返回已用、上限和剩余 |
 | `POST /me/companies/{company_id}/view` | 记录实际查看并返回新共享事实 | 首次只建基线；之后只返回本人未看过的 `published + platform_shared` 事件，并追加事件回执 |
-| `POST /me/companies/{company_id}/reports` | 生成个人固定报告 | 只读共享公司、共享快照和已发布共享事件；每月 10 次测试上限；幂等生成；不调用 LLM 或外部 Provider |
+| `POST /me/companies/{company_id}/reports` | 生成个人公司报告 | 只读共享公司、共享快照和已发布共享事件；V2 模板保存中文分类、方向、风险、可信度和数据状态；每月 10 次测试上限；幂等生成；不调用 LLM 或外部 Provider |
 | `GET /me/reports` 与 `GET /me/reports/{report_id}` | 查看本人报告 | 其他用户统一按不存在处理；报告是不可变时点快照 |
 | `GET/PATCH /platform/company-requests` | 平台处理用户主动提交的申请 | 仅 `platform_admin`；不扩张到个人关注或用量读取 |
 | `GET /companies/{id}` | 公司详情 | 已实现共享基础层独立读取，并按基金/owner 授权叠加私有层 |

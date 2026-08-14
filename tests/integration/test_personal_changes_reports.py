@@ -301,8 +301,14 @@ def test_fixed_report_is_idempotent_private_and_server_limited(
     assert "report-hidden" not in markdown
     assert "该内容仅供来源机构内部判断" not in markdown
     assert "投资金额" not in markdown
-    assert "不含投资建议、机构私有数据或未确认线索" in markdown
-    assert "- 数据新鲜度：stale" in markdown
+    assert "不包含投资建议、机构私有数据或未确认线索" in markdown
+    assert created.json()["report_version"] == "personal-company-v2"
+    assert "- 分类：产品与技术" in markdown
+    assert "- 方向：积极" in markdown
+    assert "- 风险级别：低风险" in markdown
+    assert "- 可信度：91%" in markdown
+    assert "- 数据更新状态：数据可能已过期" in markdown
+    assert "product_technology" not in markdown
 
     report_id = created.json()["id"]
     with migrated_app.state.session_factory() as session:

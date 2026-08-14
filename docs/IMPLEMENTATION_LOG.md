@@ -233,3 +233,12 @@
 - 实际命令：腾讯云控制台创建轻量应用服务器系统盘告警和 15 天免费 CAT 页面性能任务；CAT 从上海电信、广州移动和北京联通三个 LastMile 节点运行；`uv run ruff check backend migrations scripts tests`、`uv run ruff format --check backend migrations scripts tests`、`uv run pytest -q`、`npm run typecheck`、`npm run build`、`npm audit --audit-level=high`、本地浏览器检查 `/trial-notice` 与登录页入口、远端 Ubuntu `systemd-analyze verify` 和 `git diff --check`。
 - 测试结果：系统盘利用率超过 75% 的策略 `policy-4dn96jd7` 已启用，系统预设接收人配置了邮件和短信渠道；本轮没有人为填满磁盘测试实际送达。CAT 任务 `task-2binh3i4` 显示 15 天免费试用且未升级付费版，每 5 分钟执行。首批 4 次大陆观测全部为正常，覆盖三家运营商，整体性能 717—36,983 ms，北京联通存在一次明显慢样本，继续留给 M6 观察。飞书脚本 dry-run、非法 URL 拒绝和 Webhook 不进入 curl 参数测试通过；完整 Pytest 204 项通过、9 项 PostgreSQL 显式测试按预期跳过，仅有既有 FastAPI TestClient 上游弃用警告；TypeScript、Next.js 生产构建和依赖审计通过，0 个已知漏洞。浏览器确认说明页和登录前链接可读；构建包含 `/trial-notice`。远端 `systemd-analyze verify` 能解析通知单元，只报告脚本尚未安装到目标路径的预期警告。Next.js 开发服务器曾自动生成嵌套代理说明文件，已删除并通过 `agentRules: false` 防止再次污染工作区，保持根 `AGENTS.md` 为唯一规则源。
 - 未解决阻塞：飞书自定义机器人 Webhook 尚未由项目负责人安全提供，因此通知接线只完成代码、测试和安装手册，尚未在香港服务器实际送达；本 PR 合并、部署并验证飞书测试消息前，M5B 仍保持“进行中”。CAT 免费试用剩余 15 天，到期会停止；不得未经确认升级专家版。系统盘/流量包告警与 CAT 免费拨测不产生业务 Provider、模型 Token或自动发布，当前业务安全开关继续保持关闭。
+
+## 2026-08-14｜M6 首位个人账号界面与报告可读性修复
+
+- 日期：2026-08-14
+- 任务：根据首位无基金个人测试账号的实际浏览反馈，隐藏无权限的审核与来源监测入口，移除会误导用户复制虚构公司的搜索示例，将个人报告从原始 Markdown 改为安全结构化排版，并将分类、方向、风险、可信度、数据状态和链接状态转换为中文；常见专业缩写首次出现时补充中文说明。历史报告保持不可变，只在展示层兼容转换；新报告使用中文 V2 模板。
+- 关键文件：`backend/app/main.py`、`backend/app/services.py`、`backend/app/personal_features.py`、`backend/app/schemas.py`、`frontend/components/report-content.tsx`、`frontend/app/layout.tsx`、`frontend/app/page.tsx`、`frontend/app/reports/`、`frontend/app/globals.css`、`frontend/lib/api.ts`、相关测试和接口/实施文档。
+- 实际命令：针对性认证与个人报告 Pytest；完整 Ruff 与格式检查；完整 Pytest；前端依赖审计、TypeScript 和生产构建；使用一次性 SQLite `base → 0017`、虚构数据和无基金个人/管理员 Demo 身份完成浏览器结构与视觉验收；`git diff --check`。
+- 测试结果：完整 Pytest 204 项通过、9 项显式 PostgreSQL 测试按预期跳过，仅有既有 FastAPI TestClient 上游弃用警告；前端依赖审计为 0 个已知漏洞，类型检查和生产构建通过。浏览器确认普通个人不再看到管理入口，审核员入口仍保留；搜索框不再暗示虚构公司可查询；旧报告代码值、时间和链接状态正确转为中文，Markdown 符号不再显示，来源链接可点击，CGT 等常见缩写首次出现时附中文解释。临时数据库和服务在验收后删除或停止，未修改现有本地/香港数据；外部业务调用、付费调用、模型 Token 和自动发布均为 0。
+- 未解决阻塞：本轮没有发现权限或数据阻塞；最终 PR 合并并部署后仍需用真实 CloudBase 个人账号复核生产页面。缩写说明只覆盖当前内容中常见且语义确定的术语，产品/项目英文专名仍按来源保留；按项目负责人要求本轮不调整字体。M6 尚未获得独立外部用户反馈，不能据此进入 M7。

@@ -102,6 +102,7 @@ from backend.app.services import (
     list_companies,
     list_review_workbench,
     list_sharing_candidates,
+    list_user_role_codes,
     promote_private_event,
     reject_private_event,
     request_refresh,
@@ -350,13 +351,16 @@ def create_app(
             raise HTTPException(status_code=503, detail="authentication_unavailable") from error
 
     @app.get("/api/v1/auth/me", response_model=AuthMeOut)
-    def authentication_me(user: User = Depends(get_current_user)) -> AuthMeOut:
+    def authentication_me(
+        user: User = Depends(get_current_user), session: Session = Depends(get_session)
+    ) -> AuthMeOut:
         return AuthMeOut(
             user_id=user.id,
             tenant_id=user.tenant_id,
             email=user.email,
             display_name=user.display_name,
             auth_provider=user.auth_provider or "demo",
+            roles=list_user_role_codes(session, user.id),
         )
 
     @app.post("/api/v1/auth/logout", status_code=204)

@@ -636,20 +636,80 @@ a {
   line-height: 1.7;
 }
 
-.report-markdown {
+.report-content {
   max-width: 100%;
   margin: 0;
-  padding: 20px;
-  overflow-x: auto;
-  border: 1px solid var(--line);
-  border-radius: 14px;
   color: #26332f;
-  background: #f7f8f6;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.8;
-  white-space: pre-wrap;
+  line-height: 1.9;
   overflow-wrap: anywhere;
+}
+
+.report-content > :first-child {
+  margin-top: 0;
+}
+
+.report-content > :last-child {
+  margin-bottom: 0;
+}
+
+.report-content h3 {
+  margin: 30px 0 12px;
+  color: #16251f;
+  font-size: 22px;
+  line-height: 1.45;
+}
+
+.report-content h4 {
+  margin: 24px 0 10px;
+  color: #1f332b;
+  font-size: 18px;
+  line-height: 1.55;
+}
+
+.report-content p,
+.report-content ul,
+.report-content blockquote {
+  margin: 0 0 18px;
+}
+
+.report-content ul {
+  padding: 16px 18px 16px 40px;
+  border-radius: 14px;
+  background: #f7f8f6;
+}
+
+.report-content li + li {
+  margin-top: 8px;
+}
+
+.report-content blockquote {
+  padding: 14px 16px;
+  border-left: 4px solid var(--accent);
+  border-radius: 0 12px 12px 0;
+  color: #40514b;
+  background: #f1f5f2;
+}
+
+.report-content a {
+  color: var(--accent);
+  font-weight: 800;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.report-content hr {
+  margin: 28px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.report-term {
+  font-weight: 700;
+}
+
+.report-term-explanation {
+  color: #53645e;
+  font-weight: 400;
 }
 
 .review-status-in_review {

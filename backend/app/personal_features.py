@@ -37,7 +37,46 @@ from backend.app.schemas import (
 from backend.app.services import platform_shared_event_out, user_has_role
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_REPORT_VERSION = "personal-company-v1"
+_REPORT_VERSION = "personal-company-v2"
+
+_EVENT_TYPE_LABELS = {
+    "financial_operation": "财务与经营",
+    "financing_cap_table": "融资与股权",
+    "contract_commercial": "合同与商业进展",
+    "product_technology": "产品与技术",
+    "governance_people": "治理与人员",
+    "legal_compliance": "司法与合规",
+    "capacity_assets": "产能与资产",
+    "exit_liquidity": "退出与流动性",
+    "information_quality": "信息质量",
+}
+_DIRECTION_LABELS = {
+    "positive": "积极",
+    "negative": "消极",
+    "neutral": "中性",
+    "mixed": "有利有弊",
+    "unknown": "影响方向待确认",
+}
+_RISK_LABELS = {
+    "none": "暂无显著风险",
+    "low": "低风险",
+    "moderate": "中等风险",
+    "high": "高风险",
+    "critical": "严重风险",
+}
+_FRESHNESS_LABELS = {
+    "fresh": "数据较新",
+    "stale": "数据可能已过期",
+    "refreshing": "正在后台更新",
+    "unknown": "尚未确认",
+    "budget_deferred": "因预算限制暂缓更新",
+}
+_LINK_STATUS_LABELS = {
+    "healthy": "链接正常",
+    "unchecked": "尚未自动检查",
+    "broken": "链接已失效",
+    "unavailable": "当前无法访问",
+}
 
 
 class PersonalFeatureLimitError(Exception):
@@ -611,11 +650,11 @@ def _single_line(value: str) -> str:
 
 def _event_date_label(event: EventOut) -> str:
     if event.occurred_at is not None:
-        return event.occurred_at.date().isoformat()
+        return _aware_utc(event.occurred_at).astimezone(_SHANGHAI).strftime("%Y年%m月%d日")
     if event.published_on is not None:
-        return event.published_on.isoformat()
+        return event.published_on.strftime("%Y年%m月%d日")
     if event.published_at is not None:
-        return event.published_at.date().isoformat()
+        return _aware_utc(event.published_at).astimezone(_SHANGHAI).strftime("%Y年%m月%d日")
     return "日期未公开"
 
 
@@ -629,7 +668,7 @@ def _report_markdown(
     lines = [
         f"# {_single_line(company.legal_name)}",
         "",
-        "> 本报告由已审核的平台共享事实按固定模板生成，不含投资建议、机构私有数据或未确认线索。",
+        "> 本报告根据平台已经审核的信息生成，不包含投资建议、机构私有数据或未确认线索。",
         "",
         "## 工商主体身份",
         "",
@@ -637,23 +676,23 @@ def _report_markdown(
         f"- 统一社会信用代码：{company.credit_code or '暂无可靠公开数据'}",
         f"- 注册地区：{company.registered_region or '暂无可靠公开数据'}",
         f"- 工商主体身份：{'已核验' if company.identity_status == 'verified' else '待核验'}",
-        f"- 报告生成时间：{as_of.astimezone(_SHANGHAI).strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        f"- 报告生成时间：{as_of.astimezone(_SHANGHAI).strftime('%Y年%m月%d日 %H:%M')}",
         "",
-        "## 已审核平台共享事件",
+        "## 已审核的重要信息",
         "",
     ]
     if not events:
-        lines.append("暂无已审核的平台共享事件。")
+        lines.append("暂无已审核的重要信息。")
     for event in events:
         lines.extend(
             [
                 f"### {_event_date_label(event)}｜{_single_line(event.title)}",
                 "",
-                f"- 分类：{event.event_type}",
-                f"- 方向：{event.direction}",
-                f"- 风险级别：{event.risk_severity}",
+                f"- 分类：{_EVENT_TYPE_LABELS.get(event.event_type, '其他')}",
+                f"- 方向：{_DIRECTION_LABELS.get(event.direction, '影响方向待确认')}",
+                f"- 风险级别：{_RISK_LABELS.get(event.risk_severity, '风险待确认')}",
                 f"- 重要性：{event.materiality_score}/100",
-                f"- 可信度：{event.confidence_score}",
+                f"- 可信度：{event.confidence_score * 100:.0f}%",
                 "",
                 event.summary.strip(),
                 "",
@@ -666,23 +705,31 @@ def _report_markdown(
             source_name = _single_line(evidence.source_name)
             if evidence.link_display_allowed:
                 url = evidence.final_url or evidence.canonical_url
-                lines.append(f"- {source_name}：<{url}>（链接状态：{evidence.url_health_status}）")
+                link_status = _LINK_STATUS_LABELS.get(evidence.url_health_status, "状态尚未确认")
+                lines.append(f"- {source_name}：<{url}>（链接状态：{link_status}）")
             else:
-                lines.append(f"- {source_name}（链接不开放；状态：{evidence.url_health_status}）")
+                link_status = _LINK_STATUS_LABELS.get(evidence.url_health_status, "状态尚未确认")
+                lines.append(f"- {source_name}（链接不开放；状态：{link_status}）")
         lines.append("")
     lines.extend(["## 数据状态与信息缺口", ""])
     if snapshot is None:
-        lines.append("- 尚无平台共享公司快照。")
+        lines.append("- 尚无可展示的数据概况。")
     else:
-        lines.append(f"- 数据新鲜度：{_freshness_status(snapshot, refresh_policy, as_of)}")
-        lines.append(f"- 最后检查时间：{_aware_utc(snapshot.last_checked_at).isoformat()}")
+        freshness_status = _freshness_status(snapshot, refresh_policy, as_of)
+        lines.append(f"- 数据更新状态：{_FRESHNESS_LABELS.get(freshness_status, '尚未确认')}")
+        last_checked_label = (
+            _aware_utc(snapshot.last_checked_at)
+            .astimezone(_SHANGHAI)
+            .strftime("%Y年%m月%d日 %H:%M")
+        )
+        lines.append(f"- 最后检查时间：{last_checked_label}")
         for gap in snapshot.information_gaps:
             lines.append(f"- 信息缺口：{_single_line(gap)}")
     lines.extend(
         [
             "",
             "---",
-            "本报告是生成时点的只读快照；后续新增、纠正或撤回请以公司最新详情为准。",
+            "本报告记录生成时的信息；后续新增、纠正或撤回请以公司最新详情为准。",
         ]
     )
     return "\n".join(lines).strip() + "\n"
