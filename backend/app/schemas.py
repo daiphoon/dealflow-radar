@@ -553,3 +553,4 @@ class AuthMeOut(BaseModel):
     email: str
     display_name: str
     auth_provider: str
+    roles: list[str]

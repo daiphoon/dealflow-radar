@@ -258,7 +258,7 @@ export default async function CompanyDetailPage({
               {identityLabel(company.identity_status, company.identity_verification_basis)} · 数据基准日
               {formatDate(company.data_as_of)} · 最后检查 {formatDate(company.last_checked_at)}
             </p>
-            <p>统一社会信用代码：{company.credit_code ?? "Demo 未设置"}</p>
+            <p>统一社会信用代码：{company.credit_code ?? "暂未收录"}</p>
             {company.official_website ? (
               <a href={company.official_website} rel="noreferrer" target="_blank">
                 官方网站 ↗
@@ -291,7 +291,7 @@ export default async function CompanyDetailPage({
                     value={reportIdempotencyKey}
                   />
                   <button className="button button-secondary" type="submit">
-                    生成固定报告
+                    生成公司报告
                   </button>
                 </form>
                 <span className="muted">

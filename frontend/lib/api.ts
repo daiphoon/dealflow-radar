@@ -4,6 +4,15 @@ import { cookies } from "next/headers";
 
 import { ACCESS_TOKEN_COOKIE, authProvider } from "@/lib/auth-session";
 
+export type AuthMe = {
+  user_id: string;
+  tenant_id: string;
+  email: string;
+  display_name: string;
+  auth_provider: string;
+  roles: string[];
+};
+
 export type CompanyListItem = {
   id: string;
   legal_name: string;
@@ -404,6 +413,10 @@ async function deleteRequest(path: string): Promise<void> {
 
 export function getCompanies(): Promise<CompanyListItem[]> {
   return getJson("/api/v1/companies");
+}
+
+export function getAuthenticationMe(): Promise<AuthMe> {
+  return getJson("/api/v1/auth/me");
 }
 
 export function searchCompanies(query: string): Promise<CompanySearchResult[]> {

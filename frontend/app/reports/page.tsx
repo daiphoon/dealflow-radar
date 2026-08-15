@@ -23,9 +23,9 @@ export default async function PersonalReportsPage() {
       <main className="shell page-stack">
         <section className="hero">
           <p className="eyebrow">个人私有</p>
-          <h1>我的固定报告</h1>
+          <h1>我的公司报告</h1>
           <p>
-            报告只使用生成时点的已审核平台共享事实，不包含基金投资数据、机构资料或未确认线索。
+            报告只使用生成时已经审核、允许展示的信息，不包含基金投资数据、机构资料或未确认线索。
           </p>
         </section>
 
@@ -41,7 +41,7 @@ export default async function PersonalReportsPage() {
           </div>
           {reports.length === 0 ? (
             <div className="empty-state">
-              尚未生成报告。请从平台共享公司的详情页选择“生成固定报告”。
+              尚未生成报告。请从公司详情页选择“生成公司报告”。
             </div>
           ) : (
             <div className="report-list">
@@ -51,7 +51,7 @@ export default async function PersonalReportsPage() {
                     <p className="eyebrow">{formatDateTime(report.created_at)}</p>
                     <h3>{report.title}</h3>
                     <p className="muted">
-                      {report.source_event_count} 条共享事件 · 模板 {report.report_version}
+                      {report.source_event_count} 条已审核事件
                     </p>
                   </div>
                   <div className="report-list-actions">

@@ -466,6 +466,25 @@ def user_has_role(session: Session, user_id: UUID, role_code: str) -> bool:
     return bool(count)
 
 
+def list_user_role_codes(session: Session, user_id: UUID) -> list[str]:
+    return list(
+        session.scalars(
+            select(Role.code)
+            .distinct()
+            .select_from(UserRoleAssignment)
+            .join(Role, Role.id == UserRoleAssignment.role_id)
+            .where(
+                UserRoleAssignment.user_id == user_id,
+                or_(
+                    UserRoleAssignment.valid_until.is_(None),
+                    UserRoleAssignment.valid_until > utc_now(),
+                ),
+            )
+            .order_by(Role.code)
+        )
+    )
+
+
 def _normalized_identity_text(value: str) -> str:
     return "".join(value.split()).casefold()
 

@@ -155,6 +155,7 @@ def test_cloudbase_identity_replaces_forgeable_demo_header(migrated_app: FastAPI
         assert alpha.status_code == 200
         assert alpha.json()["user_id"] == str(ALPHA_USER_ID)
         assert alpha.json()["tenant_id"] == str(ALPHA_TENANT_ID)
+        assert alpha.json()["roles"] == ["institution_admin", "reviewer"]
 
         beta_reviews = client.get(
             "/api/v1/reviews",
@@ -424,6 +425,13 @@ def test_cloudbase_identity_preserves_four_local_authorization_personas(
     )
     _bind_identity(app, platform_user_id, "subject-platform")
     with TestClient(app) as client:
+        personal_me = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": "Bearer access-personal"},
+        )
+        assert personal_me.status_code == 200
+        assert personal_me.json()["roles"] == []
+
         personal_search = client.get(
             "/api/v1/companies/search",
             params={"q": DEMO_SHARED_COMPANY_CREDIT_CODE},
@@ -473,5 +481,11 @@ def test_cloudbase_identity_preserves_four_local_authorization_personas(
             headers={"Authorization": "Bearer access-platform"},
         )
         assert platform_sources.status_code == 200
+        platform_me = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": "Bearer access-platform"},
+        )
+        assert platform_me.status_code == 200
+        assert platform_me.json()["roles"] == ["platform_admin"]
 
     app.state.engine.dispose()

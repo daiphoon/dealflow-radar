@@ -77,8 +77,7 @@ export default async function CompanyListPage({
           <p className="eyebrow">未上市公司 · 平台共享档案</p>
           <h1>直接查询公司</h1>
           <p>
-            按工商全称、统一社会信用代码或已核实别名精确查询。页面只读取数据库，
-            不会同步调用搜索、模型或付费数据源。
+            按工商全称、统一社会信用代码或已核实别名精确查询。查询会直接显示平台已经审核并保存的信息。
           </p>
         </section>
 
@@ -106,7 +105,7 @@ export default async function CompanyListPage({
                 id="company-query"
                 maxLength={240}
                 name="q"
-                placeholder="例如：示例星河科技一号有限公司"
+                placeholder="请输入准确的工商全称或18位统一社会信用代码"
                 required
               />
               <button className="button button-search" type="submit">
@@ -172,7 +171,7 @@ export default async function CompanyListPage({
                       </div>
                       <h3>{company.legal_name}</h3>
                       <p className="card-event">
-                        信用代码：{company.credit_code ?? "Demo 未设置"}
+                        信用代码：{company.credit_code ?? "暂未收录"}
                         <br />
                         注册地区：{company.registered_region ?? "未知"}
                       </p>
@@ -240,7 +239,7 @@ export default async function CompanyListPage({
         <section className="hero">
           <p className="eyebrow">服务状态</p>
           <h1>暂时无法读取公司数据</h1>
-          <p>请确认后端已启动、数据库迁移及 Demo 种子导入已完成。</p>
+          <p>系统暂时无法读取公司信息，请稍后再试。</p>
         </section>
       </main>
     );

@@ -87,7 +87,7 @@ export default async function WatchlistPage({
             </strong>
           </article>
           <article className="quota-card">
-            <span>本月固定报告</span>
+            <span>本月公司报告</span>
             <strong>
               {usage.reports.used} / {usage.reports.limit}
             </strong>
