@@ -38,6 +38,7 @@ from backend.app.personal_features import (
     create_personal_company_report,
     create_refresh_request,
     decide_platform_company_request,
+    ensure_company_search_available,
     get_personal_company_report,
     get_personal_usage_summary,
     list_personal_company_reports,
@@ -64,6 +65,7 @@ from backend.app.schemas import (
     CompanyDetail,
     CompanyListItem,
     CompanySearchResult,
+    CompanySuggestion,
     IdentityResolutionIn,
     IdentityResolutionOut,
     IngestResult,
@@ -109,6 +111,7 @@ from backend.app.services import (
     resolve_identity_review,
     retract_shared_event,
     search_companies,
+    suggest_companies,
     user_has_role,
 )
 from backend.app.source_monitoring import (
@@ -417,6 +420,30 @@ def create_app(
             results = search_companies(session, user, q, settings.refresh_policy)
             session.commit()
             return results
+        except PersonalFeatureLimitError as error:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "personal_usage_limit_reached",
+                    "feature": error.feature,
+                    "limit": error.limit,
+                },
+            ) from error
+
+    @app.get("/api/v1/companies/suggestions", response_model=list[CompanySuggestion])
+    def company_suggestions(
+        q: str = Query(min_length=2, max_length=240),
+        limit: int = Query(default=8, ge=1, le=8),
+        _user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> list[CompanySuggestion]:
+        try:
+            ensure_company_search_available(
+                session,
+                _user,
+                app.state.settings.personal_entitlement_policy,
+            )
+            return suggest_companies(session, q, limit=limit)
         except PersonalFeatureLimitError as error:
             raise HTTPException(
                 status_code=429,

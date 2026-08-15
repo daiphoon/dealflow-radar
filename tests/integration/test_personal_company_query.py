@@ -25,11 +25,13 @@ from backend.app.demo import (
 from backend.app.models import (
     ORGANIZATION_PRIVATE_SCOPE,
     PERSONAL_PRIVATE_SCOPE,
+    PLATFORM_SHARED_SCOPE,
     Company,
     CompanyAlias,
     EntityMention,
     Event,
     EventEvidence,
+    PersonalUsageRecord,
     RawDocument,
     RefreshJob,
     ReviewQueue,
@@ -322,6 +324,214 @@ def test_no_fund_user_searches_shared_company_without_creating_or_leaking(
         assert session.scalar(select(func.sum(UsageLedger.external_calls))) == 0
         assert session.scalar(select(func.sum(UsageLedger.input_tokens))) == 0
         assert session.scalar(select(func.sum(UsageLedger.output_tokens))) == 0
+
+
+def test_company_suggestions_are_bounded_scoped_and_read_only(
+    client: TestClient,
+    migrated_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prefix_company_id = demo_uuid("suggestion-prefix-company")
+    contains_company_id = demo_uuid("suggestion-contains-company")
+    alias_company_id = demo_uuid("suggestion-alias-company")
+    private_alias_company_id = demo_uuid("suggestion-private-alias-company")
+    with migrated_app.state.session_factory() as session:
+        session.add_all(
+            [
+                Company(
+                    id=prefix_company_id,
+                    tenant_id=None,
+                    credit_code="DEMO-SUGGEST-PREFIX",
+                    legal_name="博腾生物有限公司",
+                    registered_region="虚构省甲市",
+                    identity_status="verified",
+                    visibility_scope="public",
+                ),
+                Company(
+                    id=contains_company_id,
+                    tenant_id=None,
+                    credit_code="DEMO-SUGGEST-CONTAINS",
+                    legal_name="苏州博腾生物制药有限公司",
+                    registered_region="虚构省乙市",
+                    identity_status="verified",
+                    visibility_scope="public",
+                ),
+                Company(
+                    id=alias_company_id,
+                    tenant_id=None,
+                    credit_code="DEMO-SUGGEST-ALIAS",
+                    legal_name="示例海岳科技有限公司",
+                    registered_region="虚构省丙市",
+                    identity_status="verified",
+                    visibility_scope="public",
+                ),
+                Company(
+                    id=private_alias_company_id,
+                    tenant_id=None,
+                    credit_code="DEMO-SUGGEST-PRIVATE-ALIAS",
+                    legal_name="示例隐私边界有限公司",
+                    registered_region="虚构省丁市",
+                    identity_status="verified",
+                    visibility_scope="public",
+                ),
+                Company(
+                    tenant_id=ALPHA_TENANT_ID,
+                    credit_code="DEMO-SUGGEST-PRIVATE",
+                    legal_name="机构私有博腾生物有限公司",
+                    registered_region="虚构省戊市",
+                    identity_status="verified",
+                    visibility_scope="tenant",
+                ),
+                Company(
+                    tenant_id=None,
+                    credit_code="DEMO-SUGGEST-UNRESOLVED",
+                    legal_name="未核验博腾生物有限公司",
+                    registered_region="虚构省己市",
+                    identity_status="unresolved",
+                    visibility_scope="public",
+                ),
+                CompanyAlias(
+                    company_id=alias_company_id,
+                    source_id=MOCK_SOURCE_ID,
+                    visibility_scope=PLATFORM_SHARED_SCOPE,
+                    owner_user_id=None,
+                    owner_tenant_id=None,
+                    alias="博腾生物技术",
+                    normalized_alias="博腾生物技术",
+                    alias_type="verified_short_name",
+                    verification_status="verified",
+                ),
+                CompanyAlias(
+                    company_id=private_alias_company_id,
+                    source_id=MOCK_SOURCE_ID,
+                    visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
+                    owner_user_id=None,
+                    owner_tenant_id=ALPHA_TENANT_ID,
+                    alias="博腾生物内部代号",
+                    normalized_alias="博腾生物内部代号",
+                    alias_type="internal_code",
+                    verification_status="verified",
+                ),
+                CompanyAlias(
+                    company_id=private_alias_company_id,
+                    source_id=MOCK_SOURCE_ID,
+                    visibility_scope=PLATFORM_SHARED_SCOPE,
+                    owner_user_id=None,
+                    owner_tenant_id=None,
+                    alias="博腾生物未核实别名",
+                    normalized_alias="博腾生物未核实别名",
+                    alias_type="unverified_short_name",
+                    verification_status="unresolved",
+                ),
+            ]
+        )
+        session.commit()
+
+    _add_scoped_document(
+        migrated_app,
+        scope=ORGANIZATION_PRIVATE_SCOPE,
+        owner_user_id=None,
+        owner_tenant_id=ALPHA_TENANT_ID,
+        suffix="private-suggestion-mention",
+        mention_text="博腾生物私有研究底稿",
+    )
+    with migrated_app.state.session_factory() as session:
+        company_count = session.scalar(select(func.count()).select_from(Company))
+        personal_usage_count = session.scalar(select(func.count()).select_from(PersonalUsageRecord))
+        usage_ledger_count = session.scalar(select(func.count()).select_from(UsageLedger))
+
+    def fail_if_suggestion_loads_provider(_: MockResearchProvider) -> None:
+        raise AssertionError("搜索建议不得调用 Provider")
+
+    monkeypatch.setattr(MockResearchProvider, "load", fail_if_suggestion_loads_provider)
+    response = client.get(
+        "/api/v1/companies/suggestions",
+        params={"q": "博腾生物"},
+        headers=NO_ACCESS_HEADERS,
+    )
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == [
+        str(prefix_company_id),
+        str(alias_company_id),
+        str(contains_company_id),
+    ]
+    assert all(
+        set(item) == {"id", "legal_name", "credit_code", "registered_region"}
+        for item in response.json()
+    )
+
+    limited = client.get(
+        "/api/v1/companies/suggestions",
+        params={"q": "博腾生物", "limit": 2},
+        headers=NO_ACCESS_HEADERS,
+    )
+    assert [item["id"] for item in limited.json()] == [
+        str(prefix_company_id),
+        str(alias_company_id),
+    ]
+    assert (
+        client.get(
+            "/api/v1/companies/suggestions",
+            params={"q": "博"},
+            headers=NO_ACCESS_HEADERS,
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get(
+            "/api/v1/companies/suggestions",
+            params={"q": "博腾生物", "limit": 9},
+            headers=NO_ACCESS_HEADERS,
+        ).status_code
+        == 422
+    )
+
+    by_code = client.get(
+        "/api/v1/companies/suggestions",
+        params={"q": "demo-suggest-prefix"},
+        headers=NO_ACCESS_HEADERS,
+    )
+    assert [item["id"] for item in by_code.json()] == [str(prefix_company_id)]
+
+    with migrated_app.state.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Company)) == company_count
+        assert (
+            session.scalar(select(func.count()).select_from(PersonalUsageRecord))
+            == personal_usage_count
+        )
+        assert session.scalar(select(func.count()).select_from(UsageLedger)) == usage_ledger_count
+
+        period_key = datetime.now(UTC).strftime("%Y-%m")
+        monthly_limit = migrated_app.state.settings.personal_entitlement_policy.monthly_search_limit
+        session.add_all(
+            [
+                PersonalUsageRecord(
+                    owner_user_id=NO_ACCESS_USER_ID,
+                    operation="company_search",
+                    period_key=period_key,
+                    idempotency_key=f"suggestion-quota-{index}",
+                    created_at=datetime.now(UTC),
+                )
+                for index in range(monthly_limit)
+            ]
+        )
+        session.commit()
+        exhausted_usage_count = session.scalar(
+            select(func.count()).select_from(PersonalUsageRecord)
+        )
+
+    exhausted = client.get(
+        "/api/v1/companies/suggestions",
+        params={"q": "博腾生物"},
+        headers=NO_ACCESS_HEADERS,
+    )
+    assert exhausted.status_code == 429
+    assert exhausted.json()["detail"]["feature"] == "company_search"
+    with migrated_app.state.session_factory() as session:
+        assert (
+            session.scalar(select(func.count()).select_from(PersonalUsageRecord))
+            == exhausted_usage_count
+        )
 
 
 def test_private_leads_documents_evidence_and_fund_overlays_are_isolated(

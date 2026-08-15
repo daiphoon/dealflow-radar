@@ -184,6 +184,16 @@ def record_company_search(
     )
 
 
+def ensure_company_search_available(
+    session: Session,
+    user: User,
+    policy: PersonalEntitlementPolicy,
+) -> None:
+    period_key = _usage_period(utc_now())
+    if _usage_count(session, user.id, "company_search", period_key) >= policy.monthly_search_limit:
+        raise PersonalFeatureLimitError("company_search", policy.monthly_search_limit)
+
+
 def get_personal_usage_summary(
     session: Session,
     user: User,

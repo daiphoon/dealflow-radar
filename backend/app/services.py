@@ -7,7 +7,7 @@ from decimal import Decimal
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -71,6 +71,7 @@ from backend.app.schemas import (
     CompanyDetail,
     CompanyListItem,
     CompanySearchResult,
+    CompanySuggestion,
     EventOut,
     EvidenceOut,
     IdentityCandidateOut,
@@ -2603,6 +2604,77 @@ def search_companies(
             )
         )
     return results
+
+
+def suggest_companies(
+    session: Session,
+    query: str,
+    *,
+    limit: int = 8,
+) -> list[CompanySuggestion]:
+    """Return bounded navigation hints without changing identity or usage state."""
+    normalized_query = _normalized_identity_text(query)
+    exact_query = query.strip()
+    if len(normalized_query) < 2:
+        return []
+
+    normalized_legal_name = func.replace(func.lower(Company.legal_name), " ", "")
+    normalized_alias = func.replace(func.lower(CompanyAlias.normalized_alias), " ", "")
+    shared_aliases = (
+        CompanyAlias.visibility_scope == PLATFORM_SHARED_SCOPE,
+        CompanyAlias.owner_user_id.is_(None),
+        CompanyAlias.owner_tenant_id.is_(None),
+        CompanyAlias.verification_status == "verified",
+    )
+    alias_matches = select(CompanyAlias.company_id).where(
+        *shared_aliases,
+        normalized_alias.contains(normalized_query, autoescape=True),
+    )
+    exact_alias_matches = select(CompanyAlias.company_id).where(
+        *shared_aliases,
+        normalized_alias == normalized_query,
+    )
+    prefix_alias_matches = select(CompanyAlias.company_id).where(
+        *shared_aliases,
+        normalized_alias.startswith(normalized_query, autoescape=True),
+    )
+    exact_credit_code = Company.credit_code == exact_query.upper()
+
+    companies = session.scalars(
+        select(Company)
+        .where(
+            Company.tenant_id.is_(None),
+            Company.visibility_scope == "public",
+            Company.identity_status == "verified",
+            or_(
+                exact_credit_code,
+                normalized_legal_name.contains(normalized_query, autoescape=True),
+                Company.id.in_(alias_matches),
+            ),
+        )
+        .order_by(
+            case(
+                (exact_credit_code, 0),
+                (normalized_legal_name == normalized_query, 1),
+                (normalized_legal_name.startswith(normalized_query, autoescape=True), 2),
+                (Company.id.in_(exact_alias_matches), 3),
+                (Company.id.in_(prefix_alias_matches), 4),
+                else_=5,
+            ),
+            Company.legal_name,
+            Company.id,
+        )
+        .limit(min(max(limit, 1), 8))
+    )
+    return [
+        CompanySuggestion(
+            id=company.id,
+            legal_name=company.legal_name,
+            credit_code=company.credit_code,
+            registered_region=company.registered_region,
+        )
+        for company in companies
+    ]
 
 
 def get_company_detail(

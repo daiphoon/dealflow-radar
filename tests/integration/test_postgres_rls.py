@@ -23,6 +23,7 @@ from backend.app.demo import (
 from backend.app.main import create_app
 
 POSTGRES_RLS_DATABASE_URL = os.getenv("POSTGRES_RLS_DATABASE_URL")
+DATABASE_ADMIN_URL = os.getenv("DATABASE_ADMIN_URL")
 
 pytestmark = [
     pytest.mark.postgres,
@@ -442,6 +443,7 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
             shared_scope_counts[4] + 1,
             shared_scope_counts[5] + 1,
         )
+
         assert _visible_scope_counts(connection, BETA_USER_ID, BETA_TENANT_ID)[2:6] == (
             *shared_scope_counts[2:6],
         )
@@ -641,6 +643,98 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
         transaction.rollback()
         connection.close()
         engine.dispose()
+
+
+def test_company_suggestions_keep_private_aliases_hidden_under_postgres_rls() -> None:
+    if not DATABASE_ADMIN_URL:
+        pytest.skip("set DATABASE_ADMIN_URL to prepare suggestion scope fixtures")
+
+    shared_company_id = demo_uuid("company-示例星河科技一号有限公司")
+    shared_alias_id = uuid4()
+    private_alias_id = uuid4()
+    admin_engine = create_engine(DATABASE_ADMIN_URL)
+    with admin_engine.begin() as connection:
+        usage_count = connection.execute(
+            text(
+                "SELECT count(*) FROM personal_usage_records WHERE owner_user_id = :owner_user_id"
+            ),
+            {"owner_user_id": str(NO_ACCESS_USER_ID)},
+        ).scalar_one()
+        connection.execute(
+            text(
+                "INSERT INTO company_aliases "
+                "(id, company_id, source_id, owner_user_id, owner_tenant_id, "
+                "visibility_scope, alias, normalized_alias, alias_type, "
+                "verification_status, created_at, updated_at) VALUES "
+                "(:shared_id, :company_id, :source_id, NULL, NULL, "
+                "'platform_shared', '共享联想代号', '共享联想代号', "
+                "'suggestion_shared_test', 'verified', now(), now()), "
+                "(:private_id, :company_id, :source_id, NULL, :tenant_id, "
+                "'organization_private', '机密联想代号', '机密联想代号', "
+                "'suggestion_private_test', 'verified', now(), now())"
+            ),
+            {
+                "shared_id": str(shared_alias_id),
+                "private_id": str(private_alias_id),
+                "company_id": str(shared_company_id),
+                "source_id": str(MOCK_SOURCE_ID),
+                "tenant_id": str(ALPHA_TENANT_ID),
+            },
+        )
+
+    settings = Settings(
+        database_url=POSTGRES_RLS_DATABASE_URL,
+        app_mode="demo",
+        external_calls_enabled=False,
+        paid_api_calls_enabled=False,
+        auto_refresh_enabled=False,
+    )
+    app = create_app(settings)
+    try:
+        with TestClient(app) as client:
+            headers = {"X-Demo-User-Id": str(NO_ACCESS_USER_ID)}
+            legal_name_matches = client.get(
+                "/api/v1/companies/suggestions",
+                params={"q": "星河科技", "limit": 3},
+                headers=headers,
+            )
+            assert legal_name_matches.status_code == 200
+            assert len(legal_name_matches.json()) == 3
+            assert all("星河科技" in item["legal_name"] for item in legal_name_matches.json())
+
+            shared_alias = client.get(
+                "/api/v1/companies/suggestions",
+                params={"q": "共享联想代号"},
+                headers=headers,
+            )
+            assert [item["id"] for item in shared_alias.json()] == [str(shared_company_id)]
+
+            private_alias = client.get(
+                "/api/v1/companies/suggestions",
+                params={"q": "机密联想代号"},
+                headers=headers,
+            )
+            assert private_alias.status_code == 200
+            assert private_alias.json() == []
+
+        with admin_engine.begin() as connection:
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT count(*) FROM personal_usage_records "
+                        "WHERE owner_user_id = :owner_user_id"
+                    ),
+                    {"owner_user_id": str(NO_ACCESS_USER_ID)},
+                ).scalar_one()
+                == usage_count
+            )
+    finally:
+        with admin_engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM company_aliases WHERE id IN (:shared_id, :private_id)"),
+                {"shared_id": str(shared_alias_id), "private_id": str(private_alias_id)},
+            )
+        admin_engine.dispose()
 
 
 def test_trusted_source_monitoring_rls_is_platform_admin_and_tenant_scoped() -> None:
