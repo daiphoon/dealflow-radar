@@ -83,6 +83,13 @@ class CompanySearchResult(BaseModel):
     last_checked_at: datetime | None
 
 
+class CompanySuggestion(BaseModel):
+    id: UUID
+    legal_name: str
+    credit_code: str | None
+    registered_region: str | None
+
+
 class CompanyDetail(BaseModel):
     id: UUID
     is_platform_shared: bool

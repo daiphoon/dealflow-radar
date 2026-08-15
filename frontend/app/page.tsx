@@ -1,12 +1,15 @@
 import Link from "next/link";
 
 import { requestCompanyInclusion } from "@/app/personal-actions";
+import { CompanySearchForm } from "@/components/company-search-form";
 import {
   ApiError,
   getCompanies,
+  getCompanySuggestions,
   getPersonalUsage,
   searchCompanies,
   type CompanySearchResult,
+  type CompanySuggestion,
 } from "@/lib/api";
 import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
 
@@ -46,10 +49,15 @@ export default async function CompanyListPage({
   try {
     const companies = await getCompanies();
     let searchResults: CompanySearchResult[] = [];
+    let suggestionResults: CompanySuggestion[] = [];
     let searchLimitReached = false;
     if (query) {
       try {
+        if ([...query].length >= 2) {
+          suggestionResults = await getCompanySuggestions(query);
+        }
         searchResults = await searchCompanies(query);
+        if (searchResults.length > 0) suggestionResults = [];
       } catch (error) {
         if (error instanceof ApiError && error.status === 429) {
           searchLimitReached = true;
@@ -77,7 +85,8 @@ export default async function CompanyListPage({
           <p className="eyebrow">未上市公司 · 平台共享档案</p>
           <h1>直接查询公司</h1>
           <p>
-            按工商全称、统一社会信用代码或已核实别名精确查询。查询会直接显示平台已经审核并保存的信息。
+            可以输入常用简称查看候选，再通过工商全称、信用代码和注册地区确认正确公司。
+            查询会直接显示平台已经审核并保存的信息。
           </p>
         </section>
 
@@ -97,36 +106,50 @@ export default async function CompanyListPage({
               本月查询 {usage.searches.used}/{usage.searches.limit}
             </span>
           </div>
-          <form className="search-form" method="get" role="search">
-            <label htmlFor="company-query">公司工商全称、信用代码或已核实别名</label>
-            <div>
-              <input
-                defaultValue={query}
-                id="company-query"
-                maxLength={240}
-                name="q"
-                placeholder="请输入准确的工商全称或18位统一社会信用代码"
-                required
-              />
-              <button className="button button-search" type="submit">
-                查询
-              </button>
-            </div>
-          </form>
+          <CompanySearchForm
+            defaultValue={query}
+            suggestionsEnabled={usage.searches.remaining > 0}
+          />
 
           {query ? (
             <div className="search-results" aria-live="polite">
               <div className="search-summary">
-                <strong>{searchLimitReached ? "查询额度已用完" : `${searchResults.length} 条精确结果`}</strong>
+                <strong>
+                  {searchLimitReached
+                    ? "查询额度已用完"
+                    : searchResults.length > 0
+                      ? `${searchResults.length} 条精确结果`
+                      : suggestionResults.length > 0
+                        ? `${suggestionResults.length} 个可能匹配`
+                        : "没有找到匹配公司"}
+                </strong>
                 <span className="muted">“{query}”</span>
               </div>
               {searchLimitReached ? (
                 <div className="empty-state">
                   本月 {usage.searches.limit} 次测试查询额度已用完；这是一项服务端限制，刷新页面不会绕过。
                 </div>
+              ) : searchResults.length === 0 && suggestionResults.length > 0 ? (
+                <div className="suggestion-results-panel">
+                  <p>没有完全相同的名称，请从以下已核验公司中选择：</p>
+                  <div className="company-suggestion-grid">
+                    {suggestionResults.map((company) => (
+                      <Link
+                        className="company-suggestion-card"
+                        href={`/companies/${company.id}`}
+                        key={company.id}
+                      >
+                        <strong>{company.legal_name}</strong>
+                        <span>{company.registered_region ?? "注册地区未知"}</span>
+                        <span>信用代码：{company.credit_code ?? "暂未收录"}</span>
+                      </Link>
+                    ))}
+                  </div>
+                  <p className="muted">请选择与工商信息一致的公司；系统不会根据简称自动绑定。</p>
+                </div>
               ) : searchResults.length === 0 ? (
                 <div className="empty-state">
-                  <p>共享目录中没有精确匹配；本次查询没有自动创建或绑定公司。</p>
+                  <p>共享目录中没有找到匹配公司；本次查询没有自动创建或绑定公司。</p>
                   <form action={requestCompanyInclusion} className="inclusion-request-form">
                     <input name="return_query" type="hidden" value={query} />
                     <label>

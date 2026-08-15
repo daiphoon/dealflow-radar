@@ -242,3 +242,12 @@
 - 实际命令：针对性认证与个人报告 Pytest；完整 Ruff 与格式检查；完整 Pytest；前端依赖审计、TypeScript 和生产构建；使用一次性 SQLite `base → 0017`、虚构数据和无基金个人/管理员 Demo 身份完成浏览器结构与视觉验收；`git diff --check`。
 - 测试结果：完整 Pytest 204 项通过、9 项显式 PostgreSQL 测试按预期跳过，仅有既有 FastAPI TestClient 上游弃用警告；前端依赖审计为 0 个已知漏洞，类型检查和生产构建通过。浏览器确认普通个人不再看到管理入口，审核员入口仍保留；搜索框不再暗示虚构公司可查询；旧报告代码值、时间和链接状态正确转为中文，Markdown 符号不再显示，来源链接可点击，CGT 等常见缩写首次出现时附中文解释。临时数据库和服务在验收后删除或停止，未修改现有本地/香港数据；外部业务调用、付费调用、模型 Token 和自动发布均为 0。
 - 未解决阻塞：本轮没有发现权限或数据阻塞；最终 PR 合并并部署后仍需用真实 CloudBase 个人账号复核生产页面。缩写说明只覆盖当前内容中常见且语义确定的术语，产品/项目英文专名仍按来源保留；按项目负责人要求本轮不调整字体。M6 尚未获得独立外部用户反馈，不能据此进入 M7。
+
+## 2026-08-15｜M6 公司搜索建议 V1
+
+- 日期：2026-08-15
+- 任务：根据首位个人测试账号使用“博腾生物”无法命中完整工商名称的反馈，新增登录后共享目录搜索建议；输入至少两个字符后按信用代码精确、工商名称完全/开头/包含、已核实共享别名排序返回最多 8 个候选。候选选择仍进入既有精确查询，不自动创建、绑定或合并公司；联想输入不重复扣查询次数，但服务端仍检查剩余额度。
+- 关键文件：`backend/app/main.py`、`backend/app/services.py`、`backend/app/personal_features.py`、`backend/app/schemas.py`、`frontend/components/company-search-form.tsx`、`frontend/app/api/company-suggestions/route.ts`、`frontend/app/page.tsx`、`frontend/app/globals.css`、`frontend/lib/api.ts`、`tests/integration/test_personal_company_query.py`、`tests/integration/test_postgres_rls.py`、`README.md`、`docs/08-api-design.md` 和 `docs/10-implementation-plan.md`。
+- 实际命令：相关个人查询、认证与留存 Pytest；完整 Ruff 与格式检查；完整 Pytest；一次性 SQLite `base → 0017 → base` 与 Schema 漂移检查；一次性 PostgreSQL 16 迁移、受限应用账户初始化和完整 RLS 套件；前端依赖审计、TypeScript 和生产构建；一次性 SQLite 虚构“博腾生物”双候选数据下完成桌面、390px 窄屏、鼠标、键盘、无结果和控制台浏览器验收；`git diff --check`。
+- 测试结果：完整 Pytest 205 项通过、10 项显式 PostgreSQL 测试按预期跳过，仅有既有 FastAPI TestClient 上游弃用警告；独立 PostgreSQL 16 的 10 项 RLS/API 测试全部通过，确认同租户机构私有别名也不会进入个人建议；SQLite 迁移往返与漂移检查通过；TypeScript、Next.js 生产构建和依赖审计通过，0 个已知漏洞。浏览器确认“博腾生物”显示两个带工商全称、注册地区和信用代码的候选，鼠标及方向键均可选择，提交简称后保留候选列表，无结果不自动创建公司；390px 窄屏无横向溢出，控制台无警告或错误。自查修复了结果页初次加载后自动再次请求并弹出候选的问题；联想请求不增加正式查询用量，额度耗尽后服务端返回 429。临时数据和服务均未进入现有数据库，业务外部调用、付费调用、模型 Token、估算费用和自动发布均为 0。
+- 未解决阻塞：V1 只做已核验名称和共享别名的包含/前缀提示，不做错别字、拼音或复杂相似度推断，避免身份误匹配。代码合并部署后仍需用真实 CloudBase 个人账号复核“博腾生物”生产数据；共享目录达到明显更大规模前不提前引入 PostgreSQL 三元组索引或独立搜索服务。

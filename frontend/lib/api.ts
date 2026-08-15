@@ -34,6 +34,13 @@ export type CompanySearchResult = {
   last_checked_at: string | null;
 };
 
+export type CompanySuggestion = {
+  id: string;
+  legal_name: string;
+  credit_code: string | null;
+  registered_region: string | null;
+};
+
 export type Evidence = {
   id: string;
   source_name: string;
@@ -422,6 +429,14 @@ export function getAuthenticationMe(): Promise<AuthMe> {
 export function searchCompanies(query: string): Promise<CompanySearchResult[]> {
   const params = new URLSearchParams({ q: query });
   return getJson(`/api/v1/companies/search?${params.toString()}`);
+}
+
+export function getCompanySuggestions(
+  query: string,
+  limit = 8,
+): Promise<CompanySuggestion[]> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return getJson(`/api/v1/companies/suggestions?${params.toString()}`);
 }
 
 export function getCompany(companyId: string): Promise<CompanyDetail> {
