@@ -5,10 +5,13 @@ import pytest
 
 from backend.app.auth import (
     AuthenticationProviderUnavailableError,
+    AuthenticationRateLimitedError,
     AuthTokenSet,
     CloudBaseIdentityProvider,
     InvalidAccessTokenError,
     InvalidAuthenticationFlowError,
+    PhoneVerificationRateLimiter,
+    normalize_mainland_phone,
 )
 from backend.app.config import CloudBaseAuthPolicy
 
@@ -190,3 +193,84 @@ def test_email_code_login_refresh_and_logout_use_documented_routes() -> None:
         "/auth/v1/token",
         "/auth/v1/user/signout",
     ]
+
+
+def test_phone_code_login_uses_existing_user_only_and_documented_routes() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/auth/v1/verification":
+            return httpx.Response(
+                200, json={"verification_id": "phone-verification-1", "expires_in": 600}
+            )
+        if request.url.path == "/auth/v1/verification/verify":
+            return httpx.Response(200, json={"verification_token": "phone-token-1"})
+        if request.url.path == "/auth/v1/signin":
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "phone-access-token",
+                    "refresh_token": "phone-refresh-token",
+                    "expires_in": 7200,
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    provider = _provider(httpx.MockTransport(handler))
+    challenge = provider.send_phone_code("+86 13800138000")
+    tokens = provider.sign_in_with_phone_code(challenge.verification_id, "123456")
+
+    assert tokens == AuthTokenSet("phone-access-token", "phone-refresh-token", 7200)
+    assert requests[0].url.path == "/auth/v1/verification"
+    assert requests[0].read().decode() == ('{"phone_number":"+86 13800138000","target":"USER"}')
+    assert [request.url.path for request in requests] == [
+        "/auth/v1/verification",
+        "/auth/v1/verification/verify",
+        "/auth/v1/signin",
+    ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["13800138000", "+8613800138000", "+86 138 0013 8000", "0086-138-0013-8000"],
+)
+def test_normalizes_mainland_phone_without_persisting_input_format(value: str) -> None:
+    assert normalize_mainland_phone(value) == "+86 13800138000"
+
+
+@pytest.mark.parametrize("value", ["", "12800138000", "1380013800", "+1 3800138000"])
+def test_rejects_invalid_mainland_phone(value: str) -> None:
+    with pytest.raises(InvalidAuthenticationFlowError):
+        normalize_mainland_phone(value)
+
+
+def test_phone_verification_rate_limiter_enforces_cooldown_and_bounded_windows() -> None:
+    now = 1_000_000.0
+
+    def clock() -> float:
+        return now
+
+    limiter = PhoneVerificationRateLimiter(
+        cooldown_seconds=60,
+        daily_limit=2,
+        environment_daily_limit=3,
+        clock=clock,
+    )
+    limiter.consume("+86 13800138000")
+    with pytest.raises(AuthenticationRateLimitedError):
+        limiter.consume("+86 13800138000")
+
+    now += 60
+    limiter.consume("+86 13800138000")
+    now += 60
+    with pytest.raises(AuthenticationRateLimitedError):
+        limiter.consume("+86 13800138000")
+
+    limiter.consume("+86 13900139000")
+    now += 60
+    with pytest.raises(AuthenticationRateLimitedError):
+        limiter.consume("+86 13700137000")
+
+    now += 24 * 60 * 60
+    limiter.consume("+86 13800138000")

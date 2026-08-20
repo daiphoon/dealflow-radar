@@ -52,6 +52,24 @@ export function loginWithEmailCode(
   });
 }
 
+export function requestPhoneVerification(
+  phoneNumber: string,
+): Promise<VerificationChallenge> {
+  return postAuthentication("/api/v1/auth/phone/verification", {
+    phone_number: phoneNumber,
+  });
+}
+
+export function loginWithPhoneCode(
+  verificationId: string,
+  verificationCode: string,
+): Promise<AuthTokens> {
+  return postAuthentication("/api/v1/auth/phone/login", {
+    verification_id: verificationId,
+    verification_code: verificationCode,
+  });
+}
+
 export function refreshAuthentication(refreshToken: string): Promise<AuthTokens> {
   return postAuthentication("/api/v1/auth/token/refresh", {
     refresh_token: refreshToken,

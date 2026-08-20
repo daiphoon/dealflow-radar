@@ -61,6 +61,11 @@ class FakeCloudBaseProvider:
                 subject="subject-duplicate",
                 email="duplicate@example.invalid",
             ),
+            "access-phone-unbound": VerifiedIdentity(
+                provider="cloudbase",
+                subject="subject-phone-unbound",
+                email="alpha-admin@example.invalid",
+            ),
         }
         self.signed_out: list[str] = []
 
@@ -74,6 +79,22 @@ class FakeCloudBaseProvider:
             ("verification-alpha", "123456"): AuthTokenSet("access-alpha", "refresh-alpha", 7200),
             ("verification-duplicate", "123456"): AuthTokenSet(
                 "access-duplicate", "refresh-duplicate", 7200
+            ),
+        }.get((verification_id, verification_code))
+        if token_set is None:
+            raise InvalidAuthenticationFlowError
+        return token_set
+
+    def send_phone_code(self, phone_number: str) -> VerificationChallenge:
+        if phone_number != "+86 13800138000":
+            raise InvalidAuthenticationFlowError
+        return VerificationChallenge("verification-phone", 600)
+
+    def sign_in_with_phone_code(self, verification_id: str, verification_code: str) -> AuthTokenSet:
+        token_set = {
+            ("verification-phone", "123456"): AuthTokenSet("access-alpha", "refresh-phone", 7200),
+            ("verification-phone-unbound", "123456"): AuthTokenSet(
+                "access-phone-unbound", "refresh-phone-unbound", 7200
             ),
         }.get((verification_id, verification_code))
         if token_set is None:
@@ -100,12 +121,19 @@ class UnavailableProfileProvider(FakeCloudBaseProvider):
         raise AuthenticationProviderUnavailableError
 
 
-def _cloudbase_app(migrated_app: FastAPI) -> tuple[FastAPI, FakeCloudBaseProvider]:
+def _cloudbase_app(
+    migrated_app: FastAPI,
+    *,
+    phone_login_enabled: bool = False,
+) -> tuple[FastAPI, FakeCloudBaseProvider]:
     provider = FakeCloudBaseProvider()
     settings = replace(
         migrated_app.state.settings,
         auth_provider="cloudbase",
-        cloudbase_auth_policy=CloudBaseAuthPolicy(env_id="demo-env-123"),
+        cloudbase_auth_policy=CloudBaseAuthPolicy(
+            env_id="demo-env-123",
+            phone_login_enabled=phone_login_enabled,
+        ),
     )
     return create_app(settings, identity_provider=provider), provider
 
@@ -312,6 +340,114 @@ def test_email_login_refresh_logout_and_audit(migrated_app: FastAPI) -> None:
         assert sorted(event_types) == sorted(
             ["identity_linked", "session_started", "session_refreshed", "session_ended"]
         )
+    app.state.engine.dispose()
+
+
+def test_phone_login_is_disabled_by_default(migrated_app: FastAPI) -> None:
+    app, _ = _cloudbase_app(migrated_app)
+    with TestClient(app) as client:
+        verification = client.post(
+            "/api/v1/auth/phone/verification",
+            json={"phone_number": "13800138000"},
+        )
+        login = client.post(
+            "/api/v1/auth/phone/login",
+            json={
+                "verification_id": "verification-phone",
+                "verification_code": "123456",
+            },
+        )
+
+    assert verification.status_code == login.status_code == 404
+    app.state.engine.dispose()
+
+
+def test_phone_login_uses_the_existing_subject_without_relinking_email(
+    migrated_app: FastAPI,
+) -> None:
+    app, _ = _cloudbase_app(migrated_app, phone_login_enabled=True)
+    _bind_identity(app, ALPHA_USER_ID, "subject-alpha")
+    with TestClient(app) as client:
+        challenge = client.post(
+            "/api/v1/auth/phone/verification",
+            json={"phone_number": "138 0013 8000"},
+        )
+        login = client.post(
+            "/api/v1/auth/phone/login",
+            json={
+                "verification_id": challenge.json()["verification_id"],
+                "verification_code": "123456",
+            },
+        )
+        me = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+        )
+
+    assert challenge.status_code == 200
+    assert login.status_code == 200
+    assert me.status_code == 200
+    assert me.json()["user_id"] == str(ALPHA_USER_ID)
+    with app.state.session_factory() as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(AuthenticationAuditLog)
+                .where(AuthenticationAuditLog.event_type == "identity_linked")
+            )
+            == 0
+        )
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(AuthenticationAuditLog)
+                .where(AuthenticationAuditLog.event_type == "session_started")
+            )
+            == 1
+        )
+    app.state.engine.dispose()
+
+
+def test_phone_login_cannot_link_an_unbound_subject_by_matching_email(
+    migrated_app: FastAPI,
+) -> None:
+    app, _ = _cloudbase_app(migrated_app, phone_login_enabled=True)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/auth/phone/login",
+            json={
+                "verification_id": "verification-phone",
+                "verification_code": "123456",
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "invitation_required"
+    with app.state.session_factory() as session:
+        user = session.get(User, ALPHA_USER_ID)
+        assert user is not None
+        assert user.auth_provider is None
+        assert user.auth_subject is None
+    app.state.engine.dispose()
+
+
+def test_uninvited_phone_verification_does_not_disclose_account_existence(
+    migrated_app: FastAPI,
+) -> None:
+    app, _ = _cloudbase_app(migrated_app, phone_login_enabled=True)
+    with TestClient(app) as client:
+        invited = client.post(
+            "/api/v1/auth/phone/verification",
+            json={"phone_number": "13800138000"},
+        )
+        uninvited = client.post(
+            "/api/v1/auth/phone/verification",
+            json={"phone_number": "13900139000"},
+        )
+
+    assert invited.status_code == uninvited.status_code == 200
+    assert invited.json()["expires_in"] == uninvited.json()["expires_in"] == 600
+    assert len(uninvited.json()["verification_id"]) >= 8
     app.state.engine.dispose()
 
 

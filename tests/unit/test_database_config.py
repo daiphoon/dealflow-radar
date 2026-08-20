@@ -124,6 +124,37 @@ def test_cloudbase_authentication_configuration_is_bounded(
     assert settings.cloudbase_auth_policy.max_response_bytes == 32_000
 
 
+def test_phone_authentication_is_opt_in_and_rate_limits_are_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AUTH_PROVIDER", "cloudbase")
+    monkeypatch.setenv("CLOUDBASE_ENV_ID", "env-demo-123")
+    assert Settings.from_env().cloudbase_auth_policy.phone_login_enabled is False
+
+    monkeypatch.setenv("PHONE_LOGIN_ENABLED", "true")
+    monkeypatch.setenv("AUTH_PHONE_CODE_COOLDOWN_SECONDS", "90")
+    monkeypatch.setenv("AUTH_PHONE_DAILY_LIMIT", "4")
+    monkeypatch.setenv("AUTH_PHONE_ENV_DAILY_LIMIT", "20")
+    policy = Settings.from_env().cloudbase_auth_policy
+
+    assert policy.phone_login_enabled is True
+    assert policy.phone_code_cooldown_seconds == 90
+    assert policy.phone_daily_limit == 4
+    assert policy.phone_environment_daily_limit == 20
+
+
+def test_phone_authentication_rejects_an_environment_limit_below_phone_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AUTH_PROVIDER", "cloudbase")
+    monkeypatch.setenv("CLOUDBASE_ENV_ID", "env-demo-123")
+    monkeypatch.setenv("AUTH_PHONE_DAILY_LIMIT", "5")
+    monkeypatch.setenv("AUTH_PHONE_ENV_DAILY_LIMIT", "4")
+
+    with pytest.raises(ValueError, match="below per-phone"):
+        Settings.from_env()
+
+
 def test_cloudbase_authentication_rejects_unsafe_environment_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

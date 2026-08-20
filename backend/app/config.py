@@ -181,6 +181,10 @@ class CloudBaseAuthPolicy:
     timeout_seconds: int = 5
     max_response_bytes: int = 64_000
     user_agent: str = "DealflowRadarAuth/1.0"
+    phone_login_enabled: bool = False
+    phone_code_cooldown_seconds: int = 60
+    phone_daily_limit: int = 5
+    phone_environment_daily_limit: int = 50
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -195,6 +199,15 @@ class CloudBaseAuthPolicy:
             raise ValueError("CLOUDBASE_AUTH_MAX_RESPONSE_BYTES must be a positive integer")
         if not self.user_agent.strip():
             raise ValueError("CLOUDBASE_AUTH_USER_AGENT must not be empty")
+        for name, value in (
+            ("AUTH_PHONE_CODE_COOLDOWN_SECONDS", self.phone_code_cooldown_seconds),
+            ("AUTH_PHONE_DAILY_LIMIT", self.phone_daily_limit),
+            ("AUTH_PHONE_ENV_DAILY_LIMIT", self.phone_environment_daily_limit),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.phone_environment_daily_limit < self.phone_daily_limit:
+            raise ValueError("AUTH_PHONE_ENV_DAILY_LIMIT must not be below per-phone limit")
 
 
 @dataclass(frozen=True)
@@ -347,6 +360,12 @@ class Settings:
                 timeout_seconds=_as_positive_int("CLOUDBASE_AUTH_TIMEOUT_SECONDS", 5),
                 max_response_bytes=_as_positive_int("CLOUDBASE_AUTH_MAX_RESPONSE_BYTES", 64_000),
                 user_agent=os.getenv("CLOUDBASE_AUTH_USER_AGENT", "DealflowRadarAuth/1.0"),
+                phone_login_enabled=_as_bool(os.getenv("PHONE_LOGIN_ENABLED", "false")),
+                phone_code_cooldown_seconds=_as_positive_int(
+                    "AUTH_PHONE_CODE_COOLDOWN_SECONDS", 60
+                ),
+                phone_daily_limit=_as_positive_int("AUTH_PHONE_DAILY_LIMIT", 5),
+                phone_environment_daily_limit=_as_positive_int("AUTH_PHONE_ENV_DAILY_LIMIT", 50),
             ),
             personal_entitlement_policy=PersonalEntitlementPolicy(
                 monthly_search_limit=_as_positive_int("PERSONAL_MONTHLY_SEARCH_LIMIT", 100),

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import secrets
+import time
+from collections import defaultdict, deque
+from collections.abc import Callable
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any, Protocol
 
 import httpx
@@ -66,7 +71,13 @@ class AuthTokenSet:
 class IdentityProvider(Protocol):
     def send_email_code(self, email: str) -> VerificationChallenge: ...
 
+    def send_phone_code(self, phone_number: str) -> VerificationChallenge: ...
+
     def sign_in_with_email_code(
+        self, verification_id: str, verification_code: str
+    ) -> AuthTokenSet: ...
+
+    def sign_in_with_phone_code(
         self, verification_id: str, verification_code: str
     ) -> AuthTokenSet: ...
 
@@ -177,7 +188,23 @@ class CloudBaseIdentityProvider:
             raise AuthenticationProviderUnavailableError
         return VerificationChallenge(verification_id=verification_id, expires_in=expires_in)
 
-    def sign_in_with_email_code(self, verification_id: str, verification_code: str) -> AuthTokenSet:
+    def send_phone_code(self, phone_number: str) -> VerificationChallenge:
+        data = self._request_json(
+            "POST",
+            "/auth/v1/verification",
+            payload={"phone_number": phone_number, "target": "USER"},
+        )
+        verification_id = data.get("verification_id")
+        expires_in = data.get("expires_in")
+        if not isinstance(verification_id, str) or not 8 <= len(verification_id) <= 2000:
+            raise AuthenticationProviderUnavailableError
+        if not isinstance(expires_in, int) or not 1 <= expires_in <= 3600:
+            raise AuthenticationProviderUnavailableError
+        return VerificationChallenge(verification_id=verification_id, expires_in=expires_in)
+
+    def _sign_in_with_verification_code(
+        self, verification_id: str, verification_code: str
+    ) -> AuthTokenSet:
         verification = self._request_json(
             "POST",
             "/auth/v1/verification/verify",
@@ -199,6 +226,12 @@ class CloudBaseIdentityProvider:
             },
         )
         return self._parse_token_set(data)
+
+    def sign_in_with_email_code(self, verification_id: str, verification_code: str) -> AuthTokenSet:
+        return self._sign_in_with_verification_code(verification_id, verification_code)
+
+    def sign_in_with_phone_code(self, verification_id: str, verification_code: str) -> AuthTokenSet:
+        return self._sign_in_with_verification_code(verification_id, verification_code)
 
     def refresh_tokens(self, refresh_token: str) -> AuthTokenSet:
         if not 8 <= len(refresh_token) <= 8192:
@@ -304,6 +337,71 @@ def normalize_email(value: str) -> str:
     if not local_part or "." not in domain or domain.startswith(".") or domain.endswith("."):
         raise InvalidAuthenticationFlowError
     return normalized
+
+
+def normalize_mainland_phone(value: str) -> str:
+    compact = value.strip().replace(" ", "").replace("-", "")
+    if compact.startswith("+86"):
+        compact = compact[3:]
+    elif compact.startswith("0086"):
+        compact = compact[4:]
+    if len(compact) != 11 or not compact.isdigit() or compact[0] != "1":
+        raise InvalidAuthenticationFlowError
+    if compact[1] not in "3456789":
+        raise InvalidAuthenticationFlowError
+    return f"+86 {compact}"
+
+
+class PhoneVerificationRateLimiter:
+    """Single-process invitation-stage guard; CloudBase remains the durable SMS limiter."""
+
+    _WINDOW_SECONDS = 24 * 60 * 60
+
+    def __init__(
+        self,
+        *,
+        cooldown_seconds: int,
+        daily_limit: int,
+        environment_daily_limit: int,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._cooldown_seconds = cooldown_seconds
+        self._daily_limit = daily_limit
+        self._environment_daily_limit = environment_daily_limit
+        self._clock = clock
+        self._identifier_key = secrets.token_bytes(32)
+        self._lock = Lock()
+        self._by_identifier: dict[str, deque[float]] = defaultdict(deque)
+        self._environment_requests: deque[float] = deque()
+
+    def _identifier_hash(self, phone_number: str) -> str:
+        return hmac.new(
+            self._identifier_key,
+            phone_number.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+
+    @staticmethod
+    def _trim(requests: deque[float], threshold: float) -> None:
+        while requests and requests[0] <= threshold:
+            requests.popleft()
+
+    def consume(self, phone_number: str) -> None:
+        now = self._clock()
+        threshold = now - self._WINDOW_SECONDS
+        identifier_hash = self._identifier_hash(phone_number)
+        with self._lock:
+            self._trim(self._environment_requests, threshold)
+            identifier_requests = self._by_identifier[identifier_hash]
+            self._trim(identifier_requests, threshold)
+            if identifier_requests and now - identifier_requests[-1] < self._cooldown_seconds:
+                raise AuthenticationRateLimitedError
+            if len(identifier_requests) >= self._daily_limit:
+                raise AuthenticationRateLimitedError
+            if len(self._environment_requests) >= self._environment_daily_limit:
+                raise AuthenticationRateLimitedError
+            identifier_requests.append(now)
+            self._environment_requests.append(now)
 
 
 def subject_hash(provider: str, subject: str) -> str:

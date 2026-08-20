@@ -543,6 +543,15 @@ class AuthEmailLoginIn(BaseModel):
     verification_code: str = Field(pattern=r"^\d{6}$")
 
 
+class AuthPhoneVerificationIn(BaseModel):
+    phone_number: str = Field(min_length=7, max_length=32)
+
+
+class AuthPhoneLoginIn(BaseModel):
+    verification_id: str = Field(min_length=8, max_length=2000)
+    verification_code: str = Field(pattern=r"^\d{6}$")
+
+
 class AuthTokenRefreshIn(BaseModel):
     refresh_token: str = Field(min_length=8, max_length=8192)
 

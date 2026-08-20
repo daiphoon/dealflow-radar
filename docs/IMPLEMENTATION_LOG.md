@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-20：CloudBase 手机号验证码登录 V1
+
+- 任务：在保留邮箱验证码和既有 PostgreSQL 授权模型的前提下，增加默认关闭的中国大陆手机号验证码入口；手机号只允许登录已绑定同一 CloudBase `subject` 的受邀账户，不开放注册、不按邮箱猜测合并、不在业务数据库保存完整手机号。
+- 关键文件：`backend/app/auth.py`、`backend/app/main.py`、`backend/app/config.py`、`frontend/app/login/`、`frontend/lib/auth-api.ts`、`frontend/lib/auth-session.ts`、`compose.production.yml`、环境变量示例、认证测试及认证/实施/运维文档。
+- 实际命令：完整 Ruff 与格式检查；完整 Pytest；隔离 SQLite `base → 0017`、Schema 漂移和 `0017 → base`；隔离 PostgreSQL 16 升级、Schema 漂移、受限应用账户和完整 RLS 套件；前端依赖审计、TypeScript 和生产构建；生产 Compose 解析、后端/前端/备份工具镜像构建和生产预检；本地浏览器分别以手机号开关开启和关闭完成入口、输入、失败提示和默认隐藏验收；`git diff --check` 与定点敏感信息扫描。
+- 测试结果：Ruff 与格式检查通过；默认 Pytest 221 项通过、10 项 PostgreSQL 测试按预期跳过，显式 PostgreSQL RLS 10 项通过，仅有既有 FastAPI TestClient 上游弃用警告；SQLite/PostgreSQL 迁移和 Schema 漂移通过；前端 0 个已知漏洞、TypeScript 和两种生产构建通过；生产预检确认 CloudBase、PostgreSQL 和初始业务安全开关关闭。确定性测试覆盖手机号格式、固定 CloudBase 端点与 `target=USER`、默认关闭、冷却/单号码/环境总量、账户存在性不泄露、同一 subject 复用、未绑定 subject 拒绝和成功登录审计。本轮没有真实短信、业务外部查询、付费 Provider、模型 Token、自动刷新或自动发布。
+- 未解决阻塞：代码 PR 合并前香港环境继续保持 `PHONE_LOGIN_ENABLED=false`。合并后仍须由项目负责人在同一既有 CloudBase 测试账户上安全绑定手机号，核对邮箱与手机号查询得到同一 UID，再执行最少一次真实短信、原 `user_id`/tenant/角色、退出和邮箱回退验收。应用限流为邀请规模下的单进程内存保护，重启会重置；多实例或用户规模扩大前需要共享持久限流，但当前不提前引入 Redis。微信扫码继续后置。
+
 ## 2026-08-17 至 2026-08-20：M6A 创始人自测与真实内容价值基线
 
 - 任务：在没有独立外部测试用户的情况下，固定创始人自测范围、真实公司样本规则、登录/内容/证据/权限指标、缺陷分级和停止条件；明确自控多个邮箱不等于多名独立用户。

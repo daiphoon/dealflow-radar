@@ -153,6 +153,33 @@ a {
   line-height: 1.7;
 }
 
+.auth-method-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 22px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #f3f6f3;
+}
+
+.auth-method-switch a {
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 800;
+  text-align: center;
+  text-decoration: none;
+}
+
+.auth-method-switch a.active {
+  color: var(--accent);
+  background: #fff;
+  box-shadow: 0 3px 12px rgb(25 55 43 / 10%);
+}
+
 .auth-form {
   display: grid;
   gap: 12px;
