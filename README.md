@@ -85,9 +85,12 @@ docker compose \
 export AUTH_PROVIDER=cloudbase
 export CLOUDBASE_ENV_ID='replace_with_cloudbase_env_id'
 export CLOUDBASE_CLIENT_ID='replace_with_client_id_or_leave_empty'
+export PHONE_LOGIN_ENABLED=false
 ```
 
 访问 `http://localhost:3000/login`，验证码登录成功后 access/refresh token 只保存于 Next.js 的 `HttpOnly` Cookie。本地认证验收期间不要混用 `localhost` 和 `127.0.0.1`，浏览器会把两者视为不同的 Cookie 站点。CloudBase group 不会映射成业务角色；API 仍从 PostgreSQL 加载 tenant、角色与基金授权，并设置既有 RLS 上下文。`AUTH_PROVIDER=cloudbase` 时 `X-Demo-User-Id` 完全无效。
+
+手机号验证码是默认关闭的邀请测试扩展，不是公开注册。启用前必须先在同一个既有 CloudBase 账户上绑定中国大陆手机号，并确认邮箱和手机号登录返回同一稳定 `subject`；手机号登录禁止按邮箱首次绑定本地用户，因此不会生成第二个业务账户。首版不在业务数据库、Cookie 或 URL 保存完整手机号，邮箱登录继续作为恢复方式。应用默认实行 60 秒冷却、单号码每天 5 次、全环境每天 50 次的内存保护，CloudBase 自身的持久限额作为第二层保护；应用重启会清空本地计数，生产扩容到多实例前必须重新设计共享限流。启用和回退步骤见[运维手册](docs/12-operations-runbook.md#手机号验证码登录-v1默认关闭)。
 
 CloudBase 身份请求不等于公司信息外部查询，不会调用天眼查，也不会开启 `EXTERNAL_CALLS_ENABLED`、`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED` 或 `AUTO_PUBLISH_ENABLED`。完整配置、四角色验收、故障回退和控制台操作见[运维手册](docs/12-operations-runbook.md)；边界见 [ADR-0012](docs/DECISIONS/ADR-0012-cloudbase-identity-local-authorization.md)。
 

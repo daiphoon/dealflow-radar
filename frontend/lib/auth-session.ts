@@ -3,8 +3,10 @@ import "server-only";
 export const ACCESS_TOKEN_COOKIE = "dealflow_access_token";
 export const REFRESH_TOKEN_COOKIE = "dealflow_refresh_token";
 export const VERIFICATION_ID_COOKIE = "dealflow_verification_id";
+export const VERIFICATION_METHOD_COOKIE = "dealflow_verification_method";
 
 export const authProvider = process.env.AUTH_PROVIDER ?? "demo";
+export const phoneLoginEnabled = process.env.PHONE_LOGIN_ENABLED === "true";
 
 export function safeReturnPath(value: string | null | undefined): string {
   if (!value || !value.startsWith("/") || value.startsWith("//")) return "/";

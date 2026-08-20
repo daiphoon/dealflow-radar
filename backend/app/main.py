@@ -18,9 +18,11 @@ from backend.app.auth import (
     InvalidAccessTokenError,
     InvalidAuthenticationFlowError,
     InvitationRequiredError,
+    PhoneVerificationRateLimiter,
     VerifiedIdentity,
     dummy_verification_challenge,
     normalize_email,
+    normalize_mainland_phone,
     record_authentication_event,
     resolve_local_user,
 )
@@ -55,6 +57,8 @@ from backend.app.schemas import (
     AuthEmailVerificationIn,
     AuthEmailVerificationOut,
     AuthMeOut,
+    AuthPhoneLoginIn,
+    AuthPhoneVerificationIn,
     AuthTokenOut,
     AuthTokenRefreshIn,
     CandidateDocumentDecisionIn,
@@ -201,6 +205,7 @@ def _bearer_token(authorization: str | None) -> str:
 def create_app(
     settings: Settings | None = None,
     identity_provider: IdentityProvider | None = None,
+    phone_verification_limiter: PhoneVerificationRateLimiter | None = None,
 ) -> FastAPI:
     resolved = settings or Settings.from_env()
     app = FastAPI(title="Dealflow Radar", version="0.1.0")
@@ -209,6 +214,13 @@ def create_app(
     app.state.engine = engine
     app.state.session_factory = build_session_factory(engine)
     app.state.identity_provider = identity_provider
+    app.state.phone_verification_limiter = phone_verification_limiter or (
+        PhoneVerificationRateLimiter(
+            cooldown_seconds=resolved.cloudbase_auth_policy.phone_code_cooldown_seconds,
+            daily_limit=resolved.cloudbase_auth_policy.phone_daily_limit,
+            environment_daily_limit=(resolved.cloudbase_auth_policy.phone_environment_daily_limit),
+        )
+    )
     if resolved.auth_provider == "cloudbase" and identity_provider is None:
         app.state.identity_provider = CloudBaseIdentityProvider(resolved.cloudbase_auth_policy)
 
@@ -311,6 +323,74 @@ def create_app(
                 session,
                 event_type="session_started",
                 allow_email_link=True,
+            )
+        except HTTPException:
+            raise
+        except (InvalidAuthenticationFlowError, InvalidAccessTokenError) as error:
+            raise HTTPException(status_code=401, detail="invalid_authentication") from error
+        except AuthenticationRateLimitedError as error:
+            raise HTTPException(status_code=429, detail="authentication_rate_limited") from error
+        except AuthenticationChallengeRequiredError as error:
+            raise HTTPException(
+                status_code=409, detail="authentication_challenge_required"
+            ) from error
+        except AuthenticationProviderUnavailableError as error:
+            raise HTTPException(status_code=503, detail="authentication_unavailable") from error
+
+    @app.post(
+        "/api/v1/auth/phone/verification",
+        response_model=AuthEmailVerificationOut,
+    )
+    def request_phone_verification(
+        payload: AuthPhoneVerificationIn,
+    ) -> AuthEmailVerificationOut:
+        if not resolved.cloudbase_auth_policy.phone_login_enabled:
+            raise HTTPException(status_code=404, detail="phone_auth_disabled")
+        provider = require_cloudbase_provider()
+        try:
+            phone_number = normalize_mainland_phone(payload.phone_number)
+        except InvalidAuthenticationFlowError:
+            challenge = dummy_verification_challenge()
+        else:
+            try:
+                app.state.phone_verification_limiter.consume(phone_number)
+                challenge = provider.send_phone_code(phone_number)
+            except InvalidAuthenticationFlowError:
+                challenge = dummy_verification_challenge()
+            except AuthenticationRateLimitedError as error:
+                raise HTTPException(
+                    status_code=429, detail="authentication_rate_limited"
+                ) from error
+            except AuthenticationChallengeRequiredError as error:
+                raise HTTPException(
+                    status_code=409, detail="authentication_challenge_required"
+                ) from error
+            except AuthenticationProviderUnavailableError as error:
+                raise HTTPException(status_code=503, detail="authentication_unavailable") from error
+        return AuthEmailVerificationOut(
+            verification_id=challenge.verification_id,
+            expires_in=challenge.expires_in,
+        )
+
+    @app.post("/api/v1/auth/phone/login", response_model=AuthTokenOut)
+    def phone_login(
+        payload: AuthPhoneLoginIn,
+        session: Session = Depends(get_session),
+    ) -> AuthTokenOut:
+        if not resolved.cloudbase_auth_policy.phone_login_enabled:
+            raise HTTPException(status_code=404, detail="phone_auth_disabled")
+        provider = require_cloudbase_provider()
+        try:
+            token_set = provider.sign_in_with_phone_code(
+                payload.verification_id,
+                payload.verification_code,
+            )
+            return complete_provider_login(
+                provider,
+                token_set,
+                session,
+                event_type="session_started",
+                allow_email_link=False,
             )
         except HTTPException:
             raise
