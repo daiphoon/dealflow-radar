@@ -123,6 +123,13 @@ def bootstrap_application_role(
                     "GRANT SELECT, INSERT, UPDATE ON TABLES TO {}"
                 ).format(role)
             )
+            cursor.execute("SELECT to_regclass('public.personal_watchlist_items') IS NOT NULL")
+            if bool(cursor.fetchone()[0]):
+                cursor.execute(
+                    sql.SQL("GRANT DELETE ON TABLE public.personal_watchlist_items TO {}").format(
+                        role
+                    )
+                )
             cursor.execute("SELECT to_regclass('public.alembic_version') IS NOT NULL")
             if bool(cursor.fetchone()[0]):
                 cursor.execute(

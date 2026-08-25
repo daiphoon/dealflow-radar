@@ -91,6 +91,8 @@ prod up -d api frontend proxy
 prod ps
 ```
 
+`bootstrap-role` 默认只授予业务表查询、新增和修改权限；删除权限仅单独授予 `personal_watchlist_items`，并继续由 PostgreSQL RLS 限制为当前用户自己的关注记录。部署包含应用角色权限修正的版本时，必须在启动 API 前重新执行 `prod run --rm bootstrap-role`；不得为解决取消关注失败而对所有业务表统一授予 `DELETE`。
+
 `age` 私钥必须在独立管理终端生成并离线备份，只把公钥形式的 recipient 写入 `BACKUP_AGE_RECIPIENT`。`BACKUP_AGE_IDENTITY_PATH` 只在隔离恢复时临时指向私钥文件；生产服务器日常运行不得保存该文件。备份成功后目录中只应出现 `.dump.age`、`.sha256` 和 `.plain.sha256`，不能留下 `.dump`：
 
 ```bash
