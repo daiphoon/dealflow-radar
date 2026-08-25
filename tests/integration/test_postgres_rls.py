@@ -342,7 +342,22 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
                            ) AS can_read_migration_state,
                            has_table_privilege(
                                current_user, 'public.investments', 'DELETE'
-                           ) AS can_delete_investments
+                           ) AS can_delete_investments,
+                           has_table_privilege(
+                               current_user, 'public.personal_watchlist_items', 'DELETE'
+                           ) AS can_delete_personal_watchlist_items,
+                           (
+                               SELECT count(*)
+                               FROM information_schema.tables
+                               WHERE table_schema = 'public'
+                                 AND table_type = 'BASE TABLE'
+                                 AND table_name <> 'personal_watchlist_items'
+                                 AND has_table_privilege(
+                                     current_user,
+                                     format('%I.%I', table_schema, table_name),
+                                     'DELETE'
+                                 )
+                           ) AS unexpected_delete_table_count
                     FROM pg_roles AS roles
                     WHERE roles.rolname = current_user
                     """
@@ -371,7 +386,7 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
                     """
                 )
             )
-        assert role == (False, False, False, False, False)
+        assert role == (False, False, False, False, False, True, 0)
         assert enabled_rls_tables == 27
         assert _visible_counts(connection) == (0, 0, 0, 0, 0)
         assert _visible_counts(connection, ALPHA_USER_ID, ALPHA_TENANT_ID) == (10, 1, 10, 1, 0)
@@ -1330,6 +1345,11 @@ def test_personal_retention_rls_is_owner_private_and_requests_are_explicitly_adm
         assert connection.scalar(text("SELECT count(*) FROM personal_watchlist_items")) == 0
         assert connection.scalar(text("SELECT count(*) FROM personal_usage_records")) == 0
         assert connection.scalar(text("SELECT count(*) FROM personal_company_requests")) == 0
+        cross_owner_delete = connection.execute(
+            text("DELETE FROM personal_watchlist_items WHERE id = :id"),
+            {"id": "117ea380-dc73-4e8f-a0c4-8b60c2611fef"},
+        )
+        assert cross_owner_delete.rowcount == 0
         connection.execute(
             text(
                 """
@@ -1362,6 +1382,11 @@ def test_personal_retention_rls_is_owner_private_and_requests_are_explicitly_adm
             {"user_id": str(NO_ACCESS_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
         )
         assert connection.scalar(text("SELECT count(*) FROM personal_company_requests")) == 1
+        owner_delete = connection.execute(
+            text("DELETE FROM personal_watchlist_items WHERE id = :id"),
+            {"id": "117ea380-dc73-4e8f-a0c4-8b60c2611fef"},
+        )
+        assert owner_delete.rowcount == 1
         connection.execute(
             text(
                 """
@@ -1452,6 +1477,14 @@ def test_cloudbase_login_uses_postgres_rls_application_role() -> None:
         companies = client.get("/api/v1/companies", headers=headers)
         assert companies.status_code == 200
         assert companies.json()
+        company_id = companies.json()[0]["id"]
+        added = client.post(f"/api/v1/me/watchlist/{company_id}", headers=headers)
+        assert added.status_code == 200, added.text
+        removed = client.delete(f"/api/v1/me/watchlist/{company_id}", headers=headers)
+        assert removed.status_code == 204, removed.text
+        watchlist = client.get("/api/v1/me/watchlist", headers=headers)
+        assert watchlist.status_code == 200
+        assert company_id not in {item["company_id"] for item in watchlist.json()}
         logout = client.post("/api/v1/auth/logout", headers=headers)
         assert logout.status_code == 204
 

@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-25：取消关注的数据库最小权限修复
+
+- 任务：修复香港邀请测试环境中“可添加关注、但取消关注失败”的问题；保留 PostgreSQL 最小权限，只允许应用角色删除 `personal_watchlist_items`，并由 RLS 限制为当前用户自己的记录。
+- 关键文件：`scripts/bootstrap_local_database.py`、`tests/integration/test_postgres_rls.py`、`docs/12-operations-runbook.md`。
+- 实际命令：Ruff 与格式检查；临时 PostgreSQL 16 空库迁移、Schema 检查、虚构数据导入、应用角色收敛及完整 Pytest；隔离 SQLite `base → 0017 → base`；前端依赖审计、TypeScript 和生产构建；生产 Compose 解析、API/前端镜像构建和生产预检；`git diff --check`。
+- 测试结果：真实 PostgreSQL 限制角色下 231 项测试通过；接口层完成“关注 → 取消关注”回归；其他用户删除目标记录时受 RLS 隔离，关注表以外的业务表仍无 `DELETE` 权限。SQLite 迁移往返、前端 0 个已知高危依赖、TypeScript、生产构建、Compose 安全检查和预检均通过。本轮业务外部调用、付费调用、模型 Token 和自动发布均为 0。
+- 未解决阻塞：代码合并后仍需在香港服务器重新执行 `prod run --rm bootstrap-role`，再用真实账号从公司详情和关注列表各完成一次取消与恢复关注验收；本 PR 不直接修改生产数据库权限。
+
 ## 2026-08-20：CloudBase 手机号验证码登录 V1
 
 - 任务：在保留邮箱验证码和既有 PostgreSQL 授权模型的前提下，增加默认关闭的中国大陆手机号验证码入口；手机号只允许登录已绑定同一 CloudBase `subject` 的受邀账户，不开放注册、不按邮箱猜测合并、不在业务数据库保存完整手机号。
