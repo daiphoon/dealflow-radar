@@ -486,6 +486,17 @@ def _request_out(
         if request.research_job_id is not None
         else None
     )
+    research_modules: dict[str, str] = {}
+    if research_job is not None:
+        coverage_modules = research_job.coverage.get("modules", {})
+        if isinstance(coverage_modules, dict):
+            for code, value in coverage_modules.items():
+                if isinstance(value, str):
+                    research_modules[str(code)] = value
+                elif isinstance(value, dict):
+                    status = value.get("status")
+                    if isinstance(status, str):
+                        research_modules[str(code)] = status
     queue_position: int | None = None
     if request.status in {"identity_queued", "budget_deferred"} and research_job is None:
         queue_position = int(
@@ -550,6 +561,7 @@ def _request_out(
         status=request.status,
         research_job_id=request.research_job_id,
         research_job_status=research_job.status if research_job is not None else None,
+        research_modules=research_modules,
         queue_position=queue_position,
         resolved_legal_name=request.resolved_legal_name,
         resolved_credit_code=request.resolved_credit_code,

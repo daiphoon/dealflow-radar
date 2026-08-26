@@ -105,6 +105,7 @@ class CompanyDetail(BaseModel):
     information_gaps: list[str]
     investments: list[InvestmentOut]
     events: list[EventOut]
+    platform_unconfirmed_leads: list[EventOut]
     private_events: list[EventOut]
     unconfirmed_leads: list[EventOut]
 
@@ -177,6 +178,7 @@ class PersonalCompanyRequestOut(BaseModel):
     status: PersonalCompanyRequestStatus
     research_job_id: UUID | None
     research_job_status: str | None
+    research_modules: dict[str, str]
     queue_position: int | None
     resolved_legal_name: str | None
     resolved_credit_code: str | None

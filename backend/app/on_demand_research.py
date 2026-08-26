@@ -16,9 +16,13 @@ from sqlalchemy.orm import Session
 from backend.app.config import OnDemandResearchPolicy
 from backend.app.database import set_request_context
 from backend.app.models import (
+    PLATFORM_SHARED_SCOPE,
     SYSTEM_RESTRICTED_SCOPE,
     Company,
     CompanyResearchJob,
+    CompanySnapshot,
+    Event,
+    EventEvidence,
     OfficialIdentityVerification,
     PersonalCompanyRequest,
     PersonalUsageRecord,
@@ -28,11 +32,14 @@ from backend.app.models import (
     User,
     utc_now,
 )
-from backend.app.services import user_has_role
+from backend.app.services import _refresh_company_snapshot, user_has_role
 from backend.app.tianyancha import (
     TianyanchaIdentityLookupResult,
     TianyanchaIdentityNeedsInputError,
     TianyanchaProviderError,
+    TianyanchaResearchModuleCode,
+    TianyanchaResearchModuleResult,
+    TianyanchaResearchRecord,
 )
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -66,6 +73,24 @@ class IdentityLookupProvider(Protocol):
         company_name: str | None,
         credit_code: str | None,
     ) -> TianyanchaIdentityLookupResult: ...
+
+    def lookup_cached_research_module(
+        self,
+        *,
+        module_code: TianyanchaResearchModuleCode,
+        legal_name: str,
+        credit_code: str,
+        provider_company_id: str | None,
+    ) -> TianyanchaResearchModuleResult | None: ...
+
+    def lookup_research_module(
+        self,
+        *,
+        module_code: TianyanchaResearchModuleCode,
+        legal_name: str,
+        credit_code: str,
+        provider_company_id: str | None,
+    ) -> TianyanchaResearchModuleResult: ...
 
 
 class ExistingPrivateCompanyRequiresReviewError(RuntimeError):
@@ -106,6 +131,17 @@ class _IdentityLease:
     leased_until: datetime
     company_name: str | None
     credit_code: str | None
+
+
+@dataclass(frozen=True)
+class _ResearchLease:
+    job_id: UUID
+    company_id: UUID
+    module_code: TianyanchaResearchModuleCode
+    leased_until: datetime
+    legal_name: str
+    credit_code: str
+    provider_company_id: str | None
 
 
 def _sha256(value: str) -> str:
@@ -744,6 +780,18 @@ def _create_or_reuse_research_job(
 ) -> tuple[CompanyResearchJob, bool]:
     job = _active_research_job(session, company.id)
     if job is not None:
+        if job.status == "partial":
+            coverage = dict(job.coverage)
+            modules = dict(coverage.get("modules", {}))
+            for module, value in modules.items():
+                if isinstance(value, dict) and value.get("status") == "failed":
+                    modules[module] = {**value, "status": "pending", "error_code": None}
+                elif value == "failed":
+                    modules[module] = {"status": "pending", "error_code": None}
+            coverage["modules"] = modules
+            job.coverage = coverage
+            job.status = "queued"
+            job.last_error_code = None
         return job, False
     job = CompanyResearchJob(
         company_id=company.id,
@@ -753,8 +801,19 @@ def _create_or_reuse_research_job(
         policy_version=policy.version,
         coverage={
             "identity": "completed",
-            "modules": {module: "pending" for module in _MODULE_CODES},
+            "modules": {
+                module: {
+                    "status": "pending",
+                    "external_calls": 0,
+                    "cache_hits": 0,
+                    "records_created": 0,
+                    "events_created": 0,
+                    "error_code": None,
+                }
+                for module in _MODULE_CODES
+            },
             "automatic_publication": False,
+            "reports_generated": 0,
         },
         external_calls=0,
         input_tokens=0,
@@ -834,6 +893,743 @@ def _prepare_research_request(
     )
 
 
+def _module_status(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and isinstance(value.get("status"), str):
+        return str(value["status"])
+    return "pending"
+
+
+def _next_pending_module(coverage: dict[str, object]) -> TianyanchaResearchModuleCode | None:
+    modules = coverage.get("modules", {})
+    if not isinstance(modules, dict):
+        return None
+    for module in _MODULE_CODES:
+        if _module_status(modules.get(module)) == "pending":
+            return module  # type: ignore[return-value]
+    return None
+
+
+def _module_coverage(
+    coverage: dict[str, object], module_code: TianyanchaResearchModuleCode
+) -> dict[str, object]:
+    modules = coverage.get("modules", {})
+    value = modules.get(module_code) if isinstance(modules, dict) else None
+    if isinstance(value, dict):
+        return dict(value)
+    return {
+        "status": _module_status(value),
+        "external_calls": 0,
+        "cache_hits": 0,
+        "records_created": 0,
+        "events_created": 0,
+        "error_code": None,
+    }
+
+
+def _set_module_coverage(
+    job: CompanyResearchJob,
+    module_code: TianyanchaResearchModuleCode,
+    **changes: object,
+) -> None:
+    coverage = dict(job.coverage)
+    modules = dict(coverage.get("modules", {}))
+    current = _module_coverage(coverage, module_code)
+    current.update(changes)
+    modules[module_code] = current
+    coverage["modules"] = modules
+    job.coverage = coverage
+
+
+def _active_research_request_count(session: Session, job_id: UUID) -> int:
+    return int(
+        session.scalar(
+            select(func.count())
+            .select_from(PersonalCompanyRequest)
+            .where(
+                PersonalCompanyRequest.research_job_id == job_id,
+                PersonalCompanyRequest.status.in_(
+                    ["research_queued", "researching", "partial", "budget_deferred"]
+                ),
+            )
+        )
+        or 0
+    )
+
+
+def _sync_linked_research_requests(
+    session: Session,
+    job: CompanyResearchJob,
+    *,
+    active_status: str,
+    now: datetime,
+) -> None:
+    requests = list(
+        session.scalars(
+            select(PersonalCompanyRequest).where(
+                PersonalCompanyRequest.research_job_id == job.id,
+                PersonalCompanyRequest.status.in_(
+                    [
+                        "research_queued",
+                        "researching",
+                        "partial",
+                        "budget_deferred",
+                        "cancel_requested",
+                    ]
+                ),
+            )
+        )
+    )
+    for request in requests:
+        if request.status == "cancel_requested":
+            request.status = "cancelled"
+            request.cancelled_at = now
+            request.leased_until = None
+            request.heartbeat_at = now
+            continue
+        request.status = active_status
+        request.last_error_code = job.last_error_code
+        request.heartbeat_at = now
+
+
+def _provider_company_id_for_job(session: Session, job_id: UUID) -> str | None:
+    return session.scalar(
+        select(PersonalCompanyRequest.provider_company_id)
+        .where(
+            PersonalCompanyRequest.research_job_id == job_id,
+            PersonalCompanyRequest.provider_company_id.is_not(None),
+        )
+        .order_by(PersonalCompanyRequest.updated_at.desc())
+        .limit(1)
+    )
+
+
+def _claim_research_job(
+    session: Session,
+    policy: OnDemandResearchPolicy,
+    now: datetime,
+) -> _ResearchLease | None:
+    jobs = list(
+        session.scalars(
+            select(CompanyResearchJob)
+            .where(
+                CompanyResearchJob.status.in_(["queued", "running", "partial", "budget_deferred"]),
+                or_(
+                    CompanyResearchJob.leased_until.is_(None),
+                    CompanyResearchJob.leased_until <= now,
+                ),
+            )
+            .order_by(CompanyResearchJob.created_at, CompanyResearchJob.id)
+            .with_for_update(skip_locked=True)
+        )
+    )
+    for job in jobs:
+        module_code = _next_pending_module(job.coverage)
+        if module_code is None:
+            continue
+        if _active_research_request_count(session, job.id) == 0:
+            continue
+        company = session.get(Company, job.company_id)
+        if (
+            company is None
+            or company.tenant_id is not None
+            or company.visibility_scope != "public"
+            or company.identity_status != "verified"
+            or not company.credit_code
+        ):
+            job.status = "failed"
+            job.last_error_code = "shared_verified_company_required"
+            _sync_linked_research_requests(
+                session,
+                job,
+                active_status="failed",
+                now=now,
+            )
+            session.commit()
+            return None
+        leased_until = now + timedelta(seconds=policy.worker_lease_seconds)
+        job.status = "running"
+        job.current_stage = module_code
+        job.leased_until = leased_until
+        job.heartbeat_at = now
+        job.last_error_code = None
+        _set_module_coverage(
+            job,
+            module_code,
+            status="running",
+            started_at=now.isoformat(),
+            error_code=None,
+        )
+        _sync_linked_research_requests(
+            session,
+            job,
+            active_status="researching",
+            now=now,
+        )
+        provider_company_id = _provider_company_id_for_job(session, job.id)
+        session.commit()
+        return _ResearchLease(
+            job_id=job.id,
+            company_id=company.id,
+            module_code=module_code,
+            leased_until=leased_until,
+            legal_name=company.legal_name,
+            credit_code=company.credit_code,
+            provider_company_id=provider_company_id,
+        )
+    session.rollback()
+    return None
+
+
+def _research_lease_is_current(job: CompanyResearchJob, lease: _ResearchLease) -> bool:
+    return (
+        job.status == "running"
+        and job.current_stage == lease.module_code
+        and job.leased_until is not None
+        and _as_utc(job.leased_until) == _as_utc(lease.leased_until)
+    )
+
+
+def _record_research_usage(
+    session: Session,
+    user: User,
+    job: CompanyResearchJob,
+    module_code: TianyanchaResearchModuleCode,
+    *,
+    external_calls: int,
+    cache_hits: int,
+    outcome: str,
+) -> None:
+    session.add(
+        UsageLedger(
+            tenant_id=user.tenant_id,
+            company_id=job.company_id,
+            provider="tianyancha_licensed_research",
+            operation="on_demand_research_module",
+            external_calls=external_calls,
+            input_tokens=0,
+            output_tokens=0,
+            estimated_cost=Decimal("0"),
+            metrics={
+                "research_job_id": str(job.id),
+                "module_code": module_code,
+                "outcome": outcome,
+                "cache_hits": cache_hits,
+                "automatic_publication": False,
+                "model_calls": 0,
+                "reports_generated": 0,
+            },
+            idempotency_key=_sha256(f"on-demand-research:{job.id}:{module_code}:{uuid4()}"),
+        )
+    )
+
+
+def _persist_research_record(
+    session: Session,
+    company: Company,
+    source: Source,
+    job: CompanyResearchJob,
+    module_code: TianyanchaResearchModuleCode,
+    result: TianyanchaResearchModuleResult,
+    record: TianyanchaResearchRecord,
+) -> tuple[bool, bool]:
+    safe_payload = {
+        "schema_version": "licensed-research-record-v1",
+        "research_job_id": str(job.id),
+        "module_code": module_code,
+        "provider_tool": result.tool_name,
+        "provider_record_id": record.external_record_id,
+        "provider_response_hash": result.response_hash,
+        "checked_at": result.checked_at.isoformat(),
+        "title": record.title,
+        "summary": record.summary,
+        "facts": record.facts,
+        "uncertainties": record.uncertainties,
+        "classification": record.classification,
+        "classification_reasons": record.classification_reasons,
+        "policy_version": "licensed-research-display-v1",
+    }
+    dedupe_payload = {
+        key: value
+        for key, value in safe_payload.items()
+        if key not in {"research_job_id", "checked_at"}
+    }
+    serialized_payload = json.dumps(
+        dedupe_payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    content_hash = _sha256(serialized_payload)
+    external_record_id = f"research:{module_code}:{content_hash}"
+    document_dedupe_key = _sha256(
+        f"{source.id}:{company.id}:{module_code}:{record.external_record_id}:{content_hash}"
+    )
+    document = session.scalar(
+        select(RawDocument).where(
+            RawDocument.visibility_scope == SYSTEM_RESTRICTED_SCOPE,
+            RawDocument.document_dedupe_key == document_dedupe_key,
+        )
+    )
+    document_created = False
+    if document is None:
+        document = RawDocument(
+            source_id=source.id,
+            research_import_id=None,
+            candidate_document_id=None,
+            owner_user_id=None,
+            owner_tenant_id=None,
+            visibility_scope=SYSTEM_RESTRICTED_SCOPE,
+            external_record_id=external_record_id,
+            canonical_url=record.canonical_url,
+            title=record.title,
+            published_at=None,
+            published_on=record.published_on,
+            observed_at=result.checked_at,
+            content_hash=content_hash,
+            document_dedupe_key=document_dedupe_key,
+            license_status="permission_confirmed",
+            payload=safe_payload,
+        )
+        session.add(document)
+        session.flush()
+        document_created = True
+
+    event_fingerprint = _sha256(
+        f"{company.id}:{module_code}:{record.external_record_id}:{content_hash}"
+    )
+    event = session.scalar(
+        select(Event).where(
+            Event.company_id == company.id,
+            Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+            Event.fingerprint_version == "tyc-v1",
+            Event.event_fingerprint == event_fingerprint,
+        )
+    )
+    event_created = False
+    if event is None:
+        is_verified = record.classification == "verified_fact"
+        event = Event(
+            company_id=company.id,
+            owner_user_id=None,
+            owner_tenant_id=None,
+            visibility_scope=PLATFORM_SHARED_SCOPE,
+            event_type=record.event_type,
+            event_subtype=record.event_subtype,
+            status="published" if is_verified else "candidate",
+            direction=record.direction,
+            materiality_score=record.materiality_score,
+            risk_severity=record.risk_severity,
+            confidence_score=record.confidence_score,
+            source_quality="B",
+            title=record.title,
+            summary=record.summary,
+            facts=record.facts,
+            uncertainties=record.uncertainties,
+            occurred_at=record.occurred_at,
+            published_at=None,
+            published_on=record.published_on,
+            observed_at=result.checked_at,
+            fingerprint_version="tyc-v1",
+            event_fingerprint=event_fingerprint,
+            publication_route=("licensed_structured_fact" if is_verified else "unconfirmed_lead"),
+            publication_policy_version="licensed-research-display-v1",
+            publication_reasons=[
+                *record.classification_reasons,
+                "subject_identity_verified",
+                "licensed_source_record",
+            ],
+        )
+        session.add(event)
+        session.flush()
+        event_created = True
+
+    evidence = session.scalar(
+        select(EventEvidence).where(
+            EventEvidence.event_id == event.id,
+            EventEvidence.raw_document_id == document.id,
+            EventEvidence.span_hash == _sha256(record.evidence_excerpt),
+        )
+    )
+    if evidence is None:
+        session.add(
+            EventEvidence(
+                event_id=event.id,
+                raw_document_id=document.id,
+                source_event_evidence_id=None,
+                owner_user_id=None,
+                owner_tenant_id=None,
+                visibility_scope=PLATFORM_SHARED_SCOPE,
+                evidence_excerpt=record.evidence_excerpt,
+                span_hash=_sha256(record.evidence_excerpt),
+                support_type="supports",
+                display_source_name=source.name,
+                display_source_quality=source.source_quality,
+                display_title=record.title,
+                display_canonical_url=record.canonical_url,
+                display_published_at=None,
+                display_published_on=record.published_on,
+                display_observed_at=result.checked_at,
+                display_url_health_status="unchecked",
+                display_url_http_status=None,
+                display_url_checked_at=None,
+                display_final_url=None,
+                display_license_status="permission_confirmed",
+                display_allowed=True,
+            )
+        )
+    return document_created, event_created
+
+
+def _update_shared_snapshot_for_research(
+    session: Session,
+    company: Company,
+    coverage: dict[str, object],
+) -> None:
+    _refresh_company_snapshot(
+        session,
+        company,
+        PLATFORM_SHARED_SCOPE,
+        None,
+        None,
+    )
+    snapshot = session.scalar(
+        select(CompanySnapshot).where(
+            CompanySnapshot.company_id == company.id,
+            CompanySnapshot.visibility_scope == PLATFORM_SHARED_SCOPE,
+            CompanySnapshot.owner_user_id.is_(None),
+            CompanySnapshot.owner_tenant_id.is_(None),
+            CompanySnapshot.is_current.is_(True),
+        )
+    )
+    if snapshot is None:
+        return
+    modules = coverage.get("modules", {})
+    no_data_labels = {
+        "company_base": "工商与股东基础",
+        "risk": "司法与合规风险",
+        "intellectual_property": "知识产权",
+        "operation": "经营与公示",
+        "history": "历史变更",
+        "executive": "董监高与人员",
+    }
+    module_gaps = [
+        f"{no_data_labels[module]}：暂无可靠公开数据。"
+        for module in _MODULE_CODES
+        if isinstance(modules, dict) and _module_status(modules.get(module)) == "no_data"
+    ]
+    snapshot.information_gaps = list(dict.fromkeys([*snapshot.information_gaps, *module_gaps]))
+    snapshot.summary = {
+        **snapshot.summary,
+        "research_modules": {
+            module: _module_status(modules.get(module))
+            for module in _MODULE_CODES
+            if isinstance(modules, dict)
+        },
+    }
+
+
+def _complete_research_module(
+    session: Session,
+    user: User,
+    lease: _ResearchLease,
+    result: TianyanchaResearchModuleResult,
+    *,
+    external_calls: int,
+    cache_hits: int,
+) -> OnDemandWorkerResult:
+    job = session.scalar(
+        select(CompanyResearchJob)
+        .where(CompanyResearchJob.id == lease.job_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if job is None or not _research_lease_is_current(job, lease):
+        session.rollback()
+        return OnDemandWorkerResult(
+            status="lease_lost",
+            company_id=lease.company_id,
+            research_job_id=lease.job_id,
+            external_calls=external_calls,
+            cache_hits=cache_hits,
+        )
+    company = session.get(Company, lease.company_id)
+    if company is None:
+        session.rollback()
+        return OnDemandWorkerResult(
+            status="lease_lost",
+            company_id=lease.company_id,
+            research_job_id=lease.job_id,
+        )
+    source = _identity_source(session)
+    documents_created = 0
+    events_created = 0
+    for record in result.records:
+        document_created, event_created = _persist_research_record(
+            session,
+            company,
+            source,
+            job,
+            lease.module_code,
+            result,
+            record,
+        )
+        documents_created += int(document_created)
+        events_created += int(event_created)
+
+    job.external_calls += external_calls
+    job.input_tokens += 0
+    job.output_tokens += 0
+    job.heartbeat_at = utc_now()
+    job.leased_until = None
+    job.last_error_code = None
+    _set_module_coverage(
+        job,
+        lease.module_code,
+        status="no_data" if result.no_reliable_data else "completed",
+        checked_at=result.checked_at.isoformat(),
+        response_hash=result.response_hash,
+        provider_tool=result.tool_name,
+        external_calls=external_calls,
+        cache_hits=cache_hits,
+        records_created=documents_created,
+        events_created=events_created,
+        warnings=result.warnings,
+        error_code=None,
+    )
+    _record_research_usage(
+        session,
+        user,
+        job,
+        lease.module_code,
+        external_calls=external_calls,
+        cache_hits=cache_hits,
+        outcome="no_reliable_data" if result.no_reliable_data else "completed",
+    )
+
+    if _active_research_request_count(session, job.id) == 0:
+        job.status = "cancelled"
+        job.cancelled_at = utc_now()
+        job.current_stage = "cancelled"
+        _sync_linked_research_requests(
+            session,
+            job,
+            active_status="cancelled",
+            now=utc_now(),
+        )
+        outcome = "cancelled_after_module"
+    else:
+        next_module = _next_pending_module(job.coverage)
+        if next_module is not None:
+            job.status = "queued"
+            job.current_stage = next_module
+            _sync_linked_research_requests(
+                session,
+                job,
+                active_status="researching",
+                now=utc_now(),
+            )
+            outcome = "module_completed"
+        else:
+            modules = job.coverage.get("modules", {})
+            has_failure = isinstance(modules, dict) and any(
+                _module_status(modules.get(module)) == "failed" for module in _MODULE_CODES
+            )
+            job.status = "partial" if has_failure else "completed"
+            job.current_stage = "complete" if not has_failure else "partial"
+            _sync_linked_research_requests(
+                session,
+                job,
+                active_status="partial" if has_failure else "completed",
+                now=utc_now(),
+            )
+            _update_shared_snapshot_for_research(session, company, job.coverage)
+            outcome = "research_partial" if has_failure else "research_completed"
+    session.commit()
+    return OnDemandWorkerResult(
+        status="completed",
+        company_id=lease.company_id,
+        research_job_id=lease.job_id,
+        outcome=outcome,
+        external_calls=external_calls,
+        cache_hits=cache_hits,
+    )
+
+
+def _fail_research_module(
+    session: Session,
+    user: User,
+    lease: _ResearchLease,
+    *,
+    error_code: str,
+    external_calls: int,
+    cache_hits: int,
+) -> OnDemandWorkerResult:
+    job = session.scalar(
+        select(CompanyResearchJob)
+        .where(CompanyResearchJob.id == lease.job_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if job is None or not _research_lease_is_current(job, lease):
+        session.rollback()
+        return OnDemandWorkerResult(status="lease_lost", research_job_id=lease.job_id)
+    job.external_calls += external_calls
+    job.leased_until = None
+    job.heartbeat_at = utc_now()
+    job.last_error_code = error_code
+    _set_module_coverage(
+        job,
+        lease.module_code,
+        status="failed",
+        checked_at=utc_now().isoformat(),
+        external_calls=external_calls,
+        cache_hits=cache_hits,
+        error_code=error_code,
+    )
+    _record_research_usage(
+        session,
+        user,
+        job,
+        lease.module_code,
+        external_calls=external_calls,
+        cache_hits=cache_hits,
+        outcome=error_code,
+    )
+    next_module = _next_pending_module(job.coverage)
+    if next_module is not None and _active_research_request_count(session, job.id) > 0:
+        job.status = "queued"
+        job.current_stage = next_module
+        _sync_linked_research_requests(
+            session,
+            job,
+            active_status="researching",
+            now=utc_now(),
+        )
+        outcome = "module_failed_continuing"
+    else:
+        job.status = "partial"
+        job.current_stage = "partial"
+        _sync_linked_research_requests(
+            session,
+            job,
+            active_status="partial",
+            now=utc_now(),
+        )
+        outcome = "research_partial"
+    session.commit()
+    return OnDemandWorkerResult(
+        status="completed",
+        company_id=lease.company_id,
+        research_job_id=lease.job_id,
+        outcome=outcome,
+        external_calls=external_calls,
+        cache_hits=cache_hits,
+    )
+
+
+def _process_research_job(
+    session: Session,
+    user: User,
+    provider: IdentityLookupProvider,
+    policy: OnDemandResearchPolicy,
+    lease: _ResearchLease,
+    now: datetime,
+    *,
+    provider_retry_limit: int,
+) -> OnDemandWorkerResult:
+    calls_before = provider.external_calls
+    cache_before = provider.cache_hits
+    try:
+        result = provider.lookup_cached_research_module(
+            module_code=lease.module_code,
+            legal_name=lease.legal_name,
+            credit_code=lease.credit_code,
+            provider_company_id=lease.provider_company_id,
+        )
+    except TianyanchaProviderError:
+        result = None
+
+    if result is None:
+        job = session.scalar(
+            select(CompanyResearchJob)
+            .where(CompanyResearchJob.id == lease.job_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        if job is None or not _research_lease_is_current(job, lease):
+            session.rollback()
+            return OnDemandWorkerResult(status="lease_lost", research_job_id=lease.job_id)
+        expected_calls = provider_retry_limit + 1
+        if job.external_calls + expected_calls > policy.max_provider_calls_per_company:
+            return _fail_research_module(
+                session,
+                user,
+                lease,
+                error_code="company_provider_call_limit",
+                external_calls=0,
+                cache_hits=provider.cache_hits - cache_before,
+            )
+        deferral = _budget_deferral(
+            session,
+            policy,
+            expected_calls=expected_calls,
+            now=now,
+        )
+        if deferral is not None:
+            reason, retry_at = deferral
+            job.status = "budget_deferred"
+            job.last_error_code = reason
+            job.leased_until = retry_at
+            job.heartbeat_at = now
+            _set_module_coverage(job, lease.module_code, status="pending", error_code=reason)
+            _sync_linked_research_requests(
+                session,
+                job,
+                active_status="budget_deferred",
+                now=now,
+            )
+            session.commit()
+            return OnDemandWorkerResult(
+                status="completed",
+                company_id=lease.company_id,
+                research_job_id=lease.job_id,
+                outcome=reason,
+                cache_hits=provider.cache_hits - cache_before,
+            )
+        worker_user_id = user.id
+        worker_tenant_id = user.tenant_id
+        session.commit()
+        try:
+            result = provider.lookup_research_module(
+                module_code=lease.module_code,
+                legal_name=lease.legal_name,
+                credit_code=lease.credit_code,
+                provider_company_id=lease.provider_company_id,
+            )
+        except TianyanchaProviderError:
+            set_request_context(session, worker_user_id, worker_tenant_id)
+            return _fail_research_module(
+                session,
+                user,
+                lease,
+                error_code="research_provider_error",
+                external_calls=provider.external_calls - calls_before,
+                cache_hits=provider.cache_hits - cache_before,
+            )
+        set_request_context(session, worker_user_id, worker_tenant_id)
+
+    return _complete_research_module(
+        session,
+        user,
+        lease,
+        result,
+        external_calls=provider.external_calls - calls_before,
+        cache_hits=provider.cache_hits - cache_before,
+    )
+
+
 def validate_on_demand_worker_user(session: Session, user: User) -> None:
     if user.status != "active":
         raise RuntimeError("on-demand worker user must be active")
@@ -852,6 +1648,7 @@ def run_on_demand_worker_once(
     policy: OnDemandResearchPolicy,
     *,
     provider_retry_limit: int,
+    research_calls_enabled: bool = False,
     now: datetime | None = None,
 ) -> OnDemandWorkerResult:
     checked_at = _as_utc(now or utc_now())
@@ -886,4 +1683,18 @@ def run_on_demand_worker_once(
     prepared = _prepare_research_request(session, user, policy, checked_at)
     if prepared is not None:
         return prepared
+    if research_calls_enabled:
+        set_request_context(session, worker_user_id, worker_tenant_id)
+        research_lease = _claim_research_job(session, policy, checked_at)
+        if research_lease is not None:
+            set_request_context(session, worker_user_id, worker_tenant_id)
+            return _process_research_job(
+                session,
+                user,
+                provider,
+                policy,
+                research_lease,
+                checked_at,
+                provider_retry_limit=provider_retry_limit,
+            )
     return OnDemandWorkerResult(status="idle")

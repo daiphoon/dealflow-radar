@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI
@@ -15,9 +16,12 @@ from backend.app.models import (
     SYSTEM_RESTRICTED_SCOPE,
     Company,
     CompanyResearchJob,
+    CompanySnapshot,
     Event,
+    EventEvidence,
     OfficialIdentityVerification,
     PersonalCompanyReport,
+    PersonalCompanyRequest,
     PersonalQuotaIncreaseRequest,
     PersonalUsageRecord,
     RawDocument,
@@ -27,7 +31,13 @@ from backend.app.models import (
     UserRoleAssignment,
 )
 from backend.app.on_demand_research import run_on_demand_worker_once
-from backend.app.tianyancha import TianyanchaIdentityLookupResult
+from backend.app.tianyancha import (
+    TianyanchaIdentityLookupResult,
+    TianyanchaProviderError,
+    TianyanchaResearchModuleCode,
+    TianyanchaResearchModuleResult,
+    TianyanchaResearchRecord,
+)
 
 PERSONAL_HEADERS = {"X-Demo-User-Id": str(NO_ACCESS_USER_ID)}
 ALPHA_HEADERS = {"X-Demo-User-Id": str(ALPHA_USER_ID)}
@@ -98,6 +108,187 @@ class _CallbackIdentityProvider(_IdentityProvider):
         return result
 
 
+class _ResearchProvider(_IdentityProvider):
+    def __init__(
+        self,
+        *,
+        cached_modules: bool = False,
+        checked_at: datetime | None = None,
+    ) -> None:
+        super().__init__()
+        self.cached_modules = cached_modules
+        self.checked_at = checked_at or datetime(2026, 8, 26, 10, 0, tzinfo=UTC)
+        self.research_calls: list[str] = []
+
+    def _module_result(
+        self,
+        module_code: TianyanchaResearchModuleCode,
+    ) -> TianyanchaResearchModuleResult:
+        definitions: dict[str, tuple[str, str, str, str, str]] = {
+            "company_base": (
+                "governance_people",
+                "licensed_company_base_overview",
+                "工商与股东基础资料已更新",
+                "授权来源返回了工商与股东基础记录。",
+                "verified_fact",
+            ),
+            "risk": (
+                "legal_compliance",
+                "licensed_risk_overview",
+                "司法与合规风险待核实线索",
+                "授权来源返回了风险记录，仍需核对详情及后续状态。",
+                "unconfirmed_lead",
+            ),
+            "intellectual_property": (
+                "product_technology",
+                "licensed_intellectual_property_overview",
+                "知识产权资料已更新",
+                "授权来源返回了知识产权记录。",
+                "verified_fact",
+            ),
+            "history": (
+                "governance_people",
+                "licensed_history_overview",
+                "历史变更资料已更新",
+                "授权来源返回了历史变更记录。",
+                "verified_fact",
+            ),
+            "executive": (
+                "governance_people",
+                "licensed_executive_overview",
+                "董监高与人员待核实线索",
+                "授权来源返回了人员风险记录，仍需核对同名与任职关系。",
+                "unconfirmed_lead",
+            ),
+        }
+        if module_code == "operation":
+            return TianyanchaResearchModuleResult(
+                module_code=module_code,
+                tool_name="mock_operation_overview",
+                checked_at=self.checked_at,
+                response_hash="4" * 64,
+                records=[],
+                no_reliable_data=True,
+                warnings=[],
+            )
+        event_type, subtype, title, summary, classification = definitions[module_code]
+        is_lead = classification == "unconfirmed_lead"
+        record = TianyanchaResearchRecord(
+            external_record_id=f"mock-{module_code}-record-1",
+            title=title,
+            summary=summary,
+            event_type=event_type,
+            event_subtype=subtype,
+            direction="negative" if is_lead else "neutral",
+            materiality_score=75 if is_lead else 45,
+            risk_severity="high" if is_lead else "none",
+            confidence_score=Decimal("0.800" if is_lead else "0.950"),
+            facts=[{"name": "来源记录数", "value": "1", "unit": "条"}],
+            uncertainties=["需人工核对"] if is_lead else [],
+            occurred_at=datetime(2026, 8, 20, 0, 0, tzinfo=UTC),
+            published_on=date(2026, 8, 21),
+            canonical_url="https://www.tianyancha.com/company/mock-company-001",
+            evidence_excerpt=summary,
+            classification=classification,
+            classification_reasons=[
+                "licensed_source_risk_record_requires_review"
+                if is_lead
+                else "licensed_structured_routine_fact"
+            ],
+        )
+        return TianyanchaResearchModuleResult(
+            module_code=module_code,
+            tool_name=f"mock_{module_code}_overview",
+            checked_at=self.checked_at,
+            response_hash={
+                "company_base": "0",
+                "risk": "1",
+                "intellectual_property": "2",
+                "history": "3",
+                "executive": "5",
+            }[module_code]
+            * 64,
+            records=[record],
+            no_reliable_data=False,
+            warnings=[],
+        )
+
+    def lookup_cached_research_module(
+        self,
+        *,
+        module_code: TianyanchaResearchModuleCode,
+        legal_name: str,
+        credit_code: str,
+        provider_company_id: str | None,
+    ) -> TianyanchaResearchModuleResult | None:
+        del legal_name, credit_code, provider_company_id
+        if not self.cached_modules:
+            return None
+        self.cache_hits += 1
+        return self._module_result(module_code)
+
+    def lookup_research_module(
+        self,
+        *,
+        module_code: TianyanchaResearchModuleCode,
+        legal_name: str,
+        credit_code: str,
+        provider_company_id: str | None,
+    ) -> TianyanchaResearchModuleResult:
+        del legal_name, credit_code, provider_company_id
+        self.external_calls += 1
+        self.research_calls.append(module_code)
+        return self._module_result(module_code)
+
+
+class _CallbackResearchProvider(_ResearchProvider):
+    def __init__(self, callback: Callable[[], None]) -> None:
+        super().__init__()
+        self.callback = callback
+
+    def lookup_research_module(
+        self,
+        *,
+        module_code: TianyanchaResearchModuleCode,
+        legal_name: str,
+        credit_code: str,
+        provider_company_id: str | None,
+    ) -> TianyanchaResearchModuleResult:
+        result = super().lookup_research_module(
+            module_code=module_code,
+            legal_name=legal_name,
+            credit_code=credit_code,
+            provider_company_id=provider_company_id,
+        )
+        self.callback()
+        return result
+
+
+class _FailingResearchProvider(_ResearchProvider):
+    def __init__(self, failed_module: TianyanchaResearchModuleCode) -> None:
+        super().__init__()
+        self.failed_module = failed_module
+
+    def lookup_research_module(
+        self,
+        *,
+        module_code: TianyanchaResearchModuleCode,
+        legal_name: str,
+        credit_code: str,
+        provider_company_id: str | None,
+    ) -> TianyanchaResearchModuleResult:
+        if module_code == self.failed_module:
+            self.external_calls += 1
+            self.research_calls.append(module_code)
+            raise TianyanchaProviderError("mock module failure")
+        return super().lookup_research_module(
+            module_code=module_code,
+            legal_name=legal_name,
+            credit_code=credit_code,
+            provider_company_id=provider_company_id,
+        )
+
+
 def _enable_on_demand(app: FastAPI, *, daily: int = 10, monthly: int = 30) -> None:
     app.state.settings = replace(
         app.state.settings,
@@ -136,7 +327,13 @@ def _grant_platform_admin(app: FastAPI) -> None:
             session.commit()
 
 
-def _run_worker(app: FastAPI, provider: _IdentityProvider, *, retry_limit: int = 0):
+def _run_worker(
+    app: FastAPI,
+    provider: _IdentityProvider,
+    *,
+    retry_limit: int = 0,
+    research_calls_enabled: bool = False,
+):
     with app.state.session_factory() as session:
         user = session.get(User, ALPHA_USER_ID)
         assert user is not None
@@ -146,7 +343,32 @@ def _run_worker(app: FastAPI, provider: _IdentityProvider, *, retry_limit: int =
             provider,
             app.state.settings.on_demand_research_policy,
             provider_retry_limit=retry_limit,
+            research_calls_enabled=research_calls_enabled,
         )
+
+
+def _prepare_new_company_research(
+    client: TestClient,
+    app: FastAPI,
+    provider: _IdentityProvider,
+) -> tuple[str, UUID, UUID]:
+    created = client.post(
+        "/api/v1/me/company-requests/inclusion",
+        headers=PERSONAL_HEADERS,
+        json={"company_name": NEW_COMPANY_NAME, "credit_code": NEW_COMPANY_CODE},
+    )
+    assert created.status_code == 200
+    assert _run_worker(app, provider).outcome == "verified_candidate"
+    confirmed = client.post(
+        f"/api/v1/me/company-requests/{created.json()['id']}/confirm",
+        headers=PERSONAL_HEADERS,
+    )
+    assert confirmed.status_code == 200
+    prepared = _run_worker(app, provider)
+    assert prepared.outcome == "research_job_queued"
+    assert prepared.company_id is not None
+    assert prepared.research_job_id is not None
+    return created.json()["id"], prepared.company_id, prepared.research_job_id
 
 
 def test_identity_confirmation_creates_one_shared_company_and_reuses_one_job(
@@ -651,3 +873,283 @@ def test_existing_private_company_is_not_silently_promoted(
         assert company.visibility_scope == "tenant"
         assert session.scalar(select(func.count()).select_from(CompanyResearchJob)) == 0
         assert session.scalar(select(func.count()).select_from(RawDocument)) == 0
+
+
+def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
+    client: TestClient,
+    migrated_app: FastAPI,
+) -> None:
+    _enable_on_demand(migrated_app)
+    _grant_platform_admin(migrated_app)
+    provider = _ResearchProvider()
+    _, company_id, research_job_id = _prepare_new_company_research(
+        client,
+        migrated_app,
+        provider,
+    )
+
+    outcomes = [
+        _run_worker(
+            migrated_app,
+            provider,
+            research_calls_enabled=True,
+        ).outcome
+        for _ in range(6)
+    ]
+
+    assert provider.research_calls == [
+        "company_base",
+        "risk",
+        "intellectual_property",
+        "operation",
+        "history",
+        "executive",
+    ]
+    assert outcomes == [
+        "module_completed",
+        "module_completed",
+        "module_completed",
+        "module_completed",
+        "module_completed",
+        "research_completed",
+    ]
+    request = client.get(
+        "/api/v1/me/company-requests",
+        headers=PERSONAL_HEADERS,
+    ).json()[0]
+    assert request["status"] == "completed"
+    assert request["research_modules"] == {
+        "company_base": "completed",
+        "risk": "completed",
+        "intellectual_property": "completed",
+        "operation": "no_data",
+        "history": "completed",
+        "executive": "completed",
+    }
+
+    personal_detail = client.get(
+        f"/api/v1/companies/{company_id}",
+        headers=PERSONAL_HEADERS,
+    )
+    other_tenant_detail = client.get(
+        f"/api/v1/companies/{company_id}",
+        headers=BETA_HEADERS,
+    )
+    assert personal_detail.status_code == other_tenant_detail.status_code == 200
+    for detail in (personal_detail.json(), other_tenant_detail.json()):
+        assert len(detail["events"]) == 3
+        assert len(detail["platform_unconfirmed_leads"]) == 2
+        assert detail["private_events"] == []
+        assert detail["unconfirmed_leads"] == []
+        assert detail["investments"] == []
+        assert "经营与公示：暂无可靠公开数据。" in detail["information_gaps"]
+        assert all(event["evidence"] for event in detail["events"])
+        assert all(event["evidence"] for event in detail["platform_unconfirmed_leads"])
+
+    with migrated_app.state.session_factory() as session:
+        job = session.get(CompanyResearchJob, research_job_id)
+        assert job is not None
+        assert job.status == "completed"
+        assert job.external_calls == 6
+        assert job.input_tokens == job.output_tokens == 0
+        assert session.scalar(select(func.count()).select_from(Event)) == 5
+        assert session.scalar(select(func.count()).select_from(EventEvidence)) == 5
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(RawDocument)
+                .where(RawDocument.visibility_scope == SYSTEM_RESTRICTED_SCOPE)
+            )
+            == 6
+        )
+        snapshot = session.scalar(
+            select(CompanySnapshot).where(
+                CompanySnapshot.company_id == company_id,
+                CompanySnapshot.is_current.is_(True),
+            )
+        )
+        assert snapshot is not None
+        assert snapshot.summary["research_modules"]["operation"] == "no_data"
+        research_usage = list(
+            session.scalars(
+                select(UsageLedger).where(UsageLedger.operation == "on_demand_research_module")
+            )
+        )
+        assert len(research_usage) == 6
+        assert sum(row.external_calls for row in research_usage) == 6
+        assert sum(row.input_tokens + row.output_tokens for row in research_usage) == 0
+
+    cached_provider = _ResearchProvider(cached_modules=True)
+    refreshed = client.post(
+        f"/api/v1/me/company-requests/refresh/{company_id}",
+        headers=BETA_HEADERS,
+    )
+    assert refreshed.status_code == 200
+    assert _run_worker(migrated_app, cached_provider).outcome == "research_job_queued"
+    cached_outcomes = [
+        _run_worker(
+            migrated_app,
+            cached_provider,
+            research_calls_enabled=True,
+        ).outcome
+        for _ in range(6)
+    ]
+    assert cached_outcomes[-1] == "research_completed"
+    assert cached_provider.external_calls == 0
+    assert cached_provider.cache_hits == 6
+    with migrated_app.state.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Event)) == 5
+        assert session.scalar(select(func.count()).select_from(EventEvidence)) == 5
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(RawDocument)
+                .where(RawDocument.visibility_scope == SYSTEM_RESTRICTED_SCOPE)
+            )
+            == 6
+        )
+
+    later_provider = _ResearchProvider(checked_at=datetime(2026, 8, 27, 10, 0, tzinfo=UTC))
+    later_refresh = client.post(
+        f"/api/v1/me/company-requests/refresh/{company_id}",
+        headers=ALPHA_HEADERS,
+    )
+    assert later_refresh.status_code == 200
+    assert _run_worker(migrated_app, later_provider).outcome == "research_job_queued"
+    for _ in range(6):
+        _run_worker(
+            migrated_app,
+            later_provider,
+            research_calls_enabled=True,
+        )
+    assert later_provider.external_calls == 6
+    with migrated_app.state.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Event)) == 5
+        assert session.scalar(select(func.count()).select_from(EventEvidence)) == 5
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(RawDocument)
+                .where(RawDocument.visibility_scope == SYSTEM_RESTRICTED_SCOPE)
+            )
+            == 6
+        )
+
+
+def test_cancel_during_research_keeps_current_result_and_stops_later_modules(
+    client: TestClient,
+    migrated_app: FastAPI,
+) -> None:
+    _enable_on_demand(migrated_app)
+    _grant_platform_admin(migrated_app)
+    identity_provider = _IdentityProvider()
+    request_id, company_id, research_job_id = _prepare_new_company_research(
+        client,
+        migrated_app,
+        identity_provider,
+    )
+    cancellation_statuses: list[str] = []
+
+    def cancel_in_flight() -> None:
+        response = client.post(
+            f"/api/v1/me/company-requests/{request_id}/cancel",
+            headers=PERSONAL_HEADERS,
+            json={"reason": "研究开始后发现查询目标错误"},
+        )
+        assert response.status_code == 200
+        cancellation_statuses.append(response.json()["status"])
+
+    provider = _CallbackResearchProvider(cancel_in_flight)
+    result = _run_worker(
+        migrated_app,
+        provider,
+        research_calls_enabled=True,
+    )
+
+    assert cancellation_statuses == ["cancel_requested"]
+    assert result.outcome == "cancelled_after_module"
+    assert provider.research_calls == ["company_base"]
+    request = client.get(
+        "/api/v1/me/company-requests",
+        headers=PERSONAL_HEADERS,
+    ).json()[0]
+    assert request["status"] == "cancelled"
+    assert request["research_modules"]["company_base"] == "completed"
+    assert request["research_modules"]["risk"] == "pending"
+    detail = client.get(
+        f"/api/v1/companies/{company_id}",
+        headers=PERSONAL_HEADERS,
+    ).json()
+    assert [event["title"] for event in detail["events"]] == ["工商与股东基础资料已更新"]
+    assert detail["platform_unconfirmed_leads"] == []
+
+    with migrated_app.state.session_factory() as session:
+        job = session.get(CompanyResearchJob, research_job_id)
+        assert job is not None
+        assert job.status == "cancelled"
+        assert job.external_calls == 1
+        persisted_request = session.get(PersonalCompanyRequest, UUID(request_id))
+        assert persisted_request is not None
+        usage = session.scalar(
+            select(PersonalUsageRecord).where(PersonalUsageRecord.resource_id == UUID(request_id))
+        )
+        assert usage is not None
+        assert usage.voided_at is None
+
+
+def test_failed_module_does_not_erase_prior_results_and_can_resume(
+    client: TestClient,
+    migrated_app: FastAPI,
+) -> None:
+    _enable_on_demand(migrated_app)
+    _grant_platform_admin(migrated_app)
+    provider = _FailingResearchProvider("risk")
+    _, company_id, research_job_id = _prepare_new_company_research(
+        client,
+        migrated_app,
+        provider,
+    )
+
+    results = [
+        _run_worker(
+            migrated_app,
+            provider,
+            research_calls_enabled=True,
+        )
+        for _ in range(6)
+    ]
+
+    assert results[1].outcome == "module_failed_continuing"
+    assert results[-1].outcome == "research_partial"
+    partial_detail = client.get(
+        f"/api/v1/companies/{company_id}",
+        headers=PERSONAL_HEADERS,
+    ).json()
+    assert len(partial_detail["events"]) == 3
+    assert len(partial_detail["platform_unconfirmed_leads"]) == 1
+    with migrated_app.state.session_factory() as session:
+        job = session.get(CompanyResearchJob, research_job_id)
+        assert job is not None
+        assert job.status == "partial"
+        assert job.coverage["modules"]["risk"]["status"] == "failed"
+
+    resumed = client.post(
+        f"/api/v1/me/company-requests/refresh/{company_id}",
+        headers=BETA_HEADERS,
+    )
+    assert resumed.status_code == 200
+    recovery_provider = _ResearchProvider()
+    assert _run_worker(migrated_app, recovery_provider).outcome == "research_job_reused"
+    recovered = _run_worker(
+        migrated_app,
+        recovery_provider,
+        research_calls_enabled=True,
+    )
+    assert recovered.outcome == "research_completed"
+    assert recovery_provider.research_calls == ["risk"]
+    recovered_detail = client.get(
+        f"/api/v1/companies/{company_id}",
+        headers=BETA_HEADERS,
+    ).json()
+    assert len(recovered_detail["events"]) == 3
+    assert len(recovered_detail["platform_unconfirmed_leads"]) == 2

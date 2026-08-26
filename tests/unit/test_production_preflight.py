@@ -34,6 +34,7 @@ def _set_valid_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "TRUSTED_SOURCE_CALLS_ENABLED",
         "SOURCE_MONITOR_SCHEDULER_ENABLED",
         "TIANYANCHA_IDENTITY_CALLS_ENABLED",
+        "TIANYANCHA_RESEARCH_CALLS_ENABLED",
         "ON_DEMAND_RESEARCH_ENABLED",
         "REVIEW_WORKBENCH_ENABLED",
     ):

@@ -459,3 +459,120 @@ def test_provider_validates_endpoint_and_manifest_before_network(tmp_path: Path)
 
     with pytest.raises(ValueError, match="endpoint"):
         TianyanchaIdentityPolicy(endpoint_url="https://example.invalid/tools/call")
+
+
+def test_six_research_modules_use_approved_tools_and_conservative_classification(
+    tmp_path: Path,
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        tool_name = payload["tool_name"]
+        if tool_name == "get_company_registration_info":
+            return _response(_registration_content())
+        return _response(
+            {
+                "_summary": f"{tool_name} 返回了 1 条结构化记录。",
+                "total": 1,
+                "items": [{"creditCode": CREDIT_CODE, "id": f"{tool_name}-1"}],
+            }
+        )
+
+    provider = _provider(tmp_path, httpx.MockTransport(handler))
+    provider.lookup_identity(company_name=None, credit_code=CREDIT_CODE)
+    modules = [
+        "company_base",
+        "risk",
+        "intellectual_property",
+        "operation",
+        "history",
+        "executive",
+    ]
+    results = {
+        module: provider.lookup_research_module(
+            module_code=module,  # type: ignore[arg-type]
+            legal_name=LEGAL_NAME,
+            credit_code=CREDIT_CODE,
+            provider_company_id="123456",
+        )
+        for module in modules
+    }
+
+    assert [request["tool_name"] for request in requests] == [
+        "get_company_registration_info",
+        "get_shareholder_info",
+        "get_risk_overview",
+        "get_ipr_score",
+        "get_bidding_info",
+        "get_historical_registration",
+        "get_person_risk_overview",
+    ]
+    assert requests[1]["arguments"] == {
+        "searchKey": CREDIT_CODE,
+        "pageNum": 1,
+        "pageSize": 10,
+    }
+    assert requests[-1]["arguments"] == {
+        "searchKey": LEGAL_NAME,
+        "humanName": "不应进入身份记录",
+    }
+    assert all(result.records for result in results.values())
+    assert results["risk"].records[0].classification == "unconfirmed_lead"
+    assert results["executive"].records[0].classification == "unconfirmed_lead"
+    for module in {"company_base", "intellectual_property", "operation", "history"}:
+        assert results[module].records[0].classification == "verified_fact"
+    assert provider.external_calls == 7
+
+    def forbidden_handler(_: httpx.Request) -> httpx.Response:
+        pytest.fail("fresh module cache must prevent network calls")
+
+    cached = _provider(tmp_path, httpx.MockTransport(forbidden_handler))
+    cached_results = [
+        cached.lookup_cached_research_module(
+            module_code=module,  # type: ignore[arg-type]
+            legal_name=LEGAL_NAME,
+            credit_code=CREDIT_CODE,
+            provider_company_id="123456",
+        )
+        for module in modules
+    ]
+    assert all(result is not None for result in cached_results)
+    assert cached.external_calls == 0
+    assert cached.cache_hits == 8
+
+
+def test_research_module_handles_empty_result_and_rejects_subject_conflict(
+    tmp_path: Path,
+) -> None:
+    responses = iter(
+        [
+            _response({"_empty": True, "_warnings": ["no matching records"]}),
+            _response(
+                {
+                    "total": 1,
+                    "items": [{"creditCode": "91310000MA1K000014"}],
+                }
+            ),
+        ]
+    )
+    provider = _provider(tmp_path, httpx.MockTransport(lambda _: next(responses)))
+
+    empty = provider.lookup_research_module(
+        module_code="operation",
+        legal_name=LEGAL_NAME,
+        credit_code=CREDIT_CODE,
+        provider_company_id="123456",
+    )
+    assert empty.no_reliable_data is True
+    assert empty.records == []
+    assert empty.warnings == ["no matching records"]
+
+    with pytest.raises(TianyanchaProviderError, match="credit code conflicts"):
+        provider.lookup_research_module(
+            module_code="risk",
+            legal_name=LEGAL_NAME,
+            credit_code=CREDIT_CODE,
+            provider_company_id="123456",
+        )

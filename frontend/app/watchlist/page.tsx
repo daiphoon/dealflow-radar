@@ -53,6 +53,23 @@ const activeRequestStatuses = new Set([
   "cancel_requested",
 ]);
 
+const researchModuleLabels: Record<string, string> = {
+  company_base: "工商与股东基础",
+  risk: "司法与合规风险",
+  intellectual_property: "知识产权",
+  operation: "经营与公示",
+  history: "历史变更",
+  executive: "董监高与人员",
+};
+
+const researchModuleStatusLabels: Record<string, string> = {
+  pending: "等待检查",
+  running: "正在检查",
+  completed: "已取得资料",
+  no_data: "暂无可靠公开数据",
+  failed: "本次检查未完成",
+};
+
 function formatDate(value: string | null): string {
   if (!value) return "尚未记录";
   return new Intl.DateTimeFormat("zh-CN", {
@@ -218,6 +235,16 @@ export default async function WatchlistPage({
                     <span className="muted">提交于 {formatDate(request.created_at)}</span>
                   </div>
                   <p>{request.status_message}</p>
+                  {Object.keys(request.research_modules).length > 0 ? (
+                    <ul className="research-module-list" aria-label="六大研究模块进度">
+                      {Object.entries(request.research_modules).map(([module, status]) => (
+                        <li key={module}>
+                          <span>{researchModuleLabels[module] ?? module}</span>
+                          <strong>{researchModuleStatusLabels[status] ?? status}</strong>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
                   {request.queue_position ? (
                     <p>当前可见队列位置：第 {request.queue_position} 位。</p>
                   ) : null}

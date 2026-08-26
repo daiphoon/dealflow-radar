@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-26：M6A-3 新公司按需研究 PR 2
+
+- 任务：在 `0018` 现有队列和作用域模型上完成六大模块按需研究 V1；每次 Worker 只处理一个模块，缓存先于预算，按来源记录与内容哈希去重；低风险结构化资料进入“已核实事实”，风险和人员资料进入“待核实线索”，原始供应商响应保持系统受限；不生成报告、不调用模型、不恢复自动发布。本 PR 未新增数据库迁移，也未查询既有 10 家真实样本。
+- 关键文件：`backend/app/tianyancha.py`、`backend/app/on_demand_research.py`、`backend/app/services.py`、`backend/app/personal_features.py`、`scripts/run_on_demand_research_worker.py`、`frontend/app/companies/[id]/page.tsx`、`frontend/app/watchlist/page.tsx`、生产环境开关示例及相关测试和运维文档。
+- 实际命令：Ruff 逻辑和格式检查；完整 Pytest；SQLite `base → 0018 → base` 与 Schema 漂移；全新 PostgreSQL 16 的迁移、虚构数据、受限应用账户和完整 RLS 套件；前端依赖审计、TypeScript 和 Next.js 生产构建；生产 Compose 解析与预检；本地虚构数据浏览器桌面和窄屏冒烟；Codex Security 工作区差异扫描；`git diff --check`。
+- 测试结果：Ruff 和格式通过；默认离线 Pytest 253 项通过、14 项 PostgreSQL 测试按预期跳过，仅有既有 FastAPI TestClient 上游弃用警告；SQLite/PostgreSQL 迁移和 Schema 漂移通过，PostgreSQL RLS 14 项通过；前端 0 个已知高危漏洞、类型检查和生产构建通过；生产 Compose 与初始安全开关预检通过。Mock 闭环验证六模块顺序、缓存重放零外部调用、同内容跨时间不重复、部分失败恢复、取消后保留当前模块结果、跨租户只复用共享事实而不泄露投资或原始文档、个人页面分层展示和窄屏无横向溢出。安全差异扫描覆盖 13/13 个变更源文件，未发现可报告漏洞。本轮真实天眼查、付费 API、业务模型 Token、报告生成、费用和自动发布均为 0。
+- 未解决阻塞：无代码阻塞。真实天眼查六个工具的响应契约和内容价值尚未验证；PR 合并部署并由项目负责人开通 VIP 后，只用一家此前未入库的新公司做受控真实验收。首版继续强制单 Worker，未增加跨进程原子预算预留前不得水平扩容。
+
 ## 2026-08-26：M6A-3 新公司按需研究 PR 1
 
 - 任务：实现默认关闭的新公司按需研究基础：用户提交准确工商全称或信用代码，后台核验身份、等待用户确认，再创建或复用全局公司研究任务；完成 10/日、30/月个人额度、临时提额、供应商 900/日、9000/月自动闸门、队列、租约、取消、断线恢复和完整缓存优先。本 PR 不执行六大研究模块，不查询现有 10 家样本，不生成报告或事实。

@@ -170,6 +170,7 @@ export type CompanyDetail = {
   information_gaps: string[];
   investments: Investment[];
   events: Event[];
+  platform_unconfirmed_leads: Event[];
   private_events: Event[];
   unconfirmed_leads: Event[];
 };
@@ -211,6 +212,7 @@ export type PersonalCompanyRequest = {
     | "failed";
   research_job_id: string | null;
   research_job_status: string | null;
+  research_modules: Record<string, string>;
   queue_position: number | null;
   resolved_legal_name: string | null;
   resolved_credit_code: string | null;

@@ -6,7 +6,8 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -56,6 +57,69 @@ class TianyanchaIdentityLookupResult(BaseModel):
     data_updated_at: datetime | None = None
     response_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     candidate_count: int | None = None
+
+
+TianyanchaResearchModuleCode = Literal[
+    "company_base",
+    "risk",
+    "intellectual_property",
+    "operation",
+    "history",
+    "executive",
+]
+
+
+class TianyanchaResearchRecord(BaseModel):
+    """A conservative, display-ready projection of one licensed source response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    external_record_id: str = Field(min_length=1, max_length=160)
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=2000)
+    event_type: Literal[
+        "financial_operation",
+        "financing_cap_table",
+        "contract_commercial",
+        "product_technology",
+        "governance_people",
+        "legal_compliance",
+        "capacity_assets",
+        "exit_liquidity",
+        "information_quality",
+    ]
+    event_subtype: str = Field(min_length=1, max_length=64)
+    direction: Literal["positive", "negative", "neutral", "mixed", "unknown"]
+    materiality_score: int = Field(ge=0, le=100)
+    risk_severity: Literal["none", "low", "moderate", "high", "critical"]
+    confidence_score: Decimal = Field(ge=0, le=1)
+    facts: list[dict[str, str | None]] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
+    occurred_at: datetime | None = None
+    published_on: date | None = None
+    canonical_url: str = Field(min_length=1, max_length=1000)
+    evidence_excerpt: str = Field(min_length=1, max_length=2000)
+    classification: Literal["verified_fact", "unconfirmed_lead"]
+    classification_reasons: list[str] = Field(default_factory=list)
+
+
+class TianyanchaResearchModuleResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    module_code: TianyanchaResearchModuleCode
+    tool_name: str = Field(min_length=1, max_length=80)
+    checked_at: datetime
+    response_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    records: list[TianyanchaResearchRecord] = Field(default_factory=list)
+    no_reliable_data: bool
+    warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("checked_at")
+    @classmethod
+    def require_checked_at_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("research checked_at must include a timezone")
+        return value
 
 
 class TianyanchaIdentityQuery(BaseModel):
@@ -160,6 +224,23 @@ class TianyanchaIdentityProvider:
     code = "tianyancha_licensed_identity"
     parser_version = "tyc-id-v1"
     estimated_cost = 0
+
+    _RESEARCH_TOOLS: dict[str, str] = {
+        "company_base": "get_shareholder_info",
+        "risk": "get_risk_overview",
+        "intellectual_property": "get_ipr_score",
+        "operation": "get_bidding_info",
+        "history": "get_historical_registration",
+        "executive": "get_person_risk_overview",
+    }
+    _RESEARCH_LABELS: dict[str, str] = {
+        "company_base": "工商与股东基础",
+        "risk": "司法与合规风险",
+        "intellectual_property": "知识产权",
+        "operation": "经营与公示",
+        "history": "历史变更",
+        "executive": "董监高与人员",
+    }
 
     def __init__(
         self,
@@ -283,7 +364,11 @@ class TianyanchaIdentityProvider:
             self._sleep(interval - elapsed)
 
     def _post_tool(self, tool_name: str, arguments: dict[str, object]) -> dict[str, object]:
-        if tool_name not in {"search_companies", "get_company_registration_info"}:
+        if tool_name not in {
+            "search_companies",
+            "get_company_registration_info",
+            *self._RESEARCH_TOOLS.values(),
+        }:
             raise ValueError("unsupported Tianyancha tool")
         search_key = arguments.get("searchKey")
         if not isinstance(search_key, str) or not search_key.strip():
@@ -567,6 +652,263 @@ class TianyanchaIdentityProvider:
         return self._lookup_identity_with(
             company_name=company_name,
             credit_code=credit_code,
+            call_tool=self._call_tool,
+        )
+
+    @staticmethod
+    def _research_summary(content: dict[str, object]) -> str | None:
+        value = content.get("_summary")
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return " ".join(value.split())[:1800]
+
+    @staticmethod
+    def _research_warnings(content: dict[str, object]) -> list[str]:
+        raw = content.get("_warnings")
+        if isinstance(raw, str) and raw.strip():
+            return [" ".join(raw.split())[:300]]
+        if isinstance(raw, list):
+            return [" ".join(str(item).split())[:300] for item in raw if str(item).strip()][:10]
+        return []
+
+    @staticmethod
+    def _research_item_count(content: dict[str, object]) -> int | None:
+        for key in ("total", "totalCount", "count"):
+            value = content.get(key)
+            if isinstance(value, int) and value >= 0:
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+        for value in content.values():
+            if isinstance(value, list):
+                return len(value)
+            if isinstance(value, dict):
+                nested = TianyanchaIdentityProvider._research_item_count(value)
+                if nested is not None:
+                    return nested
+        return None
+
+    @staticmethod
+    def _research_has_data(content: dict[str, object]) -> bool:
+        if content.get("_empty") is True:
+            return False
+        ignored = {"_summary", "_empty", "_warnings", "page", "pageNum", "pageSize"}
+        for key, value in content.items():
+            if key in ignored or value in (None, "", [], {}):
+                continue
+            if key in {"total", "totalCount", "count"} and str(value) == "0":
+                continue
+            return True
+        return False
+
+    @staticmethod
+    def _subject_codes(value: object) -> set[str]:
+        codes: set[str] = set()
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in {"creditCode", "credit_code"} and isinstance(item, str):
+                    normalized = item.strip().upper()
+                    if normalized:
+                        codes.add(normalized)
+                else:
+                    codes.update(TianyanchaIdentityProvider._subject_codes(item))
+        elif isinstance(value, list):
+            for item in value:
+                codes.update(TianyanchaIdentityProvider._subject_codes(item))
+        return codes
+
+    @classmethod
+    def _module_record(
+        cls,
+        *,
+        module_code: TianyanchaResearchModuleCode,
+        content: dict[str, object],
+        response_hash: str,
+        canonical_url: str,
+        registration_base: dict[str, object] | None,
+    ) -> TianyanchaResearchRecord | None:
+        if not cls._research_has_data(content):
+            return None
+        label = cls._RESEARCH_LABELS[module_code]
+        count = cls._research_item_count(content)
+        summary = cls._research_summary(content)
+        if summary is None:
+            count_text = f"，共 {count} 条" if count is not None else ""
+            summary = (
+                f"授权数据源返回了{label}结构化记录{count_text}。"
+                "该表述只确认来源记录已取得，不代表平台对原因、责任或投资风险作出判断。"
+            )
+        facts: list[dict[str, str | None]] = []
+        if count is not None:
+            facts.append({"name": "来源记录数", "value": str(count), "unit": "条"})
+        if module_code == "company_base" and registration_base is not None:
+            for key, name in (
+                ("regStatus", "登记状态"),
+                ("legalPersonName", "法定代表人"),
+                ("regCapital", "注册资本"),
+                ("estiblishTime", "成立日期"),
+            ):
+                value = registration_base.get(key)
+                if isinstance(value, (str, int, float)) and str(value).strip():
+                    facts.append({"name": name, "value": str(value).strip(), "unit": None})
+
+        event_type = {
+            "company_base": "governance_people",
+            "risk": "legal_compliance",
+            "intellectual_property": "product_technology",
+            "operation": "contract_commercial",
+            "history": "governance_people",
+            "executive": "governance_people",
+        }[module_code]
+        is_risk_lead = module_code in {"risk", "executive"}
+        return TianyanchaResearchRecord(
+            external_record_id=f"{module_code}:{response_hash[:24]}",
+            title=f"{label}资料已更新" if not is_risk_lead else f"{label}待核实线索",
+            summary=summary,
+            event_type=event_type,
+            event_subtype=f"licensed_{module_code}_overview",
+            direction="negative" if is_risk_lead else "neutral",
+            materiality_score=70 if is_risk_lead else 45,
+            risk_severity="high" if is_risk_lead else "none",
+            confidence_score=Decimal("0.900") if not is_risk_lead else Decimal("0.800"),
+            facts=facts,
+            uncertainties=(["需核对具体记录、主体身份及后续状态"] if is_risk_lead else []),
+            canonical_url=canonical_url,
+            evidence_excerpt=summary[:1000],
+            classification="unconfirmed_lead" if is_risk_lead else "verified_fact",
+            classification_reasons=(
+                ["licensed_source_risk_record_requires_review"]
+                if is_risk_lead
+                else ["licensed_structured_routine_fact"]
+            ),
+        )
+
+    def _lookup_research_module_with(
+        self,
+        *,
+        module_code: TianyanchaResearchModuleCode,
+        legal_name: str,
+        credit_code: str,
+        provider_company_id: str | None,
+        call_tool: Callable[[str, dict[str, object]], _ToolResult],
+    ) -> TianyanchaResearchModuleResult:
+        normalized_code = validate_unified_credit_code(credit_code.upper())
+        normalized_name = legal_name.strip()
+        if not normalized_name:
+            raise ValueError("legal_name must not be blank")
+        tool_name = self._RESEARCH_TOOLS[module_code]
+        registration: _ToolResult | None = None
+        registration_base: dict[str, object] | None = None
+        if module_code in {"company_base", "executive"}:
+            # Identity confirmation must have populated this cache first. Do not
+            # spend a second identity call from the research stage.
+            try:
+                registration = self._call_cached_tool(
+                    "get_company_registration_info",
+                    {"searchKey": normalized_code},
+                )
+            except _TianyanchaCacheMiss as error:
+                raise TianyanchaProviderError(
+                    "confirmed identity cache is required before company research"
+                ) from error
+            registration_base = self._registration_base(registration.content)
+            returned_code = str(registration_base.get("creditCode") or "").strip().upper()
+            if returned_code != normalized_code:
+                raise TianyanchaProviderError("research identity context does not match company")
+
+        arguments: dict[str, object] = {"searchKey": normalized_code}
+        if module_code in {"company_base", "operation"}:
+            arguments.update({"pageNum": 1, "pageSize": 10})
+        if module_code == "executive":
+            human_name = str((registration_base or {}).get("legalPersonName") or "").strip()
+            if not human_name:
+                checked_at = registration.fetched_at if registration is not None else self._clock()
+                response_hash = (
+                    registration.response_hash
+                    if registration is not None
+                    else _sha256(f"{module_code}:{normalized_code}:missing-person")
+                )
+                return TianyanchaResearchModuleResult(
+                    module_code=module_code,
+                    tool_name=tool_name,
+                    checked_at=checked_at,
+                    response_hash=response_hash,
+                    records=[],
+                    no_reliable_data=True,
+                    warnings=["registration_context_has_no_legal_representative"],
+                )
+            arguments = {"searchKey": normalized_name, "humanName": human_name}
+
+        result = call_tool(tool_name, arguments)
+        returned_codes = self._subject_codes(result.content)
+        if returned_codes and normalized_code not in returned_codes:
+            raise TianyanchaProviderError("research response credit code conflicts with company")
+        checked_at = max(
+            result.fetched_at,
+            registration.fetched_at if registration is not None else result.fetched_at,
+        )
+        response_hash = (
+            _sha256(f"{registration.response_hash}:{result.response_hash}")
+            if registration is not None
+            else result.response_hash
+        )
+        canonical_url = (
+            f"https://www.tianyancha.com/company/{provider_company_id}"
+            if provider_company_id
+            else "https://www.tianyancha.com/"
+        )
+        record = self._module_record(
+            module_code=module_code,
+            content=result.content,
+            response_hash=response_hash,
+            canonical_url=canonical_url,
+            registration_base=registration_base,
+        )
+        warnings = self._research_warnings(result.content)
+        return TianyanchaResearchModuleResult(
+            module_code=module_code,
+            tool_name=tool_name,
+            checked_at=checked_at,
+            response_hash=response_hash,
+            records=[record] if record is not None else [],
+            no_reliable_data=record is None,
+            warnings=warnings,
+        )
+
+    def lookup_cached_research_module(
+        self,
+        *,
+        module_code: TianyanchaResearchModuleCode,
+        legal_name: str,
+        credit_code: str,
+        provider_company_id: str | None,
+    ) -> TianyanchaResearchModuleResult | None:
+        cache_hits_before = self.cache_hits
+        try:
+            return self._lookup_research_module_with(
+                module_code=module_code,
+                legal_name=legal_name,
+                credit_code=credit_code,
+                provider_company_id=provider_company_id,
+                call_tool=self._call_cached_tool,
+            )
+        except _TianyanchaCacheMiss:
+            self.cache_hits = cache_hits_before
+            return None
+
+    def lookup_research_module(
+        self,
+        *,
+        module_code: TianyanchaResearchModuleCode,
+        legal_name: str,
+        credit_code: str,
+        provider_company_id: str | None,
+    ) -> TianyanchaResearchModuleResult:
+        return self._lookup_research_module_with(
+            module_code=module_code,
+            legal_name=legal_name,
+            credit_code=credit_code,
+            provider_company_id=provider_company_id,
             call_tool=self._call_tool,
         )
 

@@ -99,6 +99,7 @@ def test_on_demand_worker_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch
         "ON_DEMAND_RESEARCH_ENABLED",
         "EXTERNAL_CALLS_ENABLED",
         "TIANYANCHA_IDENTITY_CALLS_ENABLED",
+        "TIANYANCHA_RESEARCH_CALLS_ENABLED",
         "PAID_API_CALLS_ENABLED",
         "AUTO_REFRESH_ENABLED",
         "AUTO_PUBLISH_ENABLED",
@@ -110,6 +111,7 @@ def test_on_demand_worker_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch
     assert settings.on_demand_research_enabled is False
     assert settings.external_calls_enabled is False
     assert settings.tianyancha_identity_calls_enabled is False
+    assert settings.tianyancha_research_calls_enabled is False
     assert settings.paid_api_calls_enabled is False
     assert settings.auto_refresh_enabled is False
     assert settings.publication_policy.enabled is False
