@@ -2,8 +2,10 @@ import Link from "next/link";
 
 import {
   ApiError,
+  getPlatformQuotaIncreaseRequests,
   getReviewWorkbench,
   getSharingCandidates,
+  type PersonalQuotaIncreaseRequest,
   type ReviewWorkbenchItem,
   type SharingCandidate,
 } from "@/lib/api";
@@ -12,6 +14,7 @@ import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
 import {
   submitIdentityResolution,
   submitReviewDecision,
+  submitQuotaIncreaseDecision,
   submitSharingPromotion,
   submitSharingRejection,
   submitSharingRetraction,
@@ -61,6 +64,8 @@ const resultMessages: Record<string, string> = {
   sharing_promoted: "已生成独立的平台共享事实，原私有候选与底稿保持不变。",
   sharing_rejected: "已拒绝本次共享晋升，决定理由已记录。",
   sharing_retracted: "已撤回平台共享事实，个人路径不再展示。",
+  quota_approved: "已批准临时研究额度；额度只在设定有效期内生效。",
+  quota_rejected: "已拒绝临时研究额度申请，理由已保存。",
 };
 
 const errorMessages: Record<string, string> = {
@@ -72,7 +77,79 @@ const errorMessages: Record<string, string> = {
   invalid_sharing_input: "请完整填写共享表述、理由，选择证据并确认证据支持。",
   sharing_ineligible: "该候选未满足晋升条件：请检查主体、风险、证据、链接和许可状态。",
   sharing_failed: "共享事实决定提交失败，原私有数据未变更。",
+  invalid_quota_decision: "请检查批准额度、有效天数和决定理由。",
+  quota_decision_failed: "临时额度决定提交失败，原申请没有变更。",
 };
+
+const quotaStatusLabels: Record<PersonalQuotaIncreaseRequest["status"], string> = {
+  pending: "待处理",
+  approved: "已批准",
+  rejected: "未批准",
+  expired: "已过期",
+};
+
+function QuotaRequestCard({ request }: { request: PersonalQuotaIncreaseRequest }) {
+  return (
+    <article className="request-card">
+      <div>
+        <span className="eyebrow">{request.owner_display_name}</span>
+        <strong>{request.owner_email}</strong>
+        <span className="muted">
+          申请日额度 +{request.requested_daily_extra}、月额度 +
+          {request.requested_monthly_extra}
+        </span>
+      </div>
+      <div>
+        <span className={`review-status review-status-${request.status}`}>
+          {quotaStatusLabels[request.status]}
+        </span>
+        <span className="muted">提交于 {formatDateTime(request.created_at)}</span>
+      </div>
+      <p>申请理由：{request.request_reason}</p>
+      {request.status === "pending" ? (
+        <form action={submitQuotaIncreaseDecision} className="quota-decision-form">
+          <input name="request_id" type="hidden" value={request.id} />
+          <label>
+            批准每日增加
+            <input
+              defaultValue={request.requested_daily_extra}
+              max="100"
+              min="0"
+              name="approved_daily_extra"
+              type="number"
+            />
+          </label>
+          <label>
+            批准每月增加
+            <input
+              defaultValue={request.requested_monthly_extra}
+              max="1000"
+              min="0"
+              name="approved_monthly_extra"
+              type="number"
+            />
+          </label>
+          <label>
+            有效天数
+            <input defaultValue="7" max="90" min="1" name="valid_days" type="number" />
+          </label>
+          <label className="wide-field">
+            决定理由
+            <textarea maxLength={1000} minLength={3} name="reason" required rows={2} />
+          </label>
+          <div className="review-actions wide-field">
+            <button className="button button-approve" name="status" type="submit" value="approved">
+              批准临时额度
+            </button>
+            <button className="button button-reject" name="status" type="submit" value="rejected">
+              拒绝申请
+            </button>
+          </div>
+        </form>
+      ) : null}
+    </article>
+  );
+}
 
 function formatDateTime(value: string | null): string {
   if (!value) return "未知";
@@ -583,8 +660,14 @@ export default async function ReviewsPage({
   try {
     const reviews = await getReviewWorkbench();
     let sharingCandidates: SharingCandidate[] = [];
+    let quotaRequests: PersonalQuotaIncreaseRequest[] = [];
     try {
       sharingCandidates = await getSharingCandidates();
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 403)) throw error;
+    }
+    try {
+      quotaRequests = await getPlatformQuotaIncreaseRequests();
     } catch (error) {
       if (!(error instanceof ApiError && error.status === 403)) throw error;
     }
@@ -613,6 +696,25 @@ export default async function ReviewsPage({
         ) : null}
         {query.error && errorMessages[query.error] ? (
           <div className="feedback feedback-error">{errorMessages[query.error]}</div>
+        ) : null}
+
+        {quotaRequests.length ? (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">平台管理员专用</p>
+                <h2>临时研究额度申请</h2>
+              </div>
+              <span className="muted">
+                {quotaRequests.filter((request) => request.status === "pending").length} 条待处理
+              </span>
+            </div>
+            <div className="request-list">
+              {quotaRequests.map((request) => (
+                <QuotaRequestCard key={request.id} request={request} />
+              ))}
+            </div>
+          </section>
         ) : null}
 
         {sharingCandidates.length ? (

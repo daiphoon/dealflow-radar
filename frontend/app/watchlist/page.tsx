@@ -1,12 +1,20 @@
 import Link from "next/link";
 
-import { unfollowCompany } from "@/app/personal-actions";
+import {
+  cancelCompanyRequest,
+  confirmCompanyRequest,
+  requestTemporaryQuotaIncrease,
+  unfollowCompany,
+} from "@/app/personal-actions";
 import {
   getPersonalCompanyRequests,
+  getPersonalQuotaIncreaseRequests,
   getPersonalUsage,
   getPersonalWatchlist,
 } from "@/lib/api";
 import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
+
+import { RequestStatusRefresher } from "./request-status-refresher";
 
 export const dynamic = "force-dynamic";
 
@@ -18,11 +26,32 @@ const freshnessLabels: Record<string, string> = {
 };
 
 const requestStatusLabels: Record<string, string> = {
-  pending: "待处理",
-  in_review: "处理中",
+  pending: "待人工处理",
+  in_review: "人工处理中",
+  identity_queued: "身份核验排队中",
+  identity_checking: "正在核验身份",
+  awaiting_confirmation: "等待你确认公司",
+  needs_input: "需要准确信用代码",
+  research_queued: "研究排队中",
+  researching: "后台研究中",
+  partial: "已有部分结果",
+  budget_deferred: "额度暂缓",
+  cancel_requested: "正在安全取消",
+  cancelled: "已取消",
   completed: "已完成",
   rejected: "未受理",
+  failed: "处理失败",
 };
+
+const activeRequestStatuses = new Set([
+  "identity_queued",
+  "identity_checking",
+  "research_queued",
+  "researching",
+  "partial",
+  "budget_deferred",
+  "cancel_requested",
+]);
 
 function formatDate(value: string | null): string {
   if (!value) return "尚未记录";
@@ -40,16 +69,20 @@ export default async function WatchlistPage({
 }) {
   const { result, error } = await searchParams;
   try {
-    const [watchlist, requests, usage] = await Promise.all([
+    const [watchlist, requests, usage, quotaRequests] = await Promise.all([
       getPersonalWatchlist(),
       getPersonalCompanyRequests(),
       getPersonalUsage(),
+      getPersonalQuotaIncreaseRequests(),
     ]);
+    const hasActiveRequest = requests.some((request) => activeRequestStatuses.has(request.status));
+    const hasPendingQuotaRequest = quotaRequests.some((request) => request.status === "pending");
     return (
       <main className="shell page-stack">
+        <RequestStatusRefresher active={hasActiveRequest} />
         <section className="hero">
           <p className="eyebrow">个人留存闭环</p>
-          <h1>我的关注</h1>
+          <h1>我的关注与查询</h1>
           <p>
             这里仅保存当前账户的整理关系。关注不会授予基金权限，也不会让个人看到机构私有数据。
           </p>
@@ -59,12 +92,22 @@ export default async function WatchlistPage({
           <p className="feedback feedback-success">
             {result === "unfollowed"
               ? "已取消关注。"
-              : result === "inclusion_requested"
-                ? "收录申请已进入人工处理队列；系统没有自动创建或绑定公司。"
-                : "相同申请仍在处理或处于 24 小时冷却期，本次没有重复计数。"}
+              : result === "identity_confirmed"
+                ? "已确认工商主体，后台研究将继续进行；关闭页面不会中断。"
+                : result === "request_cancelled"
+                  ? "已提交取消；若外部调用正在进行，系统会在本次调用结束后停止下一步。"
+                  : result === "quota_requested"
+                    ? "临时额度申请已提交，等待平台管理员处理。"
+                    : result === "inclusion_requested"
+                      ? "申请已提交；请在本页查看工商核验和后续处理状态。"
+                      : "相同申请仍在处理或处于 24 小时冷却期，本次没有重复计数。"}
           </p>
         ) : error ? (
-          <p className="feedback feedback-error">操作失败，请稍后重试。</p>
+          <p className="feedback feedback-error">
+            {error === "invalid_quota_request"
+              ? "请填写需要增加的额度和至少 5 个字的申请理由。"
+              : "操作失败，请检查当前状态后重试。"}
+          </p>
         ) : null}
 
         <section className="quota-grid" aria-label="当前测试权益">
@@ -81,7 +124,13 @@ export default async function WatchlistPage({
             </strong>
           </article>
           <article className="quota-card">
-            <span>本月收录或更新申请</span>
+            <span>今日新公司研究申请</span>
+            <strong>
+              {usage.daily_company_requests.used} / {usage.daily_company_requests.limit}
+            </strong>
+          </article>
+          <article className="quota-card">
+            <span>本月新公司研究申请</span>
             <strong>
               {usage.company_requests.used} / {usage.company_requests.limit}
             </strong>
@@ -143,7 +192,7 @@ export default async function WatchlistPage({
           <div className="panel-heading">
             <div>
               <p className="eyebrow">明确提交给平台处理</p>
-              <h2>我的收录与更新申请</h2>
+              <h2>我的公司研究申请</h2>
             </div>
             <span className="muted">共 {requests.length} 条</span>
           </div>
@@ -155,9 +204,12 @@ export default async function WatchlistPage({
                 <article className="request-card" key={request.id}>
                   <div>
                     <span className="eyebrow">
-                      {request.request_type === "inclusion" ? "收录申请" : "更新申请"}
+                      {request.request_type === "inclusion" ? "新公司研究" : "已有公司更新"}
                     </span>
                     <strong>{request.requested_name ?? request.requested_credit_code}</strong>
+                    {request.requested_credit_code ? (
+                      <span className="muted">信用代码：{request.requested_credit_code}</span>
+                    ) : null}
                   </div>
                   <div>
                     <span className={`review-status review-status-${request.status}`}>
@@ -165,11 +217,128 @@ export default async function WatchlistPage({
                     </span>
                     <span className="muted">提交于 {formatDate(request.created_at)}</span>
                   </div>
-                  {request.decision_reason ? <p>{request.decision_reason}</p> : null}
+                  <p>{request.status_message}</p>
+                  {request.queue_position ? (
+                    <p>当前可见队列位置：第 {request.queue_position} 位。</p>
+                  ) : null}
+                  {request.resolved_legal_name ? (
+                    <section className="request-identity-card" aria-label="待确认工商主体">
+                      <h3>工商主体核验结果</h3>
+                      <dl>
+                        <div>
+                          <dt>工商全称</dt>
+                          <dd>{request.resolved_legal_name}</dd>
+                        </div>
+                        <div>
+                          <dt>统一社会信用代码</dt>
+                          <dd>{request.resolved_credit_code ?? "未返回"}</dd>
+                        </div>
+                        <div>
+                          <dt>注册地区</dt>
+                          <dd>{request.resolved_registered_region ?? "未返回"}</dd>
+                        </div>
+                        <div>
+                          <dt>登记状态</dt>
+                          <dd>{request.resolved_registration_status ?? "未返回"}</dd>
+                        </div>
+                      </dl>
+                      {request.can_confirm ? (
+                        <form action={confirmCompanyRequest} className="request-action-form">
+                          <input name="request_id" type="hidden" value={request.id} />
+                          <p>请核对无误后再继续；确认前不会创建共享公司档案。</p>
+                          <button className="button button-approve" type="submit">
+                            确认是这家公司并继续
+                          </button>
+                        </form>
+                      ) : null}
+                    </section>
+                  ) : null}
+                  <div className="request-card-footer">
+                    <span className="muted">最近更新 {formatDate(request.updated_at)}</span>
+                    {request.company_id ? (
+                      <Link href={`/companies/${request.company_id}`}>查看公司档案</Link>
+                    ) : null}
+                  </div>
+                  {request.can_cancel ? (
+                    <form action={cancelCompanyRequest} className="request-cancel-form">
+                      <input name="request_id" type="hidden" value={request.id} />
+                      <input
+                        maxLength={500}
+                        name="reason"
+                        placeholder="取消原因（可选，例如：公司输入错误）"
+                      />
+                      <button className="button button-secondary" type="submit">
+                        取消查询
+                      </button>
+                    </form>
+                  ) : null}
+                  {request.cancellation_reason ? (
+                    <p>取消原因：{request.cancellation_reason}</p>
+                  ) : request.decision_reason ? (
+                    <p>{request.decision_reason}</p>
+                  ) : null}
                 </article>
               ))}
             </div>
           )}
+        </section>
+
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">防止恶意消耗并支持真实需要</p>
+              <h2>临时增加研究额度</h2>
+            </div>
+            <span className="muted">由平台管理员人工决定，有效期到期后自动失效</span>
+          </div>
+          {hasPendingQuotaRequest ? (
+            <div className="empty-state">已有一项额度申请等待处理，请勿重复提交。</div>
+          ) : (
+            <form action={requestTemporaryQuotaIncrease} className="quota-request-form">
+              <label>
+                每日额外增加
+                <input defaultValue="0" max="100" min="0" name="requested_daily_extra" type="number" />
+              </label>
+              <label>
+                每月额外增加
+                <input defaultValue="0" max="1000" min="0" name="requested_monthly_extra" type="number" />
+              </label>
+              <label className="wide-field">
+                申请理由
+                <textarea
+                  maxLength={500}
+                  minLength={5}
+                  name="reason"
+                  placeholder="请说明需要临时查询更多公司的原因"
+                  required
+                  rows={2}
+                />
+              </label>
+              <div className="wide-field">
+                <button className="button button-secondary" type="submit">
+                  提交额度申请
+                </button>
+              </div>
+            </form>
+          )}
+          {quotaRequests.length ? (
+            <div className="quota-request-history">
+              {quotaRequests.map((quotaRequest) => (
+                <p key={quotaRequest.id}>
+                  {formatDate(quotaRequest.created_at)}：申请日额度 +
+                  {quotaRequest.requested_daily_extra}、月额度 +
+                  {quotaRequest.requested_monthly_extra}；状态：
+                  {quotaRequest.status === "pending"
+                    ? "待处理"
+                    : quotaRequest.status === "approved"
+                      ? `已批准（有效至 ${formatDate(quotaRequest.effective_until)}）`
+                      : quotaRequest.status === "rejected"
+                        ? "未批准"
+                        : "已过期"}
+                </p>
+              ))}
+            </div>
+          ) : null}
         </section>
       </main>
     );

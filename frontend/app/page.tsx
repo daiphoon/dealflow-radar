@@ -70,11 +70,11 @@ export default async function CompanyListPage({
     const looksLikeCreditCode = /^[0-9A-Z]{18}$/i.test(query);
     const feedback = result
       ? result === "inclusion_requested"
-        ? "收录申请已进入人工处理队列；系统没有自动创建或绑定公司。"
+        ? "申请已提交，可在“我的关注与查询”中查看处理状态。"
         : "相同申请仍在处理或处于 24 小时冷却期，本次没有重复计数。"
       : actionError
         ? actionError === "limit_reached"
-          ? "本月收录或更新申请额度已用完。"
+          ? "今日或本月研究申请额度已用完；如有实际需要，可申请临时提高额度。"
           : actionError === "already_available"
             ? "该公司已经在共享目录中，请直接精确查询。"
             : "申请未提交，请检查输入后重试。"
@@ -149,11 +149,13 @@ export default async function CompanyListPage({
                 </div>
               ) : searchResults.length === 0 ? (
                 <div className="empty-state">
-                  <p>共享目录中没有找到匹配公司；本次查询没有自动创建或绑定公司。</p>
+                  <p>
+                    共享目录中没有找到匹配公司。系统不会根据简称猜测外部公司，请输入准确工商全称或统一社会信用代码。
+                  </p>
                   <form action={requestCompanyInclusion} className="inclusion-request-form">
                     <input name="return_query" type="hidden" value={query} />
                     <label>
-                      工商全称（如已知）
+                      准确工商全称
                       <input
                         defaultValue={looksLikeCreditCode ? "" : query}
                         maxLength={240}
@@ -162,19 +164,23 @@ export default async function CompanyListPage({
                       />
                     </label>
                     <label>
-                      统一社会信用代码（如已知）
+                      统一社会信用代码（推荐）
                       <input
                         defaultValue={looksLikeCreditCode ? query.toUpperCase() : ""}
-                        maxLength={32}
+                        maxLength={18}
+                        minLength={18}
                         name="credit_code"
-                        placeholder="可留空"
+                        pattern="[0-9A-Za-z]{18}"
+                        placeholder="18 位代码；填写后定位最准确"
                       />
                     </label>
                     <button className="button button-approve" type="submit">
-                      提交人工收录申请
+                      提交公司收录与研究申请
                     </button>
                     <span className="muted">
-                      本月申请 {usage.company_requests.used}/{usage.company_requests.limit}
+                      今日 {usage.daily_company_requests.used}/
+                      {usage.daily_company_requests.limit} · 本月 {usage.company_requests.used}/
+                      {usage.company_requests.limit}
                     </span>
                   </form>
                 </div>

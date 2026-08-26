@@ -16,6 +16,10 @@ Worker 遵守 robots.txt，使用明确 User-Agent，不登录、不提交表单
 
 完整供应商响应可能包含本里程碑不需要的联系方式，只能存入 Git 忽略、目录 `700`、文件 `600` 的私有缓存。业务库只保留工商全称、信用代码、地区、登记状态、登记机关、数据时间、来源 ID 和响应哈希。API Key 只由环境或 Secret 注入，不进入数据库、Git、响应和日志。身份核验不能替代事件证据，也不能降低严重负面事实的审核和多来源要求。
 
+按需研究 PR 1 继续把外部查询放在独立 Worker 中，并额外要求 `ON_DEMAND_RESEARCH_ENABLED=true`；网页搜索、详情和提交接口本身始终零外部调用。个人只能读取和变更自己的申请，多个用户可只读关联到同一个全局研究任务；临时额度只能由平台管理员批准并设置到期时间。平台管理员服务身份只增加完成主体核验所必需的最小权限：创建或更新已核验共享公司、写入天眼查最小身份记录，并读取该类 `system_restricted` 证据；这不是读取其他客户受限原文的通用权限。若信用代码已对应租户私有公司，个人确认不得自动把旧档案提升为共享，必须停在管理员处理状态。
+
+个人状态响应对内部诊断实行最小暴露：不返回真实外部调用数、缓存命中数或旧租户私有公司的存在原因；这些数据只在平台管理端可见。个人取消只更新 owner 私有申请，由平台 Worker 在确认没有其他活动申请后再协调全局任务，避免个人越过 RLS 修改共享队列。Worker 的每个事务边界后都要重绑 RLS 上下文。PR 1 的供应商预算计数与请求间隔是单 Worker 安全假设；未增加原子预留前不得水平扩容。
+
 ## 1. 数据分级
 
 | 等级 | 示例 | 默认控制 |
@@ -72,7 +76,7 @@ M5B 依据 ADR-0014 使用腾讯云中国香港服务器，不以个人 ICP 备�
 
 共享快照构建器只读平台共享事件和指标；基金投资概览及个人/机构私有数据在响应层按授权单独拼装，不能缓存为全局公司快照。没有基金授权但具有有效共享档案权益的用户仍可读取共享基础层。
 
-当前 27 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`、两张共享决定审计表、`trusted_sources`、`source_check_runs`、`candidate_documents`、认证审计表，以及 `personal_watchlist_items`、`personal_company_requests`、`personal_usage_records`、`personal_company_view_states`、`personal_event_view_receipts`和 `personal_company_reports`。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权，`system_restricted` 不向普通应用用户或平台管理员开放。个人关注、用量、查看状态、事件回执和报告只允许本人读取；报告和事件回执只追加，不允许应用角色更新或删除。收录/更新申请因为由用户明确提交给平台处理，平台管理员可以跨租户读取和更新状态，但看不到该用户的关注或其他个人用量。共享事件和共享证据引用只有平台管理员可写；共享决定审计表只允许平台管理员读取和追加。认证审计允许本人追加和读取、同 tenant 平台管理员读取，没有更新或删除策略。私有别名、外部文档记录和文档去重键按 owner 分区唯一，避免不同客户因同名或同一来源记录相互阻塞。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
+当前 29 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`、两张共享决定审计表、`trusted_sources`、`source_check_runs`、`candidate_documents`、认证审计表，个人留存相关表，以及新增的 `personal_quota_increase_requests` 和 `company_research_jobs`。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权。`system_restricted` 默认不向普通应用用户或平台管理员开放，唯一新增例外是平台管理员服务身份可读取和写入来源代码固定为天眼查授权工商数据的最小身份记录，不能借此读取客户上传或其他受限文档。个人关注、用量、查看状态、事件回执、报告、研究申请和临时额度申请仅本人读取；平台管理员只能跨租户处理用户明确提交的研究和提额运营记录。共享研究任务只对关联请求者和平台管理员可见，不暴露其他请求者身份。为正确执行供应商全平台合同上限，平台管理员服务身份还可跨租户只读 `provider LIKE 'tianyancha%'` 的用量台账；其他 Provider、客户正文和私有研究材料不因该策略可见。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
 
 当前 CloudBase 认证只替换身份凭证，个人订阅与机构赞助权益尚未实现；M3 完成真实收码和四角色验收前仍只适合本地或受控邀请验证。迁移账户仍可作为表所有者绕过策略，必须继续与日常 `NOBYPASSRLS` 应用账户分离。
 

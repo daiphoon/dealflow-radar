@@ -16,5 +16,6 @@
 | [ADR-0012](ADR-0012-cloudbase-identity-local-authorization.md) | CloudBase 仅核验身份，用户邀请、角色、基金授权和 RLS 继续由本地系统管理 |
 | [ADR-0013](ADR-0013-single-host-invitation-deployment.md) | 历史决策：上海单机与个人备案；单机安全和备份原则保留，短期地域路线由 ADR-0014 取代 |
 | [ADR-0014](ADR-0014-hong-kong-invitation-deployment.md) | 邀请测试先部署腾讯云中国香港，验证后再以企业主体评估迁入大陆和备案 |
+| [ADR-0015](ADR-0015-on-demand-company-research.md) | 新公司使用后台身份确认与天眼查六大模块按需研究；结果映射到内部事件分类，并实施共享缓存、双重额度、取消恢复和分级展示 |
 
-状态均为“已接受”，适用于 `DEMO / VALIDATION`。ADR-0014 取代 ADR-0013 的短期地域与备案主体路线；历史理由不回改。
+状态均为“已接受”，适用于 `DEMO / VALIDATION`。ADR-0014 取代 ADR-0013 的短期地域与备案主体路线；ADR-0015 分两个代码 PR 实施，真实调用保持关闭至最终新公司验收；历史理由不回改。

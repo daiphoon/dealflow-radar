@@ -7,7 +7,11 @@ import httpx
 import pytest
 
 from backend.app.config import TianyanchaIdentityPolicy
-from backend.app.tianyancha import TianyanchaIdentityProvider, TianyanchaProviderError
+from backend.app.tianyancha import (
+    TianyanchaIdentityNeedsInputError,
+    TianyanchaIdentityProvider,
+    TianyanchaProviderError,
+)
 
 LEGAL_NAME = "示例星河科技一号有限公司"
 CREDIT_CODE = "91310000MA1K000006"
@@ -158,6 +162,160 @@ def test_provider_cache_reuse_makes_zero_external_calls(tmp_path: Path) -> None:
     assert second_loaded.file_hash == first_loaded.file_hash
     assert second_loaded.batch.batch_id == first_loaded.batch.batch_id
     assert all(path.stat().st_mode & 0o077 == 0 for path in (tmp_path / "cache").glob("*.json"))
+
+
+def test_single_identity_lookup_by_credit_code_uses_only_registration_tool(
+    tmp_path: Path,
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        return _response(_registration_content(economic_zone="苏州工业园区"))
+
+    provider = _provider(tmp_path, httpx.MockTransport(handler))
+
+    result = provider.lookup_identity(company_name=None, credit_code=CREDIT_CODE)
+
+    assert result.legal_name == LEGAL_NAME
+    assert result.credit_code == CREDIT_CODE
+    assert result.registered_region == "苏州市/苏州工业园区"
+    assert result.registration_status == "存续"
+    assert result.candidate_count is None
+    assert provider.external_calls == 1
+    assert [request["tool_name"] for request in requests] == ["get_company_registration_info"]
+
+
+def test_cache_only_identity_lookup_never_falls_through_to_network(tmp_path: Path) -> None:
+    def first_handler(_: httpx.Request) -> httpx.Response:
+        return _response(_registration_content())
+
+    first = _provider(tmp_path, httpx.MockTransport(first_handler))
+    first.lookup_identity(company_name=None, credit_code=CREDIT_CODE)
+
+    def forbidden_handler(_: httpx.Request) -> httpx.Response:
+        pytest.fail("cache-only identity lookup must never call the network")
+
+    cached = _provider(tmp_path, httpx.MockTransport(forbidden_handler))
+    result = cached.lookup_cached_identity(company_name=None, credit_code=CREDIT_CODE)
+
+    assert result is not None
+    assert result.credit_code == CREDIT_CODE
+    assert cached.external_calls == 0
+    assert cached.cache_hits == 1
+
+
+def test_cache_only_identity_lookup_returns_none_for_a_miss(tmp_path: Path) -> None:
+    provider = _provider(
+        tmp_path,
+        httpx.MockTransport(lambda _: pytest.fail("cache miss must not call the network")),
+    )
+
+    result = provider.lookup_cached_identity(company_name=None, credit_code=CREDIT_CODE)
+
+    assert result is None
+    assert provider.external_calls == 0
+    assert provider.cache_hits == 0
+
+
+def test_begin_run_resets_accounting_but_preserves_cross_item_rate_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delays: list[float] = []
+    provider = TianyanchaIdentityProvider(
+        _write_manifest(tmp_path),
+        authorization="test-authorization",
+        policy=TianyanchaIdentityPolicy(min_request_interval_ms=1500),
+        allowed_root=tmp_path,
+        cache_root=tmp_path / "cache",
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda _: _response(_registration_content()))
+        ),
+        sleeper=delays.append,
+    )
+    monkeypatch.setattr("backend.app.tianyancha.time.monotonic", lambda: 100.0)
+
+    provider.lookup_identity(company_name=None, credit_code=CREDIT_CODE)
+    assert provider.external_calls == 1
+    next((tmp_path / "cache").glob("*.json")).unlink()
+
+    provider.begin_run()
+    provider.lookup_identity(company_name=None, credit_code=CREDIT_CODE)
+
+    assert provider.external_calls == 1
+    assert provider.cache_hits == 0
+    assert delays == [1.5]
+
+
+def test_credit_code_controls_lookup_while_user_confirms_returned_legal_name(
+    tmp_path: Path,
+) -> None:
+    provider = _provider(
+        tmp_path,
+        httpx.MockTransport(lambda _: _response(_registration_content())),
+    )
+
+    result = provider.lookup_identity(company_name="用户误填的公司名称", credit_code=CREDIT_CODE)
+
+    assert result.legal_name == LEGAL_NAME
+    assert result.credit_code == CREDIT_CODE
+    assert provider.external_calls == 1
+
+
+def test_single_identity_lookup_by_exact_legal_name_requires_one_unique_entity(
+    tmp_path: Path,
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if payload["tool_name"] == "search_companies":
+            return _response(_search_content(total=4))
+        return _response(_registration_content())
+
+    provider = _provider(tmp_path, httpx.MockTransport(handler))
+
+    result = provider.lookup_identity(company_name=LEGAL_NAME, credit_code=None)
+
+    assert result.legal_name == LEGAL_NAME
+    assert result.credit_code == CREDIT_CODE
+    assert result.candidate_count == 4
+    assert provider.external_calls == 2
+    assert [request["tool_name"] for request in requests] == [
+        "search_companies",
+        "get_company_registration_info",
+    ]
+
+
+def test_single_identity_lookup_rejects_ambiguous_name_before_registration(
+    tmp_path: Path,
+) -> None:
+    call_count = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        content = _search_content()
+        items = content["items"]
+        assert isinstance(items, list)
+        items.append(
+            {
+                "id": 789012,
+                "name": LEGAL_NAME,
+                "creditCode": "91310000MA1K000014",
+                "regStatus": "存续",
+            }
+        )
+        return _response(content)
+
+    provider = _provider(tmp_path, httpx.MockTransport(handler))
+
+    with pytest.raises(TianyanchaIdentityNeedsInputError, match="credit code required"):
+        provider.lookup_identity(company_name=LEGAL_NAME, credit_code=None)
+    assert call_count == 1
 
 
 def test_provider_rejects_tampered_private_cache(tmp_path: Path) -> None:

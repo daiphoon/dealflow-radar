@@ -193,12 +193,67 @@ export type PersonalCompanyRequest = {
   company_id: string | null;
   requested_name: string | null;
   requested_credit_code: string | null;
-  status: "pending" | "in_review" | "completed" | "rejected";
+  status:
+    | "pending"
+    | "in_review"
+    | "identity_queued"
+    | "identity_checking"
+    | "awaiting_confirmation"
+    | "needs_input"
+    | "research_queued"
+    | "researching"
+    | "partial"
+    | "budget_deferred"
+    | "cancel_requested"
+    | "cancelled"
+    | "completed"
+    | "rejected"
+    | "failed";
+  research_job_id: string | null;
+  research_job_status: string | null;
+  queue_position: number | null;
+  resolved_legal_name: string | null;
+  resolved_credit_code: string | null;
+  resolved_registered_region: string | null;
+  resolved_registration_status: string | null;
+  resolved_registration_authority: string | null;
+  identity_checked_at: string | null;
+  confirmation_expires_at: string | null;
+  confirmed_at: string | null;
+  external_calls: number;
+  cache_hits: number;
+  cancelled_at: string | null;
+  cancellation_stage: string | null;
+  cancellation_reason: string | null;
+  last_error_code: string | null;
+  can_confirm: boolean;
+  can_cancel: boolean;
+  status_message: string;
   reviewed_by_id: string | null;
   reviewed_at: string | null;
   decision_reason: string | null;
   created_at: string;
+  updated_at: string;
   reused: boolean;
+};
+
+export type PersonalQuotaIncreaseRequest = {
+  id: string;
+  owner_user_id: string;
+  owner_display_name: string;
+  owner_email: string;
+  requested_daily_extra: number;
+  requested_monthly_extra: number;
+  request_reason: string;
+  status: "pending" | "approved" | "rejected" | "expired";
+  approved_daily_extra: number;
+  approved_monthly_extra: number;
+  effective_until: string | null;
+  reviewed_by_id: string | null;
+  reviewed_at: string | null;
+  decision_reason: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type PersonalQuota = {
@@ -209,9 +264,11 @@ export type PersonalQuota = {
 
 export type PersonalUsageSummary = {
   period_key: string;
+  daily_request_period_key: string;
   searches: PersonalQuota;
   watchlist_companies: PersonalQuota;
   reports: PersonalQuota;
+  daily_company_requests: PersonalQuota;
   company_requests: PersonalQuota;
 };
 
@@ -472,6 +529,51 @@ export function createPersonalInclusionRequest(payload: {
 
 export function createPersonalRefreshRequest(companyId: string): Promise<PersonalCompanyRequest> {
   return postJson(`/api/v1/me/company-requests/refresh/${encodeURIComponent(companyId)}`, {});
+}
+
+export function confirmPersonalCompanyRequest(requestId: string): Promise<PersonalCompanyRequest> {
+  return postJson(`/api/v1/me/company-requests/${encodeURIComponent(requestId)}/confirm`, {});
+}
+
+export function cancelPersonalCompanyRequest(
+  requestId: string,
+  reason: string | null,
+): Promise<PersonalCompanyRequest> {
+  return postJson(`/api/v1/me/company-requests/${encodeURIComponent(requestId)}/cancel`, {
+    reason,
+  });
+}
+
+export function getPersonalQuotaIncreaseRequests(): Promise<PersonalQuotaIncreaseRequest[]> {
+  return getJson("/api/v1/me/quota-increase-requests");
+}
+
+export function createPersonalQuotaIncreaseRequest(payload: {
+  requested_daily_extra: number;
+  requested_monthly_extra: number;
+  reason: string;
+}): Promise<PersonalQuotaIncreaseRequest> {
+  return postJson("/api/v1/me/quota-increase-requests", payload);
+}
+
+export function getPlatformQuotaIncreaseRequests(): Promise<PersonalQuotaIncreaseRequest[]> {
+  return getJson("/api/v1/platform/quota-increase-requests");
+}
+
+export function decidePlatformQuotaIncreaseRequest(
+  requestId: string,
+  payload: {
+    status: "approved" | "rejected";
+    approved_daily_extra: number;
+    approved_monthly_extra: number;
+    effective_until: string | null;
+    reason: string;
+  },
+): Promise<PersonalQuotaIncreaseRequest> {
+  return patchJson(
+    `/api/v1/platform/quota-increase-requests/${encodeURIComponent(requestId)}`,
+    payload,
+  );
 }
 
 export function recordPersonalCompanyView(companyId: string): Promise<PersonalCompanyView> {

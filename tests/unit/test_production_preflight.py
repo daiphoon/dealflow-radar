@@ -34,6 +34,7 @@ def _set_valid_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "TRUSTED_SOURCE_CALLS_ENABLED",
         "SOURCE_MONITOR_SCHEDULER_ENABLED",
         "TIANYANCHA_IDENTITY_CALLS_ENABLED",
+        "ON_DEMAND_RESEARCH_ENABLED",
         "REVIEW_WORKBENCH_ENABLED",
     ):
         monkeypatch.setenv(name, "false")
@@ -87,6 +88,7 @@ def test_production_preflight_rejects_unapproved_localhost(
     [
         ("AUTO_PUBLISH_ENABLED", "true", "AUTO_PUBLISH_ENABLED"),
         ("EXTERNAL_CALLS_ENABLED", "1", "EXTERNAL_CALLS_ENABLED"),
+        ("ON_DEMAND_RESEARCH_ENABLED", "true", "ON_DEMAND_RESEARCH_ENABLED"),
         ("SITE_ADDRESS", "http://app.dealflow.test", "HTTPS"),
         ("CLOUDBASE_ENV_ID", "replace-with-env", "placeholder"),
     ],

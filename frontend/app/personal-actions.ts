@@ -6,8 +6,11 @@ import { redirect } from "next/navigation";
 import {
   ApiError,
   addPersonalWatchlistCompany,
+  cancelPersonalCompanyRequest,
+  confirmPersonalCompanyRequest,
   createPersonalCompanyReport,
   createPersonalInclusionRequest,
+  createPersonalQuotaIncreaseRequest,
   createPersonalRefreshRequest,
   recordPersonalCompanyView,
   removePersonalWatchlistCompany,
@@ -20,7 +23,10 @@ function actionError(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 429) return "limit_reached";
     if (error.status === 404) return "not_available";
-    if (error.status === 409) return "already_available";
+    if (error.status === 409 && error.detail === "company already available") {
+      return "already_available";
+    }
+    if (error.status === 409 || error.status === 422) return "invalid_input";
     if (error.status === 401) return "unauthorized";
   }
   return "request_failed";
@@ -59,7 +65,12 @@ export async function requestCompanyInclusion(formData: FormData): Promise<void>
   const creditCode = String(formData.get("credit_code") ?? "").trim();
   const returnQuery = String(formData.get("return_query") ?? "").trim();
   const suffix = returnQuery ? `&q=${encodeURIComponent(returnQuery)}` : "";
-  if (!companyName && !creditCode) redirect(`/?error=invalid_input${suffix}`);
+  if (
+    (!companyName && !creditCode) ||
+    (creditCode.length > 0 && !/^[0-9A-Za-z]{18}$/.test(creditCode))
+  ) {
+    redirect(`/?error=invalid_input${suffix}`);
+  }
   let result: string;
   try {
     const request = await createPersonalInclusionRequest({
@@ -86,6 +97,64 @@ export async function requestCompanyRefresh(formData: FormData): Promise<void> {
   }
   revalidatePath("/watchlist");
   redirect(`/companies/${companyId}?result=${result}`);
+}
+
+export async function confirmCompanyRequest(formData: FormData): Promise<void> {
+  const requestId = String(formData.get("request_id") ?? "");
+  if (!uuidPattern.test(requestId)) redirect("/watchlist?error=invalid_input");
+  try {
+    await confirmPersonalCompanyRequest(requestId);
+  } catch (error) {
+    redirect(`/watchlist?error=${actionError(error)}`);
+  }
+  revalidatePath("/watchlist");
+  revalidatePath("/");
+  redirect("/watchlist?result=identity_confirmed");
+}
+
+export async function cancelCompanyRequest(formData: FormData): Promise<void> {
+  const requestId = String(formData.get("request_id") ?? "");
+  const reason = String(formData.get("reason") ?? "").trim();
+  if (!uuidPattern.test(requestId) || reason.length > 500) {
+    redirect("/watchlist?error=invalid_input");
+  }
+  try {
+    await cancelPersonalCompanyRequest(requestId, reason || null);
+  } catch (error) {
+    redirect(`/watchlist?error=${actionError(error)}`);
+  }
+  revalidatePath("/watchlist");
+  redirect("/watchlist?result=request_cancelled");
+}
+
+export async function requestTemporaryQuotaIncrease(formData: FormData): Promise<void> {
+  const dailyExtra = Number(formData.get("requested_daily_extra"));
+  const monthlyExtra = Number(formData.get("requested_monthly_extra"));
+  const reason = String(formData.get("reason") ?? "").trim();
+  if (
+    !Number.isInteger(dailyExtra) ||
+    !Number.isInteger(monthlyExtra) ||
+    dailyExtra < 0 ||
+    dailyExtra > 100 ||
+    monthlyExtra < 0 ||
+    monthlyExtra > 1000 ||
+    (dailyExtra === 0 && monthlyExtra === 0) ||
+    reason.length < 5 ||
+    reason.length > 500
+  ) {
+    redirect("/watchlist?error=invalid_quota_request");
+  }
+  try {
+    await createPersonalQuotaIncreaseRequest({
+      requested_daily_extra: dailyExtra,
+      requested_monthly_extra: monthlyExtra,
+      reason,
+    });
+  } catch (error) {
+    redirect(`/watchlist?error=${actionError(error)}`);
+  }
+  revalidatePath("/watchlist");
+  redirect("/watchlist?result=quota_requested");
 }
 
 export async function generateCompanyReport(formData: FormData): Promise<void> {

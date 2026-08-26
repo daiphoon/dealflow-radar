@@ -40,6 +40,7 @@ def test_personal_test_entitlements_are_configured(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("PERSONAL_MONTHLY_SEARCH_LIMIT", "101")
     monkeypatch.setenv("PERSONAL_WATCHLIST_COMPANY_LIMIT", "21")
     monkeypatch.setenv("PERSONAL_MONTHLY_REPORT_LIMIT", "11")
+    monkeypatch.setenv("PERSONAL_DAILY_REQUEST_LIMIT", "7")
     monkeypatch.setenv("PERSONAL_MONTHLY_REQUEST_LIMIT", "6")
     monkeypatch.setenv("PERSONAL_REQUEST_COOLDOWN_HOURS", "25")
 
@@ -48,6 +49,7 @@ def test_personal_test_entitlements_are_configured(monkeypatch: pytest.MonkeyPat
     assert policy.monthly_search_limit == 101
     assert policy.watchlist_company_limit == 21
     assert policy.monthly_report_limit == 11
+    assert policy.daily_request_limit == 7
     assert policy.monthly_request_limit == 6
     assert policy.request_cooldown_hours == 25
 

@@ -24,14 +24,18 @@
 | `GET /companies/search?q=` | 搜索平台共享公司 | 已实现；信用代码、工商全称或已核实别名精确匹配，只查数据库，不自动建公司 |
 | `GET /me/watchlist` | 当前用户的默认关注清单 | 仅返回本人记录；关注不授予公司读取权限 |
 | `POST/DELETE /me/watchlist/{company_id}` | 关注或取消关注共享公司 | 只允许已核验共享公司，服务端执行 20 家测试上限 |
-| `POST /me/company-requests/inclusion` | 无结果时请求人工收录 | 不自动创建/绑定公司，不同步访问外部来源 |
-| `POST /me/company-requests/refresh/{company_id}` | 请求人工更新共享公司 | 与收录申请合计每月 5 次，同目标 24 小时冷却，不创建自动刷新任务 |
-| `GET /me/company-requests` | 查看本人申请状态 | 其他个人和机构不可见 |
-| `GET /me/usage` | 当前测试权益用量 | 查询、关注、报告和申请分别返回已用、上限和剩余 |
+| `POST /me/company-requests/inclusion` | 共享目录无结果时提交准确主体 | 只入库排队；开关关闭时兼容旧人工申请，开启时进入身份核验；同步请求不调用 Provider，不根据简称建公司 |
+| `POST /me/company-requests/refresh/{company_id}` | 请求后台更新共享公司 | 默认 10 家/天、30 家/月；同目标 24 小时冷却；不同用户同公司后续复用全局研究任务 |
+| `GET /me/company-requests` | 查看本人申请、身份候选和队列状态 | 其他个人和机构不可见；断线后从 PostgreSQL 恢复；个人响应隐藏精确外部调用、缓存命中和私有档案冲突原因 |
+| `POST /me/company-requests/{id}/confirm` | 确认授权数据返回的工商主体 | 仅 owner；候选未过期且必要字段完整；确认后才可创建/复用全局公司和研究任务 |
+| `POST /me/company-requests/{id}/cancel` | 取消查询 | 只修改本人申请；Worker 确认全局任务没有其他活跃请求后才取消；日次数不退，零外调用时退月额度，合格缓存保留 |
+| `GET/POST /me/quota-increase-requests` | 查看或申请临时增加研究额度 | 每名用户仅一个待处理申请；前端不能自行提额 |
+| `GET/PATCH /platform/quota-increase-requests/{id}` | 平台管理员处理临时额度 | 明确批准的日/月增加量、到期时间和理由；其他角色禁止 |
+| `GET /me/usage` | 当前测试权益用量 | 查询、关注、报告、当日研究申请和当月研究申请分别返回已用、上限和剩余 |
 | `POST /me/companies/{company_id}/view` | 记录实际查看并返回新共享事实 | 首次只建基线；之后只返回本人未看过的 `published + platform_shared` 事件，并追加事件回执 |
 | `POST /me/companies/{company_id}/reports` | 生成个人公司报告 | 只读共享公司、共享快照和已发布共享事件；V2 模板保存中文分类、方向、风险、可信度和数据状态；每月 10 次测试上限；幂等生成；不调用 LLM 或外部 Provider |
 | `GET /me/reports` 与 `GET /me/reports/{report_id}` | 查看本人报告 | 其他用户统一按不存在处理；报告是不可变时点快照 |
-| `GET/PATCH /platform/company-requests` | 平台处理用户主动提交的申请 | 仅 `platform_admin`；不扩张到个人关注或用量读取 |
+| `GET/PATCH /platform/company-requests` | 平台处理旧版人工申请 | 仅 `platform_admin`；自动按需研究状态不能从该旧端点越过流程直接关闭 |
 | `GET /companies/{id}` | 公司详情 | 已实现共享基础层独立读取，并按基金/owner 授权叠加私有层 |
 | `GET /companies/{id}/events` | 事件时间线 | 按有效权益和记录作用域返回事件；业务状态不代替授权 |
 | `GET /events/{id}/evidence` | 证据 | 对证据引用和原始文档分别授权，只返回许可允许的最小内容 |
@@ -81,7 +85,7 @@
 - `GET /companies/suggestions?q=&limit=` 在输入至少两个字符后返回最多 8 个名称候选；只匹配已核验的平台共享公司工商全称和已核实共享别名，不读取私有公司、私有别名、文档或实体提及。
 - 搜索建议只检查正式查询额度是否仍可用，不因输入过程中的多次请求扣减额度；用户提交或选择准确名称后才通过精确查询计一次。候选提示不构成身份自动解析，模糊名称仍不得自动绑定或创建公司。
 - 搜索只返回当前用户具备有效访问资格的平台共享目录，不返回个人或机构私有主体、线索或计数。
-- 搜索无结果时提供“请求收录”入口，但只写入人工队列，同步请求不访问外部数据源。
+- 搜索无结果时提供“后台研究申请”入口；只接受准确工商全称或 18 位信用代码，同步请求只写 PostgreSQL 队列，不访问外部数据源、不做外部名称联想。按需开关关闭时仍兼容旧人工申请。
 - 公司是否在个人 watchlist 或某基金中，不影响其共享目录读取资格。
 
 ### 详情组合

@@ -215,7 +215,8 @@ class PersonalEntitlementPolicy:
     monthly_search_limit: int = 100
     watchlist_company_limit: int = 20
     monthly_report_limit: int = 10
-    monthly_request_limit: int = 5
+    daily_request_limit: int = 10
+    monthly_request_limit: int = 30
     request_cooldown_hours: int = 24
 
     def __post_init__(self) -> None:
@@ -223,11 +224,56 @@ class PersonalEntitlementPolicy:
             ("PERSONAL_MONTHLY_SEARCH_LIMIT", self.monthly_search_limit),
             ("PERSONAL_WATCHLIST_COMPANY_LIMIT", self.watchlist_company_limit),
             ("PERSONAL_MONTHLY_REPORT_LIMIT", self.monthly_report_limit),
+            ("PERSONAL_DAILY_REQUEST_LIMIT", self.daily_request_limit),
             ("PERSONAL_MONTHLY_REQUEST_LIMIT", self.monthly_request_limit),
             ("PERSONAL_REQUEST_COOLDOWN_HOURS", self.request_cooldown_hours),
         ):
             if value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+
+
+@dataclass(frozen=True)
+class OnDemandResearchPolicy:
+    version: str = "on-demand-research-v1"
+    identity_confirmation_ttl_hours: int = 24
+    worker_lease_seconds: int = 300
+    provider_daily_call_limit: int = 1_000
+    provider_monthly_call_limit: int = 10_000
+    provider_reserve_percent: int = 10
+    max_provider_calls_per_company: int = 8
+
+    def __post_init__(self) -> None:
+        if not self.version.strip():
+            raise ValueError("ON_DEMAND_RESEARCH_POLICY_VERSION must not be empty")
+        for name, value in (
+            (
+                "ON_DEMAND_IDENTITY_CONFIRMATION_TTL_HOURS",
+                self.identity_confirmation_ttl_hours,
+            ),
+            ("ON_DEMAND_WORKER_LEASE_SECONDS", self.worker_lease_seconds),
+            ("ON_DEMAND_PROVIDER_DAILY_CALL_LIMIT", self.provider_daily_call_limit),
+            ("ON_DEMAND_PROVIDER_MONTHLY_CALL_LIMIT", self.provider_monthly_call_limit),
+            (
+                "ON_DEMAND_MAX_PROVIDER_CALLS_PER_COMPANY",
+                self.max_provider_calls_per_company,
+            ),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.provider_monthly_call_limit < self.provider_daily_call_limit:
+            raise ValueError(
+                "ON_DEMAND_PROVIDER_MONTHLY_CALL_LIMIT must not be below the daily limit"
+            )
+        if not 1 <= self.provider_reserve_percent <= 50:
+            raise ValueError("ON_DEMAND_PROVIDER_RESERVE_PERCENT must be between 1 and 50")
+
+    @property
+    def effective_daily_call_limit(self) -> int:
+        return self.provider_daily_call_limit * (100 - self.provider_reserve_percent) // 100
+
+    @property
+    def effective_monthly_call_limit(self) -> int:
+        return self.provider_monthly_call_limit * (100 - self.provider_reserve_percent) // 100
 
 
 @dataclass(frozen=True)
@@ -240,6 +286,7 @@ class Settings:
     trusted_source_calls_enabled: bool = False
     source_monitor_scheduler_enabled: bool = False
     tianyancha_identity_calls_enabled: bool = False
+    on_demand_research_enabled: bool = False
     review_workbench_enabled: bool = False
     auth_provider: str = "demo"
     refresh_policy: RefreshPolicy = field(default_factory=RefreshPolicy)
@@ -252,6 +299,9 @@ class Settings:
     cloudbase_auth_policy: CloudBaseAuthPolicy = field(default_factory=CloudBaseAuthPolicy)
     personal_entitlement_policy: PersonalEntitlementPolicy = field(
         default_factory=PersonalEntitlementPolicy
+    )
+    on_demand_research_policy: OnDemandResearchPolicy = field(
+        default_factory=OnDemandResearchPolicy
     )
 
     def __post_init__(self) -> None:
@@ -287,6 +337,7 @@ class Settings:
             tianyancha_identity_calls_enabled=_as_bool(
                 os.getenv("TIANYANCHA_IDENTITY_CALLS_ENABLED", "false")
             ),
+            on_demand_research_enabled=_as_bool(os.getenv("ON_DEMAND_RESEARCH_ENABLED", "false")),
             review_workbench_enabled=_as_bool(os.getenv("REVIEW_WORKBENCH_ENABLED", "false")),
             auth_provider=os.getenv("AUTH_PROVIDER", "demo").strip().lower(),
             refresh_policy=RefreshPolicy(
@@ -371,7 +422,38 @@ class Settings:
                 monthly_search_limit=_as_positive_int("PERSONAL_MONTHLY_SEARCH_LIMIT", 100),
                 watchlist_company_limit=_as_positive_int("PERSONAL_WATCHLIST_COMPANY_LIMIT", 20),
                 monthly_report_limit=_as_positive_int("PERSONAL_MONTHLY_REPORT_LIMIT", 10),
-                monthly_request_limit=_as_positive_int("PERSONAL_MONTHLY_REQUEST_LIMIT", 5),
+                daily_request_limit=_as_positive_int("PERSONAL_DAILY_REQUEST_LIMIT", 10),
+                monthly_request_limit=_as_positive_int("PERSONAL_MONTHLY_REQUEST_LIMIT", 30),
                 request_cooldown_hours=_as_positive_int("PERSONAL_REQUEST_COOLDOWN_HOURS", 24),
+            ),
+            on_demand_research_policy=OnDemandResearchPolicy(
+                version=os.getenv(
+                    "ON_DEMAND_RESEARCH_POLICY_VERSION",
+                    "on-demand-research-v1",
+                ),
+                identity_confirmation_ttl_hours=_as_positive_int(
+                    "ON_DEMAND_IDENTITY_CONFIRMATION_TTL_HOURS",
+                    24,
+                ),
+                worker_lease_seconds=_as_positive_int(
+                    "ON_DEMAND_WORKER_LEASE_SECONDS",
+                    300,
+                ),
+                provider_daily_call_limit=_as_positive_int(
+                    "ON_DEMAND_PROVIDER_DAILY_CALL_LIMIT",
+                    1_000,
+                ),
+                provider_monthly_call_limit=_as_positive_int(
+                    "ON_DEMAND_PROVIDER_MONTHLY_CALL_LIMIT",
+                    10_000,
+                ),
+                provider_reserve_percent=_as_positive_int(
+                    "ON_DEMAND_PROVIDER_RESERVE_PERCENT",
+                    10,
+                ),
+                max_provider_calls_per_company=_as_positive_int(
+                    "ON_DEMAND_MAX_PROVIDER_CALLS_PER_COMPANY",
+                    8,
+                ),
             ),
         )

@@ -19,7 +19,7 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     command.upgrade(config, "head")
     command.check(config)
     engine = create_engine(database_url)
-    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 32
+    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 34
     user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
     assert {"auth_provider", "auth_subject"} <= user_columns
     assert "uq_users_auth_identity" in {
@@ -181,6 +181,26 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "uq_raw_document_candidate_handoff" in {
         index["name"] for index in inspect(engine).get_indexes("raw_documents")
     }
+    assert {
+        "company_research_jobs",
+        "personal_quota_increase_requests",
+    } <= set(inspect(engine).get_table_names())
+    assert {
+        "research_job_id",
+        "resolved_legal_name",
+        "resolved_credit_code",
+        "identity_checked_at",
+        "cancel_requested_at",
+        "cancellation_reason",
+        "external_calls",
+        "cache_hits",
+    } <= {column["name"] for column in inspect(engine).get_columns("personal_company_requests")}
+    assert {"voided_at", "void_reason"} <= {
+        column["name"] for column in inspect(engine).get_columns("personal_usage_records")
+    }
+    assert "uq_company_research_job_active" in {
+        index["name"] for index in inspect(engine).get_indexes("company_research_jobs")
+    }
 
     command.downgrade(config, "0007")
     assert "visibility_scope" not in {
@@ -272,3 +292,9 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "personal_company_view_states_owner_update" in ddl
     assert "personal_event_view_receipts_owner_insert" in ddl
     assert "personal_company_reports_owner_read" in ddl
+    assert "CREATE TABLE company_research_jobs" in ddl
+    assert "CREATE TABLE personal_quota_increase_requests" in ddl
+    assert "company_research_jobs_requester_read" in ddl
+    assert "personal_quota_increase_owner_read" in ddl
+    assert "usage_ledger_tianyancha_platform_admin_read" in ddl
+    assert "personal_usage_records_on_demand_admin_update" in ddl
