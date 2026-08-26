@@ -2739,6 +2739,20 @@ def get_company_detail(
             .order_by(Event.occurred_at.desc())
         )
     )
+    platform_unconfirmed_leads = list(
+        session.scalars(
+            select(Event)
+            .where(
+                Event.company_id == company_id,
+                Event.status == "candidate",
+                Event.publication_route == "unconfirmed_lead",
+                Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+                Event.owner_user_id.is_(None),
+                Event.owner_tenant_id.is_(None),
+            )
+            .order_by(Event.observed_at.desc())
+        )
+    )
     unconfirmed_leads = list(
         session.scalars(
             select(Event)
@@ -2786,6 +2800,15 @@ def get_company_detail(
                 allow_organization_private=bool(investment_rows),
             )
             for event in events
+        ],
+        platform_unconfirmed_leads=[
+            _event_out(
+                session,
+                event,
+                user,
+                allow_organization_private=False,
+            )
+            for event in platform_unconfirmed_leads
         ],
         private_events=[
             _event_out(

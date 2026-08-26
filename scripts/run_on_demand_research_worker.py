@@ -105,6 +105,7 @@ def _dry_run(
             "effective_monthly_limit": (
                 settings.on_demand_research_policy.effective_monthly_call_limit
             ),
+            "research_calls_enabled": settings.tianyancha_research_calls_enabled,
             "external_calls": 0,
             "input_tokens": 0,
             "output_tokens": 0,
@@ -135,6 +136,7 @@ def _run_once(
                 provider,
                 settings.on_demand_research_policy,
                 provider_retry_limit=settings.tianyancha_identity_policy.retry_limit,
+                research_calls_enabled=settings.tianyancha_research_calls_enabled,
             )
         return result.to_dict()
     finally:

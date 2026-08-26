@@ -38,7 +38,7 @@
 | `KimiAgentImportProvider` | 预留 | 用户人工导出、许可明确，不调用未公开接口 |
 | `KimiScheduledResearchImportProvider` | 预留 | Kimi Work/Claw 等官方导出能力、授权和稳定格式已确认 |
 | `KimiOpenPlatformProvider` | 预留 | 正式 API 文档、账号授权、价格和数据条款确认 |
-| `LicensedBusinessDataProvider` | 天眼查工商身份 V1 已实现 | 只用于受控后台身份查询；其他工商、司法或经营数据仍需逐项准入 |
+| `LicensedBusinessDataProvider` | 天眼查身份与按需六模块研究 V1 已实现、默认关闭 | 只由单实例后台 Worker 调用批准工具；原始响应私有缓存，页面仅展示经过主体、Schema、作用域和分级规则校验的最小事实或线索 |
 | `OfficialIdentityProvider` | 已实现政府 JSON 与授权商业数据双依据 | 政府来源和授权商业来源必须使用不同 `verification_basis`，不得混称官方 |
 
 ## 受控可信来源监测 V1

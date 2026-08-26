@@ -280,9 +280,9 @@ unset TIANYANCHA_AUTHORIZATION
 
 适配器只调用固定 Core 端点的名称候选和工商登记两个工具；不跟随重定向，每次请求受超时、响应大小、低频间隔、总请求数和一次重试限制。完整响应只写入 `data/private/provider_cache/tianyancha/` 的权限受限缓存，数据库不保存联系方式。运行后核对 `official_identity_verifications.verification_basis=licensed_business_data`、`usage_ledger` 的调用/缓存/零 Token/零费用，以及 `conflict` 未改写公司主档。相同清单在缓存期内重复运行应为零外部调用并返回 `duplicate`。随后立即恢复两个外部调用开关为 false。
 
-### 新公司按需研究 PR 1（默认关闭）
+### 新公司按需研究（默认关闭）
 
-PR 1 只处理用户额度、身份核验、主体确认、全局任务合并、取消和恢复；六大研究模块尚未执行，因此不得在香港环境对测试用户开启。升级到 `0018` 后可用下列命令做零网络 dry-run；它只读队列和配置，不加载天眼查 Provider：
+队列、身份确认和六大研究模块均由独立单实例 Worker 处理；同步 API 始终只写队列或读数据库。升级到 `0018` 后可用下列命令做零网络 dry-run；它只读队列和配置，不加载天眼查 Provider：
 
 ```bash
 export WORKER_TENANT_ID='replace_with_platform_operator_tenant_uuid'
@@ -290,9 +290,13 @@ export ON_DEMAND_WORKER_USER_ID='replace_with_platform_admin_user_uuid'
 APP_MODE=demo uv run python -m scripts.run_on_demand_research_worker --dry-run
 ```
 
-正式 Worker 只允许单实例运行，并要求 `ON_DEMAND_RESEARCH_ENABLED=true`、`EXTERNAL_CALLS_ENABLED=true` 和 `TIANYANCHA_IDENTITY_CALLS_ENABLED=true`；`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED`、可信来源调用和来源调度必须保持 false。默认供应商合同参数为 1000 次/日、10000 次/月，自动任务保留 10% 后实际闸门为 900/日、9000/月；平台用量按全部天眼查 Provider 调用汇总。Worker 先查完整私有缓存，只有缓存不完整才检查外部预算；同一进程复用 Provider 以保持跨任务限速。引入原子预算预留前不得启动第二个 Worker 或多实例部署。当前未开通正式 VIP，PR 2 和最终一家具名新公司受控实测之前不得执行真实命令，也不得把 Key 写入命令历史、env 示例、Git 或日志。
+正式 Worker 只允许单实例运行，并要求 `ON_DEMAND_RESEARCH_ENABLED=true`、`EXTERNAL_CALLS_ENABLED=true` 和 `TIANYANCHA_IDENTITY_CALLS_ENABLED=true`。`TIANYANCHA_RESEARCH_CALLS_ENABLED` 单独决定是否在身份确认后执行六大模块；首次部署和身份链路验证时保持 false，只有准备执行受控新公司验收时才临时改为 true。`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED`、可信来源调用和来源调度必须保持 false。默认供应商合同参数为 1000 次/日、10000 次/月，自动任务保留 10% 后实际闸门为 900/日、9000/月；每家公司研究阶段最多 8 次供应商调用，首版每模块最多一次请求和一次失败重试预算。平台用量按全部天眼查 Provider 调用汇总。
 
-取消排队请求立即停止；个人接口只取消本人申请，平台 Worker 确认已无其他活跃请求后才取消全局任务。身份查询正在传输时只记录取消，当前调用完成后不再继续。零外部调用只退当月额度，日提交次数不退，同主体仍保持 24 小时冷却。个人页面不显示精确外部调用、缓存命中或私有档案冲突原因；平台管理页保留诊断信息。服务重启、退出登录或断线不能删除任务；恢复后先查看申请、租约、调用台账和全局活动任务唯一约束，不得手工重复建任务。若已存在同信用代码的租户私有公司，任务应停在管理员处理状态，不能为通过测试直接改成共享公司。Worker 每次提交或回滚事务后必须重新设置 RLS 上下文。
+Worker 按工商与股东基础、司法与合规风险、知识产权、经营与公示、历史变更、董监高与人员顺序逐项运行，每次循环最多处理一个身份或一个研究模块。每个模块先查权限受限缓存，缓存未命中才检查公司、日和月预算；相同来源记录与内容哈希不重复生成文档或事件。低风险例行结构化资料显示为“已核实事实”，风险和人员资料显示为“待核实线索”；两者的页面证据都是独立最小展示快照，完整供应商响应仍只在私有缓存。无记录显示“暂无可靠公开数据”。该 Worker 不调用模型、不自动生成报告，且 `AUTO_PUBLISH_ENABLED=false` 不得因结构化事实展示而改变。同一进程复用 Provider 以保持跨任务限速；引入原子预算预留前不得启动第二个 Worker或多实例部署。
+
+当前未开通正式 VIP，PR 2 合并部署并准备最终一家具名新公司受控实测之前不得执行真实命令，也不得把 Key 写入命令历史、env 示例、Git 或日志。受控窗口结束后必须把 `TIANYANCHA_RESEARCH_CALLS_ENABLED`、`TIANYANCHA_IDENTITY_CALLS_ENABLED`、`EXTERNAL_CALLS_ENABLED` 和 `ON_DEMAND_RESEARCH_ENABLED` 恢复为 false。
+
+取消排队请求立即停止；个人接口只取消本人申请，平台 Worker 确认已无其他活跃请求后才取消全局任务。身份或模块查询正在传输时只记录取消，完成当前调用并保存通过校验的结果后不再开始下一模块。零外部调用只退当月额度，日提交次数不退，同主体仍保持 24 小时冷却。个人页面不显示精确外部调用、缓存命中或私有档案冲突原因；平台管理页保留诊断信息。服务重启、退出登录或断线不能删除任务；恢复后先查看申请、六模块状态、租约、调用台账和全局活动任务唯一约束，不得手工重复建任务。若已存在同信用代码的租户私有公司，任务应停在管理员处理状态，不能为通过测试直接改成共享公司。Worker 每次提交或回滚事务后必须重新设置 RLS 上下文。
 
 ### 身份例外与历史审核工作台 V1（仅本机受控环境）
 

@@ -714,6 +714,32 @@ a {
   font-size: 13px;
 }
 
+.research-module-list {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  list-style: none;
+}
+
+.research-module-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.research-module-list strong {
+  color: var(--ink);
+  text-align: right;
+}
+
 .request-identity-card,
 .request-card-footer,
 .request-cancel-form {

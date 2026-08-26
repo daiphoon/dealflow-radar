@@ -57,7 +57,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `refresh_policies` | TTL、升降频、冷却、预算和 Provider 规则的版本化配置 | 唯一 `(tenant_id, code, version)`；仅一个活动版本 |
 | `refresh_jobs` | company、原因、优先级、状态、幂等键、租约、预计成本 | 幂等键唯一；同公司/类型活跃任务部分唯一；领取索引 |
 | `refresh_runs` | 每次尝试、检查点、Provider 结果、错误、变化计数、起止时间 | FK job；job/attempt 唯一；状态/开始时间索引 |
-| `company_research_jobs` | 全局公司级研究队列、六大模块覆盖、租约、取消和调用/Token 计数 | 同一公司仅一个活动任务；多个个人或机构请求可关联同一任务；PR 1 只建队列，模块执行由 PR 2 实现 |
+| `company_research_jobs` | 全局公司级研究队列、六大模块逐项状态、租约、取消和调用/缓存/Token 计数 | 同一公司仅一个活动任务；多个个人或机构请求可关联同一任务；模块状态保存在既有 `coverage` JSON，无需新增迁移 |
 | `research_imports` | tenant、导入人、批次、格式、工具、原始文件哈希、许可、自动发布/未确认/身份审核计数与状态 | `(tenant_id, batch_id)` 和 `(tenant_id, file_hash, parser_version)` 唯一；机构管理员 RLS；状态索引 |
 | `official_identity_verifications` | tenant、公司候选、私有身份原文档、查询词、工商全称、信用代码、注册地、登记状态、`verification_basis`、核验结果/规则/时间 | 每份原文档唯一核验记录；依据只能为政府官方或授权商业；tenant/状态/时间及信用代码索引；管理员写、审核员读 RLS |
 | `trusted_sources` | tenant、公司、来源类型、允许域名、起始 URL、可选列表内容路径、许可依据、检查频率、保留策略和最近状态 | 同 tenant/company/URL 唯一；仅当前 tenant 平台管理员可读写；列表路径变更会清除起始页条件缓存 |

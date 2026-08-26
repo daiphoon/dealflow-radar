@@ -58,6 +58,9 @@ const publicationReasonLabels: Record<string, string> = {
   high_risk_unconfirmed: "属于高风险信息",
   official_website_not_verified: "公司官网尚未核验",
   official_source_domain_mismatch: "来源域名与核验官网不一致",
+  licensed_source_risk_record_requires_review: "授权来源中的风险记录仍需核对",
+  subject_identity_verified: "公司工商主体已经核验",
+  licensed_source_record: "资料来自已授权数据源",
 };
 
 function formatDate(value: string | null): string {
@@ -129,9 +132,11 @@ function EventCard({
     ? "未确认线索"
     : privateRecord
       ? "机构私有已确认"
-      : event.publication_route === "auto_published"
-      ? "规则自动发布"
-      : "人工或历史确认";
+      : event.publication_route === "licensed_structured_fact"
+        ? "授权来源已核实事实"
+        : event.publication_route === "auto_published"
+          ? "规则自动发布"
+          : "人工或历史确认";
   return (
     <article className="event-card">
       <div className="event-meta">
@@ -166,7 +171,7 @@ function EventCard({
           该信息由系统自动保留，尚未升级为已确认事实，也不会进入公司风险结论或快照。
           {event.publication_reasons.length > 0
             ? ` 原因：${event.publication_reasons
-                .map((reason) => publicationReasonLabels[reason] ?? reason)
+                .map((reason) => publicationReasonLabels[reason] ?? "仍需进一步核实")
                 .join("、")}。`
             : ""}
         </p>
@@ -328,7 +333,7 @@ export default async function CompanyDetailPage({
           <div className="panel-heading">
             <div>
               <p className="eyebrow">平台共享基础层</p>
-              <h2>已审核事件与可见证据</h2>
+              <h2>已核实事实与可见证据</h2>
             </div>
             <span className="muted">{company.events.length} 条事件</span>
           </div>
@@ -343,6 +348,26 @@ export default async function CompanyDetailPage({
             </div>
           )}
         </section>
+
+        {company.platform_unconfirmed_leads.length > 0 ? (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">平台共享·尚未形成核实结论</p>
+                <h2>待核实线索</h2>
+              </div>
+              <span className="muted">{company.platform_unconfirmed_leads.length} 条线索</span>
+            </div>
+            <p className="privacy-note">
+              这些条目仅表示授权来源返回了相关记录，不代表平台已确认责任、影响或投资结论。
+            </p>
+            <div className="timeline">
+              {company.platform_unconfirmed_leads.map((event) => (
+                <EventCard event={event} key={event.id} unconfirmed />
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         {company.private_events.length > 0 ? (
           <section className="panel">
@@ -366,7 +391,7 @@ export default async function CompanyDetailPage({
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">当前用户或机构私有</p>
-                <h2>未确认线索</h2>
+                <h2>私有待核实线索</h2>
               </div>
               <span className="muted">{company.unconfirmed_leads.length} 条线索</span>
             </div>

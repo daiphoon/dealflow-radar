@@ -286,6 +286,7 @@ class Settings:
     trusted_source_calls_enabled: bool = False
     source_monitor_scheduler_enabled: bool = False
     tianyancha_identity_calls_enabled: bool = False
+    tianyancha_research_calls_enabled: bool = False
     on_demand_research_enabled: bool = False
     review_workbench_enabled: bool = False
     auth_provider: str = "demo"
@@ -336,6 +337,9 @@ class Settings:
             ),
             tianyancha_identity_calls_enabled=_as_bool(
                 os.getenv("TIANYANCHA_IDENTITY_CALLS_ENABLED", "false")
+            ),
+            tianyancha_research_calls_enabled=_as_bool(
+                os.getenv("TIANYANCHA_RESEARCH_CALLS_ENABLED", "false")
             ),
             on_demand_research_enabled=_as_bool(os.getenv("ON_DEMAND_RESEARCH_ENABLED", "false")),
             review_workbench_enabled=_as_bool(os.getenv("REVIEW_WORKBENCH_ENABLED", "false")),
