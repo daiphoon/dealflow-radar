@@ -295,11 +295,14 @@ class PersonalCompanyRequest(TimestampMixin, Base):
             name="ck_personal_company_request_type",
         ),
         CheckConstraint(
-            "status IN ('pending', 'in_review', 'completed', 'rejected')",
+            "status IN ('pending', 'in_review', 'identity_queued', "
+            "'identity_checking', 'awaiting_confirmation', 'needs_input', "
+            "'research_queued', 'researching', 'partial', 'budget_deferred', "
+            "'cancel_requested', 'cancelled', 'completed', 'rejected', 'failed')",
             name="ck_personal_company_request_status",
         ),
         CheckConstraint(
-            "(request_type = 'inclusion' AND company_id IS NULL "
+            "(request_type = 'inclusion' "
             "AND (requested_name IS NOT NULL OR requested_credit_code IS NOT NULL)) OR "
             "(request_type = 'refresh' AND "
             "(company_id IS NOT NULL OR requested_name IS NOT NULL "
@@ -311,8 +314,16 @@ class PersonalCompanyRequest(TimestampMixin, Base):
             "owner_user_id",
             "target_key",
             unique=True,
-            postgresql_where=text("status IN ('pending', 'in_review')"),
-            sqlite_where=text("status IN ('pending', 'in_review')"),
+            postgresql_where=text(
+                "status IN ('pending', 'in_review', 'identity_queued', "
+                "'identity_checking', 'awaiting_confirmation', 'research_queued', "
+                "'researching', 'partial', 'budget_deferred', 'cancel_requested')"
+            ),
+            sqlite_where=text(
+                "status IN ('pending', 'in_review', 'identity_queued', "
+                "'identity_checking', 'awaiting_confirmation', 'research_queued', "
+                "'researching', 'partial', 'budget_deferred', 'cancel_requested')"
+            ),
         ),
         Index(
             "ix_personal_company_request_owner_created",
@@ -333,7 +344,29 @@ class PersonalCompanyRequest(TimestampMixin, Base):
     requested_name: Mapped[str | None] = mapped_column(String(240))
     requested_credit_code: Mapped[str | None] = mapped_column(String(32))
     target_key: Mapped[str] = mapped_column(String(280))
-    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    research_job_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("company_research_jobs.id", ondelete="SET NULL"), index=True
+    )
+    resolved_legal_name: Mapped[str | None] = mapped_column(String(240))
+    resolved_credit_code: Mapped[str | None] = mapped_column(String(18))
+    resolved_registered_region: Mapped[str | None] = mapped_column(String(120))
+    resolved_registration_status: Mapped[str | None] = mapped_column(String(64))
+    resolved_registration_authority: Mapped[str | None] = mapped_column(String(240))
+    provider_company_id: Mapped[str | None] = mapped_column(String(80))
+    identity_response_hash: Mapped[str | None] = mapped_column(String(64))
+    identity_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmation_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    external_calls: Mapped[int] = mapped_column(Integer, default=0)
+    cache_hits: Mapped[int] = mapped_column(Integer, default=0)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancellation_stage: Mapped[str | None] = mapped_column(String(64))
+    cancellation_reason: Mapped[str | None] = mapped_column(Text)
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(80))
     reviewed_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     decision_reason: Mapped[str | None] = mapped_column(Text)
@@ -362,7 +395,91 @@ class PersonalUsageRecord(Base):
     period_key: Mapped[str] = mapped_column(String(7))
     resource_id: Mapped[UUID | None] = mapped_column(Uuid)
     idempotency_key: Mapped[str] = mapped_column(String(64), unique=True)
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    void_reason: Mapped[str | None] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class PersonalQuotaIncreaseRequest(TimestampMixin, Base):
+    __tablename__ = "personal_quota_increase_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'expired')",
+            name="ck_personal_quota_increase_status",
+        ),
+        CheckConstraint(
+            "requested_daily_extra > 0 OR requested_monthly_extra > 0",
+            name="ck_personal_quota_increase_requested_positive",
+        ),
+        CheckConstraint(
+            "approved_daily_extra >= 0 AND approved_monthly_extra >= 0",
+            name="ck_personal_quota_increase_approved_non_negative",
+        ),
+        Index(
+            "uq_personal_quota_increase_owner_pending",
+            "owner_user_id",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
+        ),
+        Index(
+            "ix_personal_quota_increase_status_created",
+            "status",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    requested_daily_extra: Mapped[int] = mapped_column(Integer, default=0)
+    requested_monthly_extra: Mapped[int] = mapped_column(Integer, default=0)
+    request_reason: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    approved_daily_extra: Mapped[int] = mapped_column(Integer, default=0)
+    approved_monthly_extra: Mapped[int] = mapped_column(Integer, default=0)
+    effective_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class CompanyResearchJob(TimestampMixin, Base):
+    __tablename__ = "company_research_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'partial', 'budget_deferred', "
+            "'completed', 'cancelled', 'failed')",
+            name="ck_company_research_job_status",
+        ),
+        Index(
+            "uq_company_research_job_active",
+            "company_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running', 'partial', 'budget_deferred')"),
+            sqlite_where=text("status IN ('queued', 'running', 'partial', 'budget_deferred')"),
+        ),
+        Index("ix_company_research_job_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    company_id: Mapped[UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), index=True
+    )
+    created_by_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    current_stage: Mapped[str] = mapped_column(String(64), default="queued")
+    policy_version: Mapped[str] = mapped_column(String(64))
+    coverage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    external_calls: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(80))
 
 
 class PersonalCompanyViewState(TimestampMixin, Base):

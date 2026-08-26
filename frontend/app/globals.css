@@ -714,6 +714,144 @@ a {
   font-size: 13px;
 }
 
+.request-identity-card,
+.request-card-footer,
+.request-cancel-form {
+  grid-column: 1 / -1;
+}
+
+.request-identity-card {
+  padding: 16px;
+  border: 1px solid #c8d8d1;
+  border-radius: 12px;
+  background: #f2f8f5;
+}
+
+.request-identity-card h3,
+.request-identity-card p,
+.quota-request-history p {
+  margin: 0;
+}
+
+.request-identity-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.request-identity-card dl div {
+  display: grid;
+  gap: 4px;
+}
+
+.request-identity-card dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.request-identity-card dd {
+  margin: 0;
+  font-weight: 700;
+}
+
+.request-action-form,
+.request-cancel-form,
+.request-card-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.request-action-form {
+  margin-top: 14px;
+}
+
+.request-action-form p {
+  color: #42504b;
+  font-size: 13px;
+}
+
+.request-card-footer a {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.request-cancel-form input,
+.quota-request-form input,
+.quota-request-form textarea {
+  padding: 10px 12px;
+  border: 1px solid #bdc9c4;
+  border-radius: 10px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+}
+
+.request-cancel-form input {
+  flex: 1 1 260px;
+}
+
+.quota-request-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.quota-request-form label {
+  display: grid;
+  gap: 7px;
+  color: #42504b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.quota-request-form .wide-field {
+  grid-column: 1 / -1;
+}
+
+.quota-request-history {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.quota-decision-form {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.quota-decision-form label {
+  display: grid;
+  gap: 7px;
+  color: #42504b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.quota-decision-form input,
+.quota-decision-form textarea {
+  padding: 10px 12px;
+  border: 1px solid #bdc9c4;
+  border-radius: 10px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+}
+
+.quota-decision-form .wide-field {
+  grid-column: 1 / -1;
+}
+
 .report-list {
   display: grid;
   gap: 12px;
@@ -1505,7 +1643,10 @@ dd {
   .monitor-run-grid,
   .inclusion-request-form,
   .quota-grid,
-  .request-card {
+  .request-card,
+  .request-identity-card dl,
+  .quota-request-form,
+  .quota-decision-form {
     grid-template-columns: 1fr;
   }
 

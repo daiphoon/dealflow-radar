@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 
 import {
   ApiError,
+  decidePlatformQuotaIncreaseRequest,
   decideReview,
   promoteSharingCandidate,
   rejectSharingCandidate,
@@ -152,4 +153,48 @@ export async function submitSharingRetraction(formData: FormData): Promise<void>
   revalidatePath("/");
   revalidatePath(`/companies`);
   redirect("/reviews?result=sharing_retracted");
+}
+
+export async function submitQuotaIncreaseDecision(formData: FormData): Promise<void> {
+  const requestId = String(formData.get("request_id") ?? "");
+  const status = String(formData.get("status") ?? "");
+  const dailyExtra = Number(formData.get("approved_daily_extra"));
+  const monthlyExtra = Number(formData.get("approved_monthly_extra"));
+  const validDays = Number(formData.get("valid_days"));
+  const reason = String(formData.get("reason") ?? "").trim();
+  if (
+    !reviewIdPattern.test(requestId) ||
+    (status !== "approved" && status !== "rejected") ||
+    !Number.isInteger(dailyExtra) ||
+    !Number.isInteger(monthlyExtra) ||
+    dailyExtra < 0 ||
+    dailyExtra > 100 ||
+    monthlyExtra < 0 ||
+    monthlyExtra > 1000 ||
+    !Number.isInteger(validDays) ||
+    validDays < 1 ||
+    validDays > 90 ||
+    reason.length < 3 ||
+    reason.length > 1000 ||
+    (status === "approved" && dailyExtra === 0 && monthlyExtra === 0)
+  ) {
+    redirect("/reviews?error=invalid_quota_decision");
+  }
+  try {
+    await decidePlatformQuotaIncreaseRequest(requestId, {
+      status: status as "approved" | "rejected",
+      approved_daily_extra: status === "approved" ? dailyExtra : 0,
+      approved_monthly_extra: status === "approved" ? monthlyExtra : 0,
+      effective_until:
+        status === "approved"
+          ? new Date(Date.now() + validDays * 24 * 60 * 60 * 1000).toISOString()
+          : null,
+      reason,
+    });
+  } catch {
+    redirect("/reviews?error=quota_decision_failed");
+  }
+  revalidatePath("/reviews");
+  revalidatePath("/watchlist");
+  redirect(`/reviews?result=quota_${status}`);
 }

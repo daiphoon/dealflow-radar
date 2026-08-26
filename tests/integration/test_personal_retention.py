@@ -132,6 +132,11 @@ def test_search_and_watchlist_limits_are_server_enforced_and_user_private(
         "remaining": 0,
     }
     assert usage.json()["reports"] == {"used": 0, "limit": 1, "remaining": 1}
+    assert usage.json()["daily_company_requests"] == {
+        "used": 0,
+        "limit": 10,
+        "remaining": 10,
+    }
 
     removed = client.delete(f"/api/v1/me/watchlist/{SHARED_COMPANY_ID}", headers=PERSONAL_HEADERS)
     assert removed.status_code == 204
@@ -153,7 +158,7 @@ def test_inclusion_and_refresh_requests_are_queued_deduplicated_and_admin_review
 
     inclusion_payload = {
         "company_name": "尚未收录的示例真实主体",
-        "credit_code": "91310000TESTM40001",
+        "credit_code": "913100001234567896",
     }
     created = client.post(
         "/api/v1/me/company-requests/inclusion",

@@ -36,17 +36,23 @@ from backend.app.personal_features import (
     PersonalRequestConflictError,
     PersonalRequestTransitionError,
     add_personal_watchlist_item,
+    cancel_personal_company_request,
+    confirm_personal_company_request,
     create_inclusion_request,
     create_personal_company_report,
+    create_quota_increase_request,
     create_refresh_request,
     decide_platform_company_request,
+    decide_platform_quota_increase_request,
     ensure_company_search_available,
     get_personal_company_report,
     get_personal_usage_summary,
     list_personal_company_reports,
     list_personal_company_requests,
+    list_personal_quota_increase_requests,
     list_personal_watchlist,
     list_platform_company_requests,
+    list_platform_quota_increase_requests,
     record_company_search,
     record_personal_company_view,
     remove_personal_watchlist_item,
@@ -75,10 +81,14 @@ from backend.app.schemas import (
     IngestResult,
     PersonalCompanyReportOut,
     PersonalCompanyReportSummaryOut,
+    PersonalCompanyRequestCancelIn,
     PersonalCompanyRequestDecisionIn,
     PersonalCompanyRequestOut,
     PersonalCompanyViewOut,
     PersonalInclusionRequestIn,
+    PersonalQuotaIncreaseDecisionIn,
+    PersonalQuotaIncreaseRequestIn,
+    PersonalQuotaIncreaseRequestOut,
     PersonalReportCreateIn,
     PersonalUsageSummaryOut,
     PersonalWatchlistItemOut,
@@ -621,6 +631,7 @@ def create_app(
                 app.state.settings.personal_entitlement_policy,
                 company_name=payload.company_name,
                 credit_code=payload.credit_code,
+                on_demand_enabled=app.state.settings.on_demand_research_enabled,
             )
         except PersonalRequestConflictError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
@@ -649,6 +660,7 @@ def create_app(
                 user,
                 app.state.settings.personal_entitlement_policy,
                 company_id,
+                on_demand_enabled=app.state.settings.on_demand_research_enabled,
             )
         except PersonalFeatureNotFoundError as error:
             raise HTTPException(status_code=404, detail="company not found") from error
@@ -661,6 +673,76 @@ def create_app(
                     "limit": error.limit,
                 },
             ) from error
+
+    @app.post(
+        "/api/v1/me/company-requests/{request_id}/confirm",
+        response_model=PersonalCompanyRequestOut,
+    )
+    def personal_company_request_confirm(
+        request_id: UUID,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalCompanyRequestOut:
+        try:
+            return confirm_personal_company_request(
+                session,
+                user,
+                request_id,
+                app.state.settings.on_demand_research_policy,
+            )
+        except PersonalFeatureNotFoundError as error:
+            raise HTTPException(status_code=404, detail="request not found") from error
+        except PersonalRequestTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/api/v1/me/company-requests/{request_id}/cancel",
+        response_model=PersonalCompanyRequestOut,
+    )
+    def personal_company_request_cancel(
+        request_id: UUID,
+        payload: PersonalCompanyRequestCancelIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalCompanyRequestOut:
+        try:
+            return cancel_personal_company_request(
+                session,
+                user,
+                request_id,
+                reason=payload.reason,
+            )
+        except PersonalFeatureNotFoundError as error:
+            raise HTTPException(status_code=404, detail="request not found") from error
+        except PersonalRequestTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get(
+        "/api/v1/me/quota-increase-requests",
+        response_model=list[PersonalQuotaIncreaseRequestOut],
+    )
+    def personal_quota_increase_requests(
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> list[PersonalQuotaIncreaseRequestOut]:
+        return list_personal_quota_increase_requests(session, user)
+
+    @app.post(
+        "/api/v1/me/quota-increase-requests",
+        response_model=PersonalQuotaIncreaseRequestOut,
+    )
+    def personal_quota_increase_request_create(
+        payload: PersonalQuotaIncreaseRequestIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalQuotaIncreaseRequestOut:
+        return create_quota_increase_request(
+            session,
+            user,
+            requested_daily_extra=payload.requested_daily_extra,
+            requested_monthly_extra=payload.requested_monthly_extra,
+            reason=payload.reason,
+        )
 
     @app.get(
         "/api/v1/platform/company-requests",
@@ -697,6 +779,47 @@ def create_app(
             raise HTTPException(status_code=403, detail="forbidden_scope") from error
         except PersonalFeatureNotFoundError as error:
             raise HTTPException(status_code=404, detail="request not found") from error
+        except PersonalRequestTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get(
+        "/api/v1/platform/quota-increase-requests",
+        response_model=list[PersonalQuotaIncreaseRequestOut],
+    )
+    def platform_quota_increase_requests(
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> list[PersonalQuotaIncreaseRequestOut]:
+        try:
+            return list_platform_quota_increase_requests(session, user)
+        except PersonalFeatureAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+
+    @app.patch(
+        "/api/v1/platform/quota-increase-requests/{request_id}",
+        response_model=PersonalQuotaIncreaseRequestOut,
+    )
+    def platform_quota_increase_request_decision(
+        request_id: UUID,
+        payload: PersonalQuotaIncreaseDecisionIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalQuotaIncreaseRequestOut:
+        try:
+            return decide_platform_quota_increase_request(
+                session,
+                user,
+                request_id,
+                status=payload.status,
+                approved_daily_extra=payload.approved_daily_extra,
+                approved_monthly_extra=payload.approved_monthly_extra,
+                effective_until=payload.effective_until,
+                reason=payload.reason,
+            )
+        except PersonalFeatureAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except PersonalFeatureNotFoundError as error:
+            raise HTTPException(status_code=404, detail="quota request not found") from error
         except PersonalRequestTransitionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 

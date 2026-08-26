@@ -5,31 +5,35 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
-from backend.app.config import PersonalEntitlementPolicy, RefreshPolicy
+from backend.app.config import OnDemandResearchPolicy, PersonalEntitlementPolicy, RefreshPolicy
 from backend.app.models import (
     PLATFORM_SHARED_SCOPE,
     Company,
     CompanyAlias,
+    CompanyResearchJob,
     CompanySnapshot,
     Event,
     PersonalCompanyReport,
     PersonalCompanyRequest,
     PersonalCompanyViewState,
     PersonalEventViewReceipt,
+    PersonalQuotaIncreaseRequest,
     PersonalUsageRecord,
     PersonalWatchlistItem,
     User,
     utc_now,
 )
+from backend.app.providers import validate_unified_credit_code
 from backend.app.schemas import (
     EventOut,
     PersonalCompanyReportOut,
     PersonalCompanyReportSummaryOut,
     PersonalCompanyRequestOut,
     PersonalCompanyViewOut,
+    PersonalQuotaIncreaseRequestOut,
     PersonalQuotaOut,
     PersonalUsageSummaryOut,
     PersonalWatchlistItemOut,
@@ -78,6 +82,37 @@ _LINK_STATUS_LABELS = {
     "unavailable": "当前无法访问",
 }
 
+_ACTIVE_REQUEST_STATUSES = {
+    "pending",
+    "in_review",
+    "identity_queued",
+    "identity_checking",
+    "awaiting_confirmation",
+    "research_queued",
+    "researching",
+    "partial",
+    "budget_deferred",
+    "cancel_requested",
+}
+_CANCELLABLE_REQUEST_STATUSES = _ACTIVE_REQUEST_STATUSES | {"needs_input"}
+_REQUEST_STATUS_MESSAGES = {
+    "pending": "等待平台处理旧版申请",
+    "in_review": "平台正在处理旧版申请",
+    "identity_queued": "已进入工商身份核验队列",
+    "identity_checking": "正在核验工商主体，本次外部查询完成后可安全停止",
+    "awaiting_confirmation": "请确认这是你要研究的公司",
+    "needs_input": "名称或信用代码无法唯一一致定位，请核对后重新提交",
+    "research_queued": "公司已确认，等待后台研究",
+    "researching": "后台正在分阶段研究；退出登录不会中断",
+    "partial": "已保存部分结果，等待后续额度继续",
+    "budget_deferred": "平台额度暂不可用，任务已保留在队列中",
+    "cancel_requested": "已请求取消；当前步骤完成后不会继续下一步",
+    "cancelled": "查询已取消，已经取得的可复用资料会按规则保留",
+    "completed": "研究已经完成",
+    "rejected": "申请未通过",
+    "failed": "本次处理失败，没有继续调用外部服务",
+}
+
 
 class PersonalFeatureLimitError(Exception):
     def __init__(self, feature: str, limit: int) -> None:
@@ -110,6 +145,16 @@ def _usage_period(now: datetime) -> str:
     return now.astimezone(_SHANGHAI).strftime("%Y-%m")
 
 
+def _daily_usage_period(now: datetime) -> str:
+    return now.astimezone(_SHANGHAI).strftime("%Y-%m-%d")
+
+
+def _daily_period_bounds(now: datetime) -> tuple[datetime, datetime]:
+    local = now.astimezone(_SHANGHAI)
+    start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.astimezone(UTC), (start + timedelta(days=1)).astimezone(UTC)
+
+
 def _normalized_identity_text(value: str) -> str:
     return "".join(value.split()).casefold()
 
@@ -128,19 +173,73 @@ def _lock_user(session: Session, user: User) -> None:
         raise PersonalFeatureAccessError("inactive user")
 
 
-def _usage_count(session: Session, user_id: UUID, operation: str, period_key: str) -> int:
+def _usage_count(
+    session: Session,
+    user_id: UUID,
+    operation: str,
+    period_key: str,
+    *,
+    include_voided: bool = False,
+) -> int:
+    conditions = [
+        PersonalUsageRecord.owner_user_id == user_id,
+        PersonalUsageRecord.operation == operation,
+        PersonalUsageRecord.period_key == period_key,
+    ]
+    if not include_voided:
+        conditions.append(PersonalUsageRecord.voided_at.is_(None))
+    return int(
+        session.scalar(select(func.count()).select_from(PersonalUsageRecord).where(*conditions))
+        or 0
+    )
+
+
+def _daily_request_count(session: Session, user_id: UUID, now: datetime) -> int:
+    start, end = _daily_period_bounds(now)
     return int(
         session.scalar(
             select(func.count())
             .select_from(PersonalUsageRecord)
             .where(
                 PersonalUsageRecord.owner_user_id == user_id,
-                PersonalUsageRecord.operation == operation,
-                PersonalUsageRecord.period_key == period_key,
+                PersonalUsageRecord.operation == "company_request",
+                PersonalUsageRecord.created_at >= start,
+                PersonalUsageRecord.created_at < end,
             )
         )
         or 0
     )
+
+
+def _active_quota_extras(
+    session: Session,
+    user_id: UUID,
+    now: datetime,
+) -> tuple[int, int]:
+    rows = session.scalars(
+        select(PersonalQuotaIncreaseRequest).where(
+            PersonalQuotaIncreaseRequest.owner_user_id == user_id,
+            PersonalQuotaIncreaseRequest.status == "approved",
+            PersonalQuotaIncreaseRequest.effective_until.is_not(None),
+            PersonalQuotaIncreaseRequest.effective_until > now,
+        )
+    )
+    daily_extra = 0
+    monthly_extra = 0
+    for row in rows:
+        daily_extra += row.approved_daily_extra
+        monthly_extra += row.approved_monthly_extra
+    return daily_extra, monthly_extra
+
+
+def _effective_request_limits(
+    session: Session,
+    user: User,
+    policy: PersonalEntitlementPolicy,
+    now: datetime,
+) -> tuple[int, int]:
+    daily_extra, monthly_extra = _active_quota_extras(session, user.id, now)
+    return policy.daily_request_limit + daily_extra, policy.monthly_request_limit + monthly_extra
 
 
 def _record_usage(
@@ -201,10 +300,19 @@ def get_personal_usage_summary(
     *,
     now: datetime | None = None,
 ) -> PersonalUsageSummaryOut:
-    period_key = _usage_period(now or utc_now())
+    checked_at = now or utc_now()
+    period_key = _usage_period(checked_at)
+    daily_period_key = _daily_usage_period(checked_at)
     search_count = _usage_count(session, user.id, "company_search", period_key)
     report_count = _usage_count(session, user.id, "company_report", period_key)
     request_count = _usage_count(session, user.id, "company_request", period_key)
+    daily_request_count = _daily_request_count(session, user.id, checked_at)
+    daily_request_limit, monthly_request_limit = _effective_request_limits(
+        session,
+        user,
+        policy,
+        checked_at,
+    )
     watchlist_count = int(
         session.scalar(
             select(func.count())
@@ -219,10 +327,12 @@ def get_personal_usage_summary(
 
     return PersonalUsageSummaryOut(
         period_key=period_key,
+        daily_request_period_key=daily_period_key,
         searches=quota(search_count, policy.monthly_search_limit),
         watchlist_companies=quota(watchlist_count, policy.watchlist_company_limit),
         reports=quota(report_count, policy.monthly_report_limit),
-        company_requests=quota(request_count, policy.monthly_request_limit),
+        daily_company_requests=quota(daily_request_count, daily_request_limit),
+        company_requests=quota(request_count, monthly_request_limit),
     )
 
 
@@ -363,10 +473,73 @@ def remove_personal_watchlist_item(session: Session, user: User, company_id: UUI
 
 
 def _request_out(
+    session: Session,
     request: PersonalCompanyRequest,
     *,
     reused: bool = False,
+    now: datetime | None = None,
+    include_internal_details: bool = False,
 ) -> PersonalCompanyRequestOut:
+    checked_at = now or utc_now()
+    research_job = (
+        session.get(CompanyResearchJob, request.research_job_id)
+        if request.research_job_id is not None
+        else None
+    )
+    queue_position: int | None = None
+    if request.status in {"identity_queued", "budget_deferred"} and research_job is None:
+        queue_position = int(
+            session.scalar(
+                select(func.count())
+                .select_from(PersonalCompanyRequest)
+                .where(
+                    PersonalCompanyRequest.status.in_(["identity_queued", "budget_deferred"]),
+                    or_(
+                        PersonalCompanyRequest.created_at < request.created_at,
+                        and_(
+                            PersonalCompanyRequest.created_at == request.created_at,
+                            PersonalCompanyRequest.id <= request.id,
+                        ),
+                    ),
+                )
+            )
+            or 0
+        )
+    elif research_job is not None and research_job.status in {
+        "queued",
+        "partial",
+        "budget_deferred",
+    }:
+        queue_position = int(
+            session.scalar(
+                select(func.count())
+                .select_from(CompanyResearchJob)
+                .where(
+                    CompanyResearchJob.status.in_(["queued", "partial", "budget_deferred"]),
+                    or_(
+                        CompanyResearchJob.created_at < research_job.created_at,
+                        and_(
+                            CompanyResearchJob.created_at == research_job.created_at,
+                            CompanyResearchJob.id <= research_job.id,
+                        ),
+                    ),
+                )
+            )
+            or 0
+        )
+    can_confirm = (
+        request.status == "awaiting_confirmation"
+        and request.confirmation_expires_at is not None
+        and _aware_utc(request.confirmation_expires_at) > checked_at
+    )
+    status_message = _REQUEST_STATUS_MESSAGES[request.status]
+    last_error_code = request.last_error_code
+    if request.last_error_code == "existing_private_company_requires_admin":
+        if include_internal_details:
+            status_message = "平台已有同一主体的受限档案，需管理员确认数据边界后才能继续。"
+        else:
+            status_message = "该申请需要进一步核验，处理完成后会更新结果。"
+            last_error_code = "manual_review_required"
     return PersonalCompanyRequestOut(
         id=request.id,
         owner_user_id=request.owner_user_id,
@@ -375,10 +548,31 @@ def _request_out(
         requested_name=request.requested_name,
         requested_credit_code=request.requested_credit_code,
         status=request.status,
+        research_job_id=request.research_job_id,
+        research_job_status=research_job.status if research_job is not None else None,
+        queue_position=queue_position,
+        resolved_legal_name=request.resolved_legal_name,
+        resolved_credit_code=request.resolved_credit_code,
+        resolved_registered_region=request.resolved_registered_region,
+        resolved_registration_status=request.resolved_registration_status,
+        resolved_registration_authority=request.resolved_registration_authority,
+        identity_checked_at=request.identity_checked_at,
+        confirmation_expires_at=request.confirmation_expires_at,
+        confirmed_at=request.confirmed_at,
+        external_calls=request.external_calls if include_internal_details else 0,
+        cache_hits=request.cache_hits if include_internal_details else 0,
+        cancelled_at=request.cancelled_at,
+        cancellation_stage=request.cancellation_stage,
+        cancellation_reason=request.cancellation_reason,
+        last_error_code=last_error_code,
+        can_confirm=can_confirm,
+        can_cancel=request.status in _CANCELLABLE_REQUEST_STATUSES,
+        status_message=status_message,
         reviewed_by_id=request.reviewed_by_id,
         reviewed_at=request.reviewed_at,
         decision_reason=request.decision_reason,
         created_at=request.created_at,
+        updated_at=request.updated_at,
         reused=reused,
     )
 
@@ -392,7 +586,7 @@ def list_personal_company_requests(
         .where(PersonalCompanyRequest.owner_user_id == user.id)
         .order_by(PersonalCompanyRequest.created_at.desc())
     )
-    return [_request_out(request) for request in requests]
+    return [_request_out(session, request) for request in requests]
 
 
 def list_platform_company_requests(
@@ -404,7 +598,7 @@ def list_platform_company_requests(
     requests = session.scalars(
         select(PersonalCompanyRequest).order_by(PersonalCompanyRequest.created_at.desc())
     )
-    return [_request_out(request) for request in requests]
+    return [_request_out(session, request, include_internal_details=True) for request in requests]
 
 
 def _recent_request(
@@ -433,6 +627,7 @@ def _create_company_request(
     requested_name: str | None,
     requested_credit_code: str | None,
     target_key: str,
+    initial_status: str,
 ) -> PersonalCompanyRequestOut:
     now = utc_now()
     existing = _recent_request(session, user, target_key)
@@ -440,8 +635,8 @@ def _create_company_request(
         within_cooldown = (
             _aware_utc(existing.created_at) + timedelta(hours=policy.request_cooldown_hours) > now
         )
-        if existing.status in {"pending", "in_review"} or within_cooldown:
-            return _request_out(existing, reused=True)
+        if existing.status in _ACTIVE_REQUEST_STATUSES or within_cooldown:
+            return _request_out(session, existing, reused=True, now=now)
 
     _lock_user(session, user)
     existing = _recent_request(session, user, target_key)
@@ -449,8 +644,12 @@ def _create_company_request(
         within_cooldown = (
             _aware_utc(existing.created_at) + timedelta(hours=policy.request_cooldown_hours) > now
         )
-        if existing.status in {"pending", "in_review"} or within_cooldown:
-            return _request_out(existing, reused=True)
+        if existing.status in _ACTIVE_REQUEST_STATUSES or within_cooldown:
+            return _request_out(session, existing, reused=True, now=now)
+
+    daily_limit, monthly_limit = _effective_request_limits(session, user, policy, now)
+    if _daily_request_count(session, user.id, now) >= daily_limit:
+        raise PersonalFeatureLimitError("daily_company_request", daily_limit)
 
     request = PersonalCompanyRequest(
         owner_user_id=user.id,
@@ -459,7 +658,7 @@ def _create_company_request(
         requested_name=requested_name,
         requested_credit_code=requested_credit_code,
         target_key=target_key,
-        status="pending",
+        status=initial_status,
     )
     session.add(request)
     session.flush()
@@ -467,12 +666,12 @@ def _create_company_request(
         session,
         user,
         operation="company_request",
-        limit=policy.monthly_request_limit,
+        limit=monthly_limit,
         resource_id=request.id,
         idempotency_key=_sha256(f"company-request:{request.id}"),
         now=now,
     )
-    output = _request_out(request)
+    output = _request_out(session, request, now=now)
     session.commit()
     return output
 
@@ -484,11 +683,17 @@ def create_inclusion_request(
     *,
     company_name: str | None,
     credit_code: str | None,
+    on_demand_enabled: bool = False,
 ) -> PersonalCompanyRequestOut:
     normalized_name = company_name.strip() if company_name else None
     normalized_code = credit_code.strip().upper() if credit_code else None
     if not normalized_name and not normalized_code:
         raise PersonalRequestConflictError("company identifier required")
+    if normalized_code:
+        try:
+            normalized_code = validate_unified_credit_code(normalized_code)
+        except ValueError as error:
+            raise PersonalRequestConflictError("invalid unified social credit code") from error
     identity_clauses = []
     if normalized_code:
         identity_clauses.append(Company.credit_code == normalized_code)
@@ -526,6 +731,7 @@ def create_inclusion_request(
         requested_name=normalized_name,
         requested_credit_code=normalized_code,
         target_key=target_key,
+        initial_status="identity_queued" if on_demand_enabled else "pending",
     )
 
 
@@ -534,6 +740,8 @@ def create_refresh_request(
     user: User,
     policy: PersonalEntitlementPolicy,
     company_id: UUID,
+    *,
+    on_demand_enabled: bool = False,
 ) -> PersonalCompanyRequestOut:
     company = _shared_company(session, company_id)
     if company is None:
@@ -547,7 +755,270 @@ def create_refresh_request(
         requested_name=company.legal_name,
         requested_credit_code=company.credit_code,
         target_key=f"company:{company.id}",
+        initial_status="research_queued" if on_demand_enabled else "pending",
     )
+
+
+def confirm_personal_company_request(
+    session: Session,
+    user: User,
+    request_id: UUID,
+    policy: OnDemandResearchPolicy,
+) -> PersonalCompanyRequestOut:
+    now = utc_now()
+    request = session.scalar(
+        select(PersonalCompanyRequest)
+        .where(
+            PersonalCompanyRequest.id == request_id,
+            PersonalCompanyRequest.owner_user_id == user.id,
+        )
+        .with_for_update()
+    )
+    if request is None:
+        raise PersonalFeatureNotFoundError("request not found")
+    if request.status in {"research_queued", "researching", "partial", "completed"}:
+        return _request_out(session, request, reused=True, now=now)
+    if request.status != "awaiting_confirmation":
+        raise PersonalRequestTransitionError("request is not awaiting identity confirmation")
+    if (
+        request.confirmation_expires_at is None
+        or _aware_utc(request.confirmation_expires_at) <= now
+    ):
+        raise PersonalRequestTransitionError("identity confirmation has expired")
+    if not request.resolved_credit_code or not request.resolved_legal_name:
+        raise PersonalRequestTransitionError("verified identity is incomplete")
+    request.confirmed_at = now
+    request.status = "research_queued"
+    request.leased_until = None
+    request.heartbeat_at = None
+    request.last_error_code = None
+    request.decision_reason = f"confirmed:{policy.version}"
+    output = _request_out(session, request, now=now)
+    session.commit()
+    return output
+
+
+def cancel_personal_company_request(
+    session: Session,
+    user: User,
+    request_id: UUID,
+    *,
+    reason: str | None = None,
+) -> PersonalCompanyRequestOut:
+    now = utc_now()
+    request = session.scalar(
+        select(PersonalCompanyRequest)
+        .where(
+            PersonalCompanyRequest.id == request_id,
+            PersonalCompanyRequest.owner_user_id == user.id,
+        )
+        .with_for_update()
+    )
+    if request is None:
+        raise PersonalFeatureNotFoundError("request not found")
+    if request.status == "cancelled":
+        return _request_out(session, request, reused=True, now=now)
+    if request.status not in _CANCELLABLE_REQUEST_STATUSES:
+        raise PersonalRequestTransitionError("request can no longer be cancelled")
+
+    prior_status = request.status
+    request.cancel_requested_at = now
+    request.cancellation_stage = prior_status
+    if reason and reason.strip():
+        request.cancellation_reason = reason.strip()
+
+    research_job = (
+        session.get(CompanyResearchJob, request.research_job_id)
+        if request.research_job_id is not None
+        else None
+    )
+    other_active_request_count = 0
+    if research_job is not None:
+        other_active_request_count = int(
+            session.scalar(
+                select(func.count())
+                .select_from(PersonalCompanyRequest)
+                .where(
+                    PersonalCompanyRequest.research_job_id == research_job.id,
+                    PersonalCompanyRequest.id != request.id,
+                    PersonalCompanyRequest.status.in_(
+                        ["research_queued", "researching", "partial", "budget_deferred"]
+                    ),
+                )
+            )
+            or 0
+        )
+
+    if prior_status == "identity_checking":
+        request.status = "cancel_requested"
+    elif research_job is not None and research_job.status == "running":
+        if other_active_request_count == 0:
+            request.status = "cancel_requested"
+        else:
+            request.status = "cancelled"
+            request.cancelled_at = now
+            request.leased_until = None
+            request.heartbeat_at = None
+    else:
+        request.status = "cancelled"
+        request.cancelled_at = now
+        request.leased_until = None
+        request.heartbeat_at = None
+
+    research_external_calls = 0
+    if research_job is not None:
+        research_external_calls = research_job.external_calls
+    if request.status == "cancelled" and request.external_calls + research_external_calls == 0:
+        usage = session.scalar(
+            select(PersonalUsageRecord).where(
+                PersonalUsageRecord.owner_user_id == user.id,
+                PersonalUsageRecord.operation == "company_request",
+                PersonalUsageRecord.resource_id == request.id,
+                PersonalUsageRecord.voided_at.is_(None),
+            )
+        )
+        if usage is not None:
+            usage.voided_at = now
+            usage.void_reason = "cancelled_before_external_call"
+
+    output = _request_out(session, request, now=now)
+    session.commit()
+    return output
+
+
+def _quota_increase_out(
+    session: Session,
+    request: PersonalQuotaIncreaseRequest,
+) -> PersonalQuotaIncreaseRequestOut:
+    owner = session.get(User, request.owner_user_id)
+    if owner is None:
+        raise PersonalFeatureNotFoundError("quota request owner not found")
+    status = request.status
+    if (
+        status == "approved"
+        and request.effective_until is not None
+        and _aware_utc(request.effective_until) <= utc_now()
+    ):
+        status = "expired"
+    return PersonalQuotaIncreaseRequestOut(
+        id=request.id,
+        owner_user_id=request.owner_user_id,
+        owner_display_name=owner.display_name,
+        owner_email=owner.email,
+        requested_daily_extra=request.requested_daily_extra,
+        requested_monthly_extra=request.requested_monthly_extra,
+        request_reason=request.request_reason,
+        status=status,
+        approved_daily_extra=request.approved_daily_extra,
+        approved_monthly_extra=request.approved_monthly_extra,
+        effective_until=request.effective_until,
+        reviewed_by_id=request.reviewed_by_id,
+        reviewed_at=request.reviewed_at,
+        decision_reason=request.decision_reason,
+        created_at=request.created_at,
+        updated_at=request.updated_at,
+    )
+
+
+def create_quota_increase_request(
+    session: Session,
+    user: User,
+    *,
+    requested_daily_extra: int,
+    requested_monthly_extra: int,
+    reason: str,
+) -> PersonalQuotaIncreaseRequestOut:
+    _lock_user(session, user)
+    pending = session.scalar(
+        select(PersonalQuotaIncreaseRequest).where(
+            PersonalQuotaIncreaseRequest.owner_user_id == user.id,
+            PersonalQuotaIncreaseRequest.status == "pending",
+        )
+    )
+    if pending is not None:
+        return _quota_increase_out(session, pending)
+    request = PersonalQuotaIncreaseRequest(
+        owner_user_id=user.id,
+        requested_daily_extra=requested_daily_extra,
+        requested_monthly_extra=requested_monthly_extra,
+        request_reason=reason.strip(),
+        status="pending",
+        approved_daily_extra=0,
+        approved_monthly_extra=0,
+    )
+    session.add(request)
+    session.flush()
+    output = _quota_increase_out(session, request)
+    session.commit()
+    return output
+
+
+def list_personal_quota_increase_requests(
+    session: Session,
+    user: User,
+) -> list[PersonalQuotaIncreaseRequestOut]:
+    rows = session.scalars(
+        select(PersonalQuotaIncreaseRequest)
+        .where(PersonalQuotaIncreaseRequest.owner_user_id == user.id)
+        .order_by(PersonalQuotaIncreaseRequest.created_at.desc())
+    )
+    return [_quota_increase_out(session, row) for row in rows]
+
+
+def list_platform_quota_increase_requests(
+    session: Session,
+    user: User,
+) -> list[PersonalQuotaIncreaseRequestOut]:
+    if not user_has_role(session, user.id, "platform_admin"):
+        raise PersonalFeatureAccessError("platform admin required")
+    rows = session.scalars(
+        select(PersonalQuotaIncreaseRequest).order_by(
+            PersonalQuotaIncreaseRequest.created_at.desc()
+        )
+    )
+    return [_quota_increase_out(session, row) for row in rows]
+
+
+def decide_platform_quota_increase_request(
+    session: Session,
+    user: User,
+    request_id: UUID,
+    *,
+    status: str,
+    approved_daily_extra: int,
+    approved_monthly_extra: int,
+    effective_until: datetime | None,
+    reason: str,
+) -> PersonalQuotaIncreaseRequestOut:
+    if not user_has_role(session, user.id, "platform_admin"):
+        raise PersonalFeatureAccessError("platform admin required")
+    request = session.scalar(
+        select(PersonalQuotaIncreaseRequest)
+        .where(PersonalQuotaIncreaseRequest.id == request_id)
+        .with_for_update()
+    )
+    if request is None:
+        raise PersonalFeatureNotFoundError("quota request not found")
+    if request.status != "pending":
+        raise PersonalRequestTransitionError("quota request is already closed")
+    now = utc_now()
+    if status == "approved":
+        if effective_until is None or _aware_utc(effective_until) <= now:
+            raise PersonalRequestTransitionError("approved quota expiry must be in the future")
+        request.approved_daily_extra = approved_daily_extra
+        request.approved_monthly_extra = approved_monthly_extra
+        request.effective_until = effective_until
+    else:
+        request.approved_daily_extra = 0
+        request.approved_monthly_extra = 0
+        request.effective_until = None
+    request.status = status
+    request.reviewed_by_id = user.id
+    request.reviewed_at = now
+    request.decision_reason = reason.strip()
+    output = _quota_increase_out(session, request)
+    session.commit()
+    return output
 
 
 def decide_platform_company_request(
@@ -565,11 +1036,19 @@ def decide_platform_company_request(
         raise PersonalFeatureNotFoundError("request not found")
     if request.status in {"completed", "rejected"}:
         raise PersonalRequestTransitionError("request already closed")
+    if request.status not in {"pending", "in_review"}:
+        raise PersonalRequestTransitionError(
+            "on-demand requests cannot be closed through the legacy review endpoint"
+        )
+    if request.last_error_code == "existing_private_company_requires_admin":
+        raise PersonalRequestTransitionError(
+            "private company collision requires a dedicated catalog decision"
+        )
     request.status = status
     request.reviewed_by_id = user.id
     request.reviewed_at = utc_now()
     request.decision_reason = reason.strip()
-    output = _request_out(request)
+    output = _request_out(session, request, include_internal_details=True)
     session.commit()
     return output
 

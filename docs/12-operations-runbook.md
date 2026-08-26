@@ -280,6 +280,20 @@ unset TIANYANCHA_AUTHORIZATION
 
 适配器只调用固定 Core 端点的名称候选和工商登记两个工具；不跟随重定向，每次请求受超时、响应大小、低频间隔、总请求数和一次重试限制。完整响应只写入 `data/private/provider_cache/tianyancha/` 的权限受限缓存，数据库不保存联系方式。运行后核对 `official_identity_verifications.verification_basis=licensed_business_data`、`usage_ledger` 的调用/缓存/零 Token/零费用，以及 `conflict` 未改写公司主档。相同清单在缓存期内重复运行应为零外部调用并返回 `duplicate`。随后立即恢复两个外部调用开关为 false。
 
+### 新公司按需研究 PR 1（默认关闭）
+
+PR 1 只处理用户额度、身份核验、主体确认、全局任务合并、取消和恢复；六大研究模块尚未执行，因此不得在香港环境对测试用户开启。升级到 `0018` 后可用下列命令做零网络 dry-run；它只读队列和配置，不加载天眼查 Provider：
+
+```bash
+export WORKER_TENANT_ID='replace_with_platform_operator_tenant_uuid'
+export ON_DEMAND_WORKER_USER_ID='replace_with_platform_admin_user_uuid'
+APP_MODE=demo uv run python -m scripts.run_on_demand_research_worker --dry-run
+```
+
+正式 Worker 只允许单实例运行，并要求 `ON_DEMAND_RESEARCH_ENABLED=true`、`EXTERNAL_CALLS_ENABLED=true` 和 `TIANYANCHA_IDENTITY_CALLS_ENABLED=true`；`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED`、可信来源调用和来源调度必须保持 false。默认供应商合同参数为 1000 次/日、10000 次/月，自动任务保留 10% 后实际闸门为 900/日、9000/月；平台用量按全部天眼查 Provider 调用汇总。Worker 先查完整私有缓存，只有缓存不完整才检查外部预算；同一进程复用 Provider 以保持跨任务限速。引入原子预算预留前不得启动第二个 Worker 或多实例部署。当前未开通正式 VIP，PR 2 和最终一家具名新公司受控实测之前不得执行真实命令，也不得把 Key 写入命令历史、env 示例、Git 或日志。
+
+取消排队请求立即停止；个人接口只取消本人申请，平台 Worker 确认已无其他活跃请求后才取消全局任务。身份查询正在传输时只记录取消，当前调用完成后不再继续。零外部调用只退当月额度，日提交次数不退，同主体仍保持 24 小时冷却。个人页面不显示精确外部调用、缓存命中或私有档案冲突原因；平台管理页保留诊断信息。服务重启、退出登录或断线不能删除任务；恢复后先查看申请、租约、调用台账和全局活动任务唯一约束，不得手工重复建任务。若已存在同信用代码的租户私有公司，任务应停在管理员处理状态，不能为通过测试直接改成共享公司。Worker 每次提交或回滚事务后必须重新设置 RLS 上下文。
+
 ### 身份例外与历史审核工作台 V1（仅本机受控环境）
 
 确认 API 只绑定 `127.0.0.1` 并设置 `REVIEW_WORKBENCH_ENABLED=true`；前端 `DEMO_USER_ID` 必须是当前租户内同时具有 `reviewer` 和 `institution_admin` 角色的本地用户，才能修改身份主数据。访问 `/reviews` 后，新导入通常只出现身份歧义；只能从 30 天内、与该提及相关且明确标注政府官方或授权商业依据的候选中选择。提交后核对审核状态、公司信用代码/全称、实体提及、事件证据和发布路由；原 URL 未检查时应为 `unconfirmed_lead` 且不进入快照。工作台读取和身份决定都不调用外部 Provider。

@@ -4,7 +4,7 @@
 
 PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；不修改已应用迁移。UUID 主键、UTC `timestamptz`、显式外键和状态约束为默认。原始事实追加保存，派生快照可重建。个人、机构与基金私有行必须通过应用授权和 PostgreSQL 行级安全（RLS）双重限制。
 
-本文件同时描述当前 `0017` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询、受控共享事实晋升、授权工商身份 Provider、受控可信来源监测、候选研究交接、低频调度审计、CloudBase 身份映射、单一个人关注清单、个人变化回访和确定性报告已经实现；标记为“目标”的 organization 和商业订阅权益对象仍未实现。当前 `tenant` 继续作为技术隔离边界，CloudBase 只提供外部身份，业务授权仍由本地用户、角色、基金授权和 RLS 决定。
+本文件同时描述当前 `0018` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询、受控共享事实晋升、授权工商身份 Provider、受控可信来源监测、候选研究交接、低频调度审计、CloudBase 身份映射、个人留存，以及按需研究的身份确认、额度、队列和取消恢复基础已经实现；六大研究模块处理和标记为“目标”的 organization、商业订阅权益仍未实现。当前 `tenant` 继续作为技术隔离边界，CloudBase 只提供外部身份，业务授权仍由本地用户、角色、基金授权和 RLS 决定。
 
 ## 2. 表目录：身份、投资与权限
 
@@ -23,8 +23,9 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `company_relationships` | `from_company_id`, `to_company_id`, `relationship_type`, validity, evidence | 禁止自关联；版本化唯一；双向查询索引 |
 | `investments` | `id`, `tenant_id`, `fund_id`, `company_id`, amount, currency, ownership, internal_valuation, `visibility_scope` | FK tenant/fund/company；同一轮次条件唯一；RLS；fund/company 索引 |
 | `personal_watchlist_items` | 当前用户的单一默认关注清单 | 唯一 `(owner_user_id, company_id)`；只允许关注已核验共享公司，不产生公司读取权限 |
-| `personal_company_requests` | 用户主动提交的平台收录或人工更新申请 | owner 私有；平台管理员可读取和处理；保存目标快照、状态、理由和处理人 |
-| `personal_usage_records` | 查询、申请和固定报告的测试权益消耗 | owner 私有；按上海自然月和动作计数；与外部调用成本 `usage_ledger` 分离 |
+| `personal_company_requests` | 用户提交的新公司研究或已有公司更新请求；保存身份候选、确认、队列关联、调用量、取消、租约和错误状态 | owner 私有；同 owner/目标仅一个活动请求；确认前不得创建共享公司；旧人工请求仍兼容 |
+| `personal_quota_increase_requests` | 用户申请临时增加日/月研究额度，管理员记录批准量、有效期和理由 | 每名用户只允许一个待处理申请；owner 自读，平台管理员跨租户只处理该运营记录 |
+| `personal_usage_records` | 查询、申请和固定报告的测试权益消耗 | owner 私有；公司请求同时按上海自然日和自然月统计；取消前零外部调用只作废月额度，日提交次数不退；与外部成本 `usage_ledger` 分离 |
 | `personal_company_view_states` | 用户首次和最近查看某共享公司的时间状态 | 唯一 `(owner_user_id, company_id)`；只允许 owner 读写 |
 | `personal_event_view_receipts` | 用户确实看到过的平台共享事件回执 | 唯一 `(owner_user_id, event_id)`；事件外键可追溯公司；只追加；避免用时间截止点错过并发发布事件 |
 | `plans`（目标） | 套餐能力和限额的版本化配置 | 唯一套餐版本；不保存资源授权 |
@@ -56,6 +57,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `refresh_policies` | TTL、升降频、冷却、预算和 Provider 规则的版本化配置 | 唯一 `(tenant_id, code, version)`；仅一个活动版本 |
 | `refresh_jobs` | company、原因、优先级、状态、幂等键、租约、预计成本 | 幂等键唯一；同公司/类型活跃任务部分唯一；领取索引 |
 | `refresh_runs` | 每次尝试、检查点、Provider 结果、错误、变化计数、起止时间 | FK job；job/attempt 唯一；状态/开始时间索引 |
+| `company_research_jobs` | 全局公司级研究队列、六大模块覆盖、租约、取消和调用/Token 计数 | 同一公司仅一个活动任务；多个个人或机构请求可关联同一任务；PR 1 只建队列，模块执行由 PR 2 实现 |
 | `research_imports` | tenant、导入人、批次、格式、工具、原始文件哈希、许可、自动发布/未确认/身份审核计数与状态 | `(tenant_id, batch_id)` 和 `(tenant_id, file_hash, parser_version)` 唯一；机构管理员 RLS；状态索引 |
 | `official_identity_verifications` | tenant、公司候选、私有身份原文档、查询词、工商全称、信用代码、注册地、登记状态、`verification_basis`、核验结果/规则/时间 | 每份原文档唯一核验记录；依据只能为政府官方或授权商业；tenant/状态/时间及信用代码索引；管理员写、审核员读 RLS |
 | `trusted_sources` | tenant、公司、来源类型、允许域名、起始 URL、可选列表内容路径、许可依据、检查频率、保留策略和最近状态 | 同 tenant/company/URL 唯一；仅当前 tenant 平台管理员可读写；列表路径变更会清除起始页条件缓存 |
@@ -85,6 +87,10 @@ erDiagram
   FUNDS ||--o{ FUND_ACCESS_GRANTS : authorizes
   FUNDS ||--o{ INVESTMENTS : makes
   COMPANIES ||--o{ INVESTMENTS : receives
+  USERS ||--o{ PERSONAL_COMPANY_REQUESTS : submits
+  USERS ||--o{ PERSONAL_QUOTA_INCREASE_REQUESTS : requests
+  COMPANIES ||--o{ COMPANY_RESEARCH_JOBS : researches
+  COMPANY_RESEARCH_JOBS ||--o{ PERSONAL_COMPANY_REQUESTS : serves
   COMPANIES ||--o{ COMPANY_ALIASES : has
   SOURCES ||--o{ RAW_DOCUMENTS : publishes
   RESEARCH_IMPORTS ||--o{ RAW_DOCUMENTS : contains

@@ -123,7 +123,12 @@ class PersonalWatchlistItemOut(BaseModel):
 
 class PersonalInclusionRequestIn(BaseModel):
     company_name: str | None = Field(default=None, min_length=2, max_length=240)
-    credit_code: str | None = Field(default=None, min_length=2, max_length=32)
+    credit_code: str | None = Field(
+        default=None,
+        min_length=18,
+        max_length=18,
+        pattern=r"^[0-9A-Za-z]{18}$",
+    )
 
     @model_validator(mode="after")
     def require_company_identifier(self) -> PersonalInclusionRequestIn:
@@ -139,6 +144,29 @@ class PersonalCompanyRequestDecisionIn(BaseModel):
     reason: str = Field(min_length=3, max_length=1000)
 
 
+class PersonalCompanyRequestCancelIn(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
+
+PersonalCompanyRequestStatus = Literal[
+    "pending",
+    "in_review",
+    "identity_queued",
+    "identity_checking",
+    "awaiting_confirmation",
+    "needs_input",
+    "research_queued",
+    "researching",
+    "partial",
+    "budget_deferred",
+    "cancel_requested",
+    "cancelled",
+    "completed",
+    "rejected",
+    "failed",
+]
+
+
 class PersonalCompanyRequestOut(BaseModel):
     id: UUID
     owner_user_id: UUID
@@ -146,12 +174,81 @@ class PersonalCompanyRequestOut(BaseModel):
     company_id: UUID | None
     requested_name: str | None
     requested_credit_code: str | None
-    status: Literal["pending", "in_review", "completed", "rejected"]
+    status: PersonalCompanyRequestStatus
+    research_job_id: UUID | None
+    research_job_status: str | None
+    queue_position: int | None
+    resolved_legal_name: str | None
+    resolved_credit_code: str | None
+    resolved_registered_region: str | None
+    resolved_registration_status: str | None
+    resolved_registration_authority: str | None
+    identity_checked_at: datetime | None
+    confirmation_expires_at: datetime | None
+    confirmed_at: datetime | None
+    external_calls: int
+    cache_hits: int
+    cancelled_at: datetime | None
+    cancellation_stage: str | None
+    cancellation_reason: str | None
+    last_error_code: str | None
+    can_confirm: bool
+    can_cancel: bool
+    status_message: str
     reviewed_by_id: UUID | None
     reviewed_at: datetime | None
     decision_reason: str | None
     created_at: datetime
+    updated_at: datetime
     reused: bool = False
+
+
+class PersonalQuotaIncreaseRequestIn(BaseModel):
+    requested_daily_extra: int = Field(default=0, ge=0, le=100)
+    requested_monthly_extra: int = Field(default=0, ge=0, le=1000)
+    reason: str = Field(min_length=5, max_length=500)
+
+    @model_validator(mode="after")
+    def require_positive_increase(self) -> PersonalQuotaIncreaseRequestIn:
+        if self.requested_daily_extra == 0 and self.requested_monthly_extra == 0:
+            raise ValueError("at least one requested quota increase must be positive")
+        return self
+
+
+class PersonalQuotaIncreaseDecisionIn(BaseModel):
+    status: Literal["approved", "rejected"]
+    approved_daily_extra: int = Field(default=0, ge=0, le=100)
+    approved_monthly_extra: int = Field(default=0, ge=0, le=1000)
+    effective_until: datetime | None = None
+    reason: str = Field(min_length=3, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> PersonalQuotaIncreaseDecisionIn:
+        if self.status == "approved":
+            if self.approved_daily_extra == 0 and self.approved_monthly_extra == 0:
+                raise ValueError("approved quota increase must be positive")
+            if self.effective_until is None:
+                raise ValueError("approved quota increase requires an expiry")
+        return self
+
+
+class PersonalQuotaIncreaseRequestOut(BaseModel):
+    id: UUID
+    owner_user_id: UUID
+    owner_display_name: str
+    owner_email: str
+    requested_daily_extra: int
+    requested_monthly_extra: int
+    request_reason: str
+    status: Literal["pending", "approved", "rejected", "expired"]
+    approved_daily_extra: int
+    approved_monthly_extra: int
+    effective_until: datetime | None
+    reviewed_by_id: UUID | None
+    reviewed_at: datetime | None
+    decision_reason: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class PersonalQuotaOut(BaseModel):
@@ -162,9 +259,11 @@ class PersonalQuotaOut(BaseModel):
 
 class PersonalUsageSummaryOut(BaseModel):
     period_key: str
+    daily_request_period_key: str
     searches: PersonalQuotaOut
     watchlist_companies: PersonalQuotaOut
     reports: PersonalQuotaOut
+    daily_company_requests: PersonalQuotaOut
     company_requests: PersonalQuotaOut
 
 

@@ -33,6 +33,31 @@ class TianyanchaProviderError(RuntimeError):
     pass
 
 
+class TianyanchaIdentityNeedsInputError(TianyanchaProviderError):
+    pass
+
+
+class _TianyanchaCacheMiss(Exception):
+    pass
+
+
+class TianyanchaIdentityLookupResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query_text: str
+    legal_name: str
+    credit_code: str = Field(pattern=r"^[0-9A-Z]{18}$")
+    registered_region: str
+    registration_status: str
+    registration_authority: str | None = None
+    provider_company_id: str | None = None
+    canonical_url: str
+    checked_at: datetime
+    data_updated_at: datetime | None = None
+    response_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_count: int | None = None
+
+
 class TianyanchaIdentityQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -138,7 +163,7 @@ class TianyanchaIdentityProvider:
 
     def __init__(
         self,
-        manifest_path: str | Path,
+        manifest_path: str | Path | None,
         *,
         authorization: str,
         policy: TianyanchaIdentityPolicy,
@@ -151,13 +176,17 @@ class TianyanchaIdentityProvider:
         if not authorization.strip():
             raise ValueError("Tianyancha authorization is required")
         self.allowed_root = (allowed_root or DEFAULT_PRIVATE_IDENTITY_IMPORT_ROOT).resolve()
-        self.manifest_path = _resolve_private_file(manifest_path, self.allowed_root)
-        self.manifest = load_tianyancha_identity_manifest(
-            self.manifest_path,
-            allowed_root=self.allowed_root,
-        )
-        if len(self.manifest.queries) > policy.max_companies_per_run:
-            raise ValueError("manifest exceeds TIANYANCHA_IDENTITY_MAX_COMPANIES")
+        if manifest_path is None:
+            self.manifest_path = None
+            self.manifest = None
+        else:
+            self.manifest_path = _resolve_private_file(manifest_path, self.allowed_root)
+            self.manifest = load_tianyancha_identity_manifest(
+                self.manifest_path,
+                allowed_root=self.allowed_root,
+            )
+            if len(self.manifest.queries) > policy.max_companies_per_run:
+                raise ValueError("manifest exceeds TIANYANCHA_IDENTITY_MAX_COMPANIES")
         self.authorization = authorization.strip()
         self.policy = policy
         self.cache_root = (cache_root or DEFAULT_PRIVATE_TIANYANCHA_CACHE_ROOT).resolve()
@@ -169,6 +198,15 @@ class TianyanchaIdentityProvider:
         self._sleep = sleeper
         self._clock = clock
         self._last_request_monotonic: float | None = None
+        self.external_calls = 0
+        self.cache_hits = 0
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
+
+    def begin_run(self) -> None:
+        """Reset per-item accounting while preserving cross-item rate limiting."""
         self.external_calls = 0
         self.cache_hits = 0
 
@@ -313,6 +351,12 @@ class TianyanchaIdentityProvider:
         content = self._post_tool(tool_name, arguments)
         return self._write_cache(tool_name, arguments, content, self._clock())
 
+    def _call_cached_tool(self, tool_name: str, arguments: dict[str, object]) -> _ToolResult:
+        cached = self._read_cache(tool_name, arguments)
+        if cached is None:
+            raise _TianyanchaCacheMiss
+        return cached
+
     @staticmethod
     def _exact_candidate(
         content: dict[str, object], credit_code: str
@@ -364,6 +408,168 @@ class TianyanchaIdentityProvider:
         except ValueError as error:
             raise TianyanchaProviderError("registration data update time is invalid") from error
 
+    @staticmethod
+    def _normalized_name(value: str) -> str:
+        return "".join(value.split()).casefold()
+
+    @classmethod
+    def _exact_name_candidate(
+        cls,
+        content: dict[str, object],
+        legal_name: str,
+    ) -> tuple[dict[str, object], int]:
+        raw_items = content.get("items")
+        if not isinstance(raw_items, list):
+            raise TianyanchaProviderError("company search response is missing candidate items")
+        normalized = cls._normalized_name(legal_name)
+        exact = [
+            item
+            for item in raw_items
+            if isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and cls._normalized_name(str(item["name"])) == normalized
+        ]
+        codes = {
+            str(item.get("creditCode") or "").strip().upper()
+            for item in exact
+            if str(item.get("creditCode") or "").strip()
+        }
+        if len(exact) != 1 or len(codes) != 1:
+            raise TianyanchaIdentityNeedsInputError(
+                "company name did not resolve to one exact legal entity; credit code required"
+            )
+        total = content.get("total", len(raw_items))
+        try:
+            candidate_count = int(total)
+        except (TypeError, ValueError) as error:
+            raise TianyanchaProviderError("company search candidate count is invalid") from error
+        return exact[0], candidate_count
+
+    def _lookup_identity_with(
+        self,
+        *,
+        company_name: str | None,
+        credit_code: str | None,
+        call_tool: Callable[[str, dict[str, object]], _ToolResult],
+    ) -> TianyanchaIdentityLookupResult:
+        normalized_name = company_name.strip() if company_name else None
+        normalized_code = validate_unified_credit_code(credit_code.upper()) if credit_code else None
+        if not normalized_name and not normalized_code:
+            raise ValueError("company_name or credit_code is required")
+
+        search: _ToolResult | None = None
+        candidate: dict[str, object] | None = None
+        candidate_count: int | None = None
+        if normalized_code is None:
+            assert normalized_name is not None
+            search = call_tool(
+                "search_companies",
+                {"searchKey": normalized_name, "pageNum": 1, "pageSize": 20},
+            )
+            candidate, candidate_count = self._exact_name_candidate(
+                search.content,
+                normalized_name,
+            )
+            raw_code = str(candidate.get("creditCode") or "").strip().upper()
+            try:
+                normalized_code = validate_unified_credit_code(raw_code)
+            except ValueError as error:
+                raise TianyanchaProviderError(
+                    "exact company candidate has an invalid credit code"
+                ) from error
+
+        registration = call_tool(
+            "get_company_registration_info",
+            {"searchKey": normalized_code},
+        )
+        base = self._registration_base(registration.content)
+        returned_code = str(base.get("creditCode") or "").strip().upper()
+        if returned_code != normalized_code:
+            raise TianyanchaProviderError("registration credit code does not match the query")
+        legal_name = str(base.get("name") or "").strip()
+        registration_status = str(base.get("regStatus") or "").strip()
+        if not legal_name:
+            raise TianyanchaProviderError("registration response is missing legal name")
+        if not registration_status:
+            raise TianyanchaProviderError("registration response is missing registration status")
+        if (
+            normalized_name
+            and credit_code is None
+            and self._normalized_name(legal_name) != self._normalized_name(normalized_name)
+        ):
+            raise TianyanchaIdentityNeedsInputError(
+                "submitted legal name conflicts with the registered legal name; "
+                "credit code required"
+            )
+
+        provider_id_value = (candidate or {}).get("id") or base.get("id") or base.get("companyId")
+        provider_id = (
+            str(provider_id_value).strip()
+            if provider_id_value is not None and str(provider_id_value).strip()
+            else None
+        )
+        checked_at = max(
+            registration.fetched_at,
+            search.fetched_at if search is not None else registration.fetched_at,
+        )
+        response_hash = (
+            registration.response_hash
+            if search is None
+            else _sha256(f"{search.response_hash}:{registration.response_hash}")
+        )
+        return TianyanchaIdentityLookupResult(
+            query_text=(
+                normalized_code if company_name is None else normalized_name or normalized_code
+            ),
+            legal_name=legal_name,
+            credit_code=normalized_code,
+            registered_region=self._region(base),
+            registration_status=registration_status,
+            registration_authority=str(base.get("regInstitute") or "").strip() or None,
+            provider_company_id=provider_id,
+            canonical_url=(
+                f"https://www.tianyancha.com/company/{provider_id}"
+                if provider_id
+                else "https://www.tianyancha.com/"
+            ),
+            checked_at=checked_at,
+            data_updated_at=self._data_updated_at(base.get("updateTimes")),
+            response_hash=response_hash,
+            candidate_count=candidate_count,
+        )
+
+    def lookup_cached_identity(
+        self,
+        *,
+        company_name: str | None,
+        credit_code: str | None,
+    ) -> TianyanchaIdentityLookupResult | None:
+        """Return a complete fresh cached identity without making a network request."""
+        cache_hits_before = self.cache_hits
+        try:
+            return self._lookup_identity_with(
+                company_name=company_name,
+                credit_code=credit_code,
+                call_tool=self._call_cached_tool,
+            )
+        except _TianyanchaCacheMiss:
+            # A partial cache cannot complete the identity lookup. Do not count
+            # it here; the normal lookup will count any reusable entry once.
+            self.cache_hits = cache_hits_before
+            return None
+
+    def lookup_identity(
+        self,
+        *,
+        company_name: str | None,
+        credit_code: str | None,
+    ) -> TianyanchaIdentityLookupResult:
+        return self._lookup_identity_with(
+            company_name=company_name,
+            credit_code=credit_code,
+            call_tool=self._call_tool,
+        )
+
     def _record_for_query(self, query: TianyanchaIdentityQuery) -> OfficialIdentityRecord:
         search = self._call_tool(
             "search_companies",
@@ -411,6 +617,8 @@ class TianyanchaIdentityProvider:
         )
 
     def load(self) -> LoadedOfficialIdentityImport:
+        if self.manifest is None or self.manifest_path is None:
+            raise RuntimeError("manifest-backed load requires a manifest path")
         try:
             records = [self._record_for_query(query) for query in self.manifest.queries]
             queried_at = max(record.checked_at for record in records)
@@ -439,5 +647,4 @@ class TianyanchaIdentityProvider:
                 source_filename=self.manifest_path.name,
             )
         finally:
-            if self._owns_client:
-                self._client.close()
+            self.close()

@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-26：M6A-3 新公司按需研究 PR 1
+
+- 任务：实现默认关闭的新公司按需研究基础：用户提交准确工商全称或信用代码，后台核验身份、等待用户确认，再创建或复用全局公司研究任务；完成 10/日、30/月个人额度、临时提额、供应商 900/日、9000/月自动闸门、队列、租约、取消、断线恢复和完整缓存优先。本 PR 不执行六大研究模块，不查询现有 10 家样本，不生成报告或事实。
+- 关键文件：`migrations/versions/0018_add_on_demand_research_queue.py`、`backend/app/on_demand_research.py`、`backend/app/personal_features.py`、`backend/app/tianyancha.py`、`scripts/run_on_demand_research_worker.py`、`frontend/app/watchlist/`、`frontend/app/reviews/`、`docs/DECISIONS/ADR-0015-on-demand-company-research.md` 及相关测试。
+- 实际命令：Ruff 逻辑和格式检查；完整 Pytest；SQLite `base → 0018 → 0017 → 0018 → base`；全新 PostgreSQL 16 的 `base → 0018 → 0017 → 0018`、Schema 漂移、虚构数据、受限应用账户和完整 RLS/API 套件；前端依赖审计、TypeScript 和 Next.js 生产构建；生产 Compose 解析、API/前端/备份镜像构建和预检；本地虚构数据浏览器冒烟；Codex Security 差异扫描；`git diff --check` 和定点 Secret 扫描。
+- 测试结果：Ruff 和格式通过；默认离线 Pytest 248 项通过、14 项 PostgreSQL 测试按预期跳过，全新 PostgreSQL 16 下 262 项全部通过，只有既有 FastAPI TestClient 上游弃用警告；SQLite/PostgreSQL 迁移往返和 Schema 漂移通过；前端 0 个已知高危漏洞、类型检查、生产构建、三类生产镜像和失败关闭预检通过。安全扫描发现并修复了 3 个低级别信息泄露/限速问题，同时修复事务后 RLS 上下文、个人取消全局任务权限和缓存先于预算闸门的正确性问题。本轮真实天眼查、付费 API、模型 Token、费用和自动发布均为 0，所有外部开关保持关闭。
+- 未解决阻塞：无。PR 1 强制单 Worker；多 Worker 前需增加跨进程原子预算预留与限速。执行中的六大模块取消检查、分级事实和一家新公司真实验收属于 PR 2 及后续闸门。
+
 ## 2026-08-25：取消关注的数据库最小权限修复
 
 - 任务：修复香港邀请测试环境中“可添加关注、但取消关注失败”的问题；保留 PostgreSQL 最小权限，只允许应用角色删除 `personal_watchlist_items`，并由 RLS 限制为当前用户自己的记录。
