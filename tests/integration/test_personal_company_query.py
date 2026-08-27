@@ -577,19 +577,33 @@ def test_private_leads_documents_evidence_and_fund_overlays_are_isolated(
         mention_text="机构甲内部证据提及",
     )
     with migrated_app.state.session_factory() as session:
-        session.add(
-            EventEvidence(
-                event_id=shared_event_id,
-                raw_document_id=private_document.id,
-                visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
-                owner_user_id=None,
-                owner_tenant_id=ALPHA_TENANT_ID,
-                evidence_excerpt="机构甲私有证据不得跨租户公开。",
-                span_hash=_sha256("private-evidence-on-shared-event"),
-                support_type="supports",
-            )
+        private_evidence = EventEvidence(
+            event_id=shared_event_id,
+            raw_document_id=private_document.id,
+            visibility_scope=ORGANIZATION_PRIVATE_SCOPE,
+            owner_user_id=None,
+            owner_tenant_id=ALPHA_TENANT_ID,
+            evidence_excerpt="机构甲私有证据不得跨租户公开。",
+            span_hash=_sha256("private-evidence-on-shared-event"),
+            support_type="supports",
+            display_source_name="机构私有资料",
+            display_source_quality="A",
+            display_title="不得公开的证据详情",
+            display_canonical_url="https://private.example.invalid/evidence",
+            display_observed_at=datetime(2026, 7, 17, tzinfo=UTC),
+            display_license_status="permission_confirmed",
+            display_allowed=True,
+            display_detail_payload={
+                "schema_version": "licensed-structured-evidence-v1",
+                "heading": "机构私有证据",
+                "description": "不得通过平台证据详情接口读取。",
+                "summary_fields": [],
+                "records": [],
+            },
         )
+        session.add(private_evidence)
         session.commit()
+        private_evidence_id = private_evidence.id
 
     alpha = client.get(f"/api/v1/companies/{SHARED_COMPANY_ID}", headers=ALPHA_HEADERS)
     beta = client.get(f"/api/v1/companies/{SHARED_COMPANY_ID}", headers=BETA_HEADERS)
@@ -609,6 +623,15 @@ def test_private_leads_documents_evidence_and_fund_overlays_are_isolated(
     assert len(alpha_payload["events"][0]["evidence"]) == 2
     assert len(beta_payload["events"][0]["evidence"]) == 1
     assert len(personal_payload["events"][0]["evidence"]) == 1
+    private_item = next(
+        item
+        for item in alpha_payload["events"][0]["evidence"]
+        if item["id"] == str(private_evidence_id)
+    )
+    assert private_item["detail_available"] is False
+    for headers in (ALPHA_HEADERS, BETA_HEADERS, NO_ACCESS_HEADERS):
+        response = client.get(f"/api/v1/evidence/{private_evidence_id}", headers=headers)
+        assert response.status_code == 404
 
     with migrated_app.state.session_factory() as session:
         scoped_duplicates = list(

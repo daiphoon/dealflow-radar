@@ -1163,6 +1163,7 @@ class EventEvidence(TimestampMixin, Base):
     display_final_url: Mapped[str | None] = mapped_column(String(1000))
     display_license_status: Mapped[str | None] = mapped_column(String(32))
     display_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    display_detail_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
 class EventSharingDecision(Base):

@@ -198,6 +198,9 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     assert {"voided_at", "void_reason"} <= {
         column["name"] for column in inspect(engine).get_columns("personal_usage_records")
     }
+    assert "display_detail_payload" in {
+        column["name"] for column in inspect(engine).get_columns("event_evidence")
+    }
     assert "uq_company_research_job_active" in {
         index["name"] for index in inspect(engine).get_indexes("company_research_jobs")
     }
@@ -300,3 +303,4 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "personal_usage_records_on_demand_admin_update" in ddl
     assert "request_type = 'refresh' AND company_id IS NOT NULL" in ddl
     assert "visible_shared_company.identity_status = 'verified'" in ddl
+    assert "ADD COLUMN display_detail_payload" in ddl

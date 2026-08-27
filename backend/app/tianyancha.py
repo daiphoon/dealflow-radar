@@ -10,6 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -69,6 +70,32 @@ TianyanchaResearchModuleCode = Literal[
 ]
 
 
+class TianyanchaEvidenceField(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(min_length=1, max_length=80)
+    value: str = Field(min_length=1, max_length=1000)
+
+
+class TianyanchaEvidenceRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=300)
+    fields: list[TianyanchaEvidenceField] = Field(default_factory=list, max_length=12)
+    source_url: str | None = Field(default=None, max_length=1000)
+
+
+class TianyanchaEvidenceDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["licensed-structured-evidence-v1"] = "licensed-structured-evidence-v1"
+    heading: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=1000)
+    total_records: int | None = Field(default=None, ge=0)
+    summary_fields: list[TianyanchaEvidenceField] = Field(default_factory=list, max_length=30)
+    records: list[TianyanchaEvidenceRecord] = Field(default_factory=list, max_length=10)
+
+
 class TianyanchaResearchRecord(BaseModel):
     """A conservative, display-ready projection of one licensed source response."""
 
@@ -101,6 +128,7 @@ class TianyanchaResearchRecord(BaseModel):
     evidence_excerpt: str = Field(min_length=1, max_length=2000)
     classification: Literal["verified_fact", "unconfirmed_lead"]
     classification_reasons: list[str] = Field(default_factory=list)
+    evidence_detail: TianyanchaEvidenceDetail | None = None
 
 
 class TianyanchaResearchModuleResult(BaseModel):
@@ -724,6 +752,338 @@ class TianyanchaIdentityProvider:
                 codes.update(TianyanchaIdentityProvider._subject_codes(item))
         return codes
 
+    @staticmethod
+    def _display_value(value: object, *, limit: int = 1000) -> str | None:
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            return None
+        normalized = " ".join(str(value).split())
+        return normalized[:limit] if normalized else None
+
+    @classmethod
+    def _detail_fields(
+        cls,
+        value: dict[str, object],
+        mapping: tuple[tuple[str, str], ...],
+    ) -> list[TianyanchaEvidenceField]:
+        fields: list[TianyanchaEvidenceField] = []
+        for key, label in mapping:
+            displayed = cls._display_value(value.get(key))
+            if displayed is not None:
+                fields.append(TianyanchaEvidenceField(label=label, value=displayed))
+        return fields
+
+    @staticmethod
+    def _https_url(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        parsed = urlsplit(normalized)
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        hostname = (parsed.hostname or "").lower()
+        allowed_host = (
+            hostname == "tianyancha.com"
+            or hostname.endswith(".tianyancha.com")
+            or hostname == "gov.cn"
+            or hostname.endswith(".gov.cn")
+        )
+        if (
+            parsed.scheme != "https"
+            or not allowed_host
+            or parsed.username is not None
+            or parsed.password is not None
+            or port not in {None, 443}
+        ):
+            return None
+        return normalized[:1000]
+
+    @classmethod
+    def _module_projection(
+        cls,
+        module_code: TianyanchaResearchModuleCode,
+        content: dict[str, object],
+        registration_base: dict[str, object] | None,
+    ) -> tuple[str, list[dict[str, str | None]], TianyanchaEvidenceDetail] | None:
+        facts: list[dict[str, str | None]] = []
+
+        if module_code == "company_base":
+            sources = content.get("sources")
+            holder = sources.get("holder") if isinstance(sources, dict) else None
+            items = holder.get("items") if isinstance(holder, dict) else None
+            total = holder.get("total") if isinstance(holder, dict) else None
+            total_count = (
+                int(total) if isinstance(total, (int, str)) and str(total).isdigit() else 0
+            )
+            if total_count == 0:
+                return None
+            facts.append({"name": "股东记录数", "value": str(total_count), "unit": "条"})
+            summary_fields: list[TianyanchaEvidenceField] = []
+            if registration_base is not None:
+                summary_fields = cls._detail_fields(
+                    registration_base,
+                    (
+                        ("regStatus", "登记状态"),
+                        ("legalPersonName", "法定代表人"),
+                        ("regCapital", "注册资本"),
+                        ("estiblishTime", "成立日期"),
+                        ("regInstitute", "登记机关"),
+                    ),
+                )
+                facts.extend(
+                    {"name": field.label, "value": field.value, "unit": None}
+                    for field in summary_fields[:4]
+                )
+            records: list[TianyanchaEvidenceRecord] = []
+            for index, item in enumerate(items if isinstance(items, list) else []):
+                if not isinstance(item, dict):
+                    continue
+                name = cls._display_value(item.get("name"), limit=300)
+                fields = cls._detail_fields(
+                    item,
+                    (
+                        ("capital", "认缴信息"),
+                        ("capitalActl", "实缴信息"),
+                        ("ftShareholding", "持股比例"),
+                    ),
+                )
+                if name:
+                    records.append(
+                        TianyanchaEvidenceRecord(
+                            title=name,
+                            fields=fields,
+                        )
+                    )
+                if len(records) == 10:
+                    break
+            description = f"授权数据源返回股东记录 {total_count} 条"
+            if records:
+                description += f"，本页展示前 {len(records)} 条。"
+            else:
+                description += "。"
+            return (
+                description,
+                facts,
+                TianyanchaEvidenceDetail(
+                    heading="工商与股东基础资料",
+                    description="仅展示与公司身份和股权结构有关的必要字段，不展示联系方式。",
+                    total_records=total_count,
+                    summary_fields=summary_fields,
+                    records=records,
+                ),
+            )
+
+        if module_code == "operation":
+            items = content.get("items")
+            raw_total = content.get("total") or content.get("items_total")
+            total_count = (
+                int(raw_total)
+                if isinstance(raw_total, (int, str)) and str(raw_total).isdigit()
+                else len(items)
+                if isinstance(items, list)
+                else 0
+            )
+            if total_count == 0:
+                return None
+            records = []
+            for item in items if isinstance(items, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                title = cls._display_value(item.get("title"), limit=300)
+                if not title:
+                    continue
+                records.append(
+                    TianyanchaEvidenceRecord(
+                        title=title,
+                        fields=cls._detail_fields(
+                            item,
+                            (
+                                ("publishTime", "发布日期"),
+                                ("stage", "阶段"),
+                                ("bidAmount", "公示金额"),
+                                ("purchaser", "采购方"),
+                                ("bidWinner", "中标方"),
+                                ("province", "地区"),
+                                ("type", "类型"),
+                                ("enterpriseIdentity", "企业身份"),
+                            ),
+                        ),
+                        source_url=cls._https_url(item.get("bidUrl")),
+                    )
+                )
+                if len(records) == 10:
+                    break
+            facts.append({"name": "招投标记录数", "value": str(total_count), "unit": "条"})
+            return (
+                f"授权数据源返回招投标记录 {total_count} 条，本页展示 {len(records)} 条可用明细。",
+                facts,
+                TianyanchaEvidenceDetail(
+                    heading="招投标记录",
+                    description="记录来自授权结构化数据；中标、采购或候选身份以每条记录字段为准。",
+                    total_records=total_count,
+                    records=records,
+                ),
+            )
+
+        if module_code == "history":
+            sources = content.get("sources")
+            current = sources.get("cb") if isinstance(sources, dict) else None
+            changes = current.get("changeList") if isinstance(current, dict) else None
+            items = changes if isinstance(changes, list) else []
+            if not items:
+                return None
+            records = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                title = cls._display_value(item.get("changeItem"), limit=300) or "工商变更"
+                records.append(
+                    TianyanchaEvidenceRecord(
+                        title=title,
+                        fields=cls._detail_fields(
+                            item,
+                            (
+                                ("changeTime", "变更日期"),
+                                ("contentBefore", "变更前"),
+                                ("contentAfter", "变更后"),
+                            ),
+                        ),
+                    )
+                )
+                if len(records) == 10:
+                    break
+            total_count = len(items)
+            facts.append({"name": "历史变更记录数", "value": str(total_count), "unit": "条"})
+            return (
+                f"授权数据源返回工商历史变更记录 {total_count} 条，本页展示前 {len(records)} 条。",
+                facts,
+                TianyanchaEvidenceDetail(
+                    heading="工商历史变更记录",
+                    description="展示工商字段变更前后内容；不据此推断变更原因或投资影响。",
+                    total_records=total_count,
+                    records=records,
+                ),
+            )
+
+        if module_code == "intellectual_property":
+            mapping = (
+                ("inventionLicensingCount", "发明授权"),
+                ("inventionAnnouncementCount", "发明公布"),
+                ("utilityModelCount", "实用新型"),
+                ("appearanceDesignCount", "外观设计"),
+                ("softwareCopyrightCount", "软件著作权"),
+            )
+            fields = cls._detail_fields(content, mapping)
+            total_count = sum(int(field.value) for field in fields if field.value.isdigit())
+            if total_count == 0:
+                return None
+            score_fields = cls._detail_fields(
+                content,
+                (
+                    ("scienceAndTechnologyScore", "科技综合评分"),
+                    ("scienceAndTechnologyGrade", "科技等级"),
+                    ("innovationAbilityScore", "创新能力评分"),
+                    ("researchCapabilityScore", "研发能力评分"),
+                    ("scoreRank", "评分排名"),
+                ),
+            )
+            facts.append({"name": "知识产权记录数", "value": str(total_count), "unit": "条"})
+            return (
+                f"授权数据源返回知识产权相关记录合计 {total_count} 条。",
+                facts,
+                TianyanchaEvidenceDetail(
+                    heading="知识产权与创新指标",
+                    description="数量和评分来自授权数据源，不代表平台对技术先进性或商业价值作出判断。",
+                    total_records=total_count,
+                    summary_fields=[*fields, *score_fields],
+                ),
+            )
+
+        if module_code == "risk":
+            raw_total = content.get("total")
+            total_count = int(raw_total) if isinstance(raw_total, int) else 0
+            if total_count == 0:
+                return None
+            records = []
+            for item in [
+                *(content.get("toolRisks") if isinstance(content.get("toolRisks"), list) else []),
+                *(
+                    content.get("relationRiskNotes")
+                    if isinstance(content.get("relationRiskNotes"), list)
+                    else []
+                ),
+            ]:
+                if not isinstance(item, dict):
+                    continue
+                title = (
+                    cls._display_value(item.get("title"), limit=300)
+                    or cls._display_value(item.get("riskType"), limit=300)
+                    or "风险相关记录"
+                )
+                records.append(
+                    TianyanchaEvidenceRecord(
+                        title=title,
+                        fields=cls._detail_fields(
+                            item,
+                            (
+                                ("riskType", "记录类别"),
+                                ("riskLevel", "来源分级"),
+                                ("count", "记录数量"),
+                                ("relatedCompany", "关联主体"),
+                            ),
+                        ),
+                    )
+                )
+                if len(records) == 10:
+                    break
+            facts.append({"name": "风险相关概览记录数", "value": str(total_count), "unit": "条"})
+            return (
+                f"授权数据源返回风险相关概览记录 {total_count} 条，具体责任、状态和影响尚待核实。",
+                facts,
+                TianyanchaEvidenceDetail(
+                    heading="司法与合规待核实记录概览",
+                    description="当前接口只返回分类和数量，不能作为公司存在重大风险的结论。",
+                    total_records=total_count,
+                    records=records,
+                ),
+            )
+
+        raw_total = content.get("riskTotal") or content.get("total")
+        total_count = int(raw_total) if isinstance(raw_total, int) else 0
+        if total_count == 0:
+            return None
+        groups = content.get("riskGroups")
+        records = []
+        for item in groups if isinstance(groups, list) else []:
+            if not isinstance(item, dict):
+                continue
+            title = cls._display_value(item.get("groupName"), limit=300) or "人员相关记录"
+            records.append(
+                TianyanchaEvidenceRecord(
+                    title=title,
+                    fields=cls._detail_fields(item, (("count", "记录数量"),)),
+                )
+            )
+        facts.append({"name": "人员相关概览记录数", "value": str(total_count), "unit": "条"})
+        group_count = content.get("groupCount") or content.get("total")
+        summary_fields = []
+        if isinstance(group_count, int):
+            summary_fields.append(
+                TianyanchaEvidenceField(label="记录分类数", value=str(group_count))
+            )
+        return (
+            f"授权数据源返回人员相关概览记录 {total_count} 条，尚不能据此判断公司或个人存在风险。",
+            facts,
+            TianyanchaEvidenceDetail(
+                heading="人员相关待核实记录概览",
+                description="当前接口只返回分类和数量；同名、任职关系、责任和影响均需进一步核对。",
+                total_records=total_count,
+                summary_fields=summary_fields,
+                records=records[:10],
+            ),
+        )
+
     @classmethod
     def _module_record(
         cls,
@@ -736,31 +1096,13 @@ class TianyanchaIdentityProvider:
     ) -> TianyanchaResearchRecord | None:
         if not cls._research_has_data(content):
             return None
-        label = cls._RESEARCH_LABELS[module_code]
-        count = cls._research_item_count(content)
-        summary = cls._research_summary(content)
-        if summary is None:
-            count_text = f"，共 {count} 条" if count is not None else ""
-            summary = (
-                f"授权数据源返回了{label}结构化记录{count_text}。"
-                "该表述只确认来源记录已取得，不代表平台对原因、责任或投资风险作出判断。"
-            )
-        facts: list[dict[str, str | None]] = []
-        if count is not None:
-            facts.append({"name": "来源记录数", "value": str(count), "unit": "条"})
-        if module_code == "company_base" and registration_base is not None:
-            for key, name in (
-                ("regStatus", "登记状态"),
-                ("legalPersonName", "法定代表人"),
-                ("regCapital", "注册资本"),
-                ("estiblishTime", "成立日期"),
-            ):
-                value = registration_base.get(key)
-                if isinstance(value, (str, int, float)) and str(value).strip():
-                    facts.append({"name": name, "value": str(value).strip(), "unit": None})
+        projection = cls._module_projection(module_code, content, registration_base)
+        if projection is None:
+            return None
+        summary, facts, evidence_detail = projection
 
         event_type = {
-            "company_base": "governance_people",
+            "company_base": "financing_cap_table",
             "risk": "legal_compliance",
             "intellectual_property": "product_technology",
             "operation": "contract_commercial",
@@ -768,15 +1110,23 @@ class TianyanchaIdentityProvider:
             "executive": "governance_people",
         }[module_code]
         is_risk_lead = module_code in {"risk", "executive"}
+        title = {
+            "company_base": "工商与股东基础资料",
+            "risk": "司法与合规待核实记录概览",
+            "intellectual_property": "知识产权资料",
+            "operation": "招投标与经营公示资料",
+            "history": "工商历史变更资料",
+            "executive": "人员相关待核实记录概览",
+        }[module_code]
         return TianyanchaResearchRecord(
-            external_record_id=f"{module_code}:{response_hash[:24]}",
-            title=f"{label}资料已更新" if not is_risk_lead else f"{label}待核实线索",
+            external_record_id=f"{module_code}:overview",
+            title=title,
             summary=summary,
             event_type=event_type,
             event_subtype=f"licensed_{module_code}_overview",
-            direction="negative" if is_risk_lead else "neutral",
-            materiality_score=70 if is_risk_lead else 45,
-            risk_severity="high" if is_risk_lead else "none",
+            direction="unknown" if is_risk_lead else "neutral",
+            materiality_score=45,
+            risk_severity="none",
             confidence_score=Decimal("0.900") if not is_risk_lead else Decimal("0.800"),
             facts=facts,
             uncertainties=(["需核对具体记录、主体身份及后续状态"] if is_risk_lead else []),
@@ -788,6 +1138,7 @@ class TianyanchaIdentityProvider:
                 if is_risk_lead
                 else ["licensed_structured_routine_fact"]
             ),
+            evidence_detail=evidence_detail,
         )
 
     def _lookup_research_module_with(

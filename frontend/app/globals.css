@@ -629,6 +629,15 @@ a {
   text-decoration: none;
 }
 
+.stack-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.detail-shell .compact-hero {
+  margin-bottom: 1rem;
+}
+
 .personal-detail-controls {
   display: grid;
   justify-items: end;

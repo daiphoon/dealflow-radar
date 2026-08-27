@@ -57,6 +57,32 @@ export type Evidence = {
   final_url: string | null;
   visibility_scope: string;
   link_display_allowed: boolean;
+  link_kind: "public_source" | "licensed_provider" | "unavailable";
+  detail_available: boolean;
+};
+
+export type EvidenceDetail = {
+  id: string;
+  company_id: string;
+  company_legal_name: string;
+  event_id: string;
+  event_title: string;
+  source_name: string;
+  source_quality: string;
+  checked_at: string;
+  heading: string;
+  description: string;
+  total_records: number | null;
+  displayed_records: number;
+  summary_fields: Array<{ label: string; value: string }>;
+  records: Array<{
+    title: string;
+    fields: Array<{ label: string; value: string }>;
+    source_url: string | null;
+  }>;
+  provider_url: string | null;
+  provider_link_available: boolean;
+  provider_access_notice: string | null;
 };
 
 export type Event = {
@@ -500,6 +526,10 @@ export function getCompanySuggestions(
 
 export function getCompany(companyId: string): Promise<CompanyDetail> {
   return getJson(`/api/v1/companies/${encodeURIComponent(companyId)}`);
+}
+
+export function getEvidenceDetail(evidenceId: string): Promise<EvidenceDetail> {
+  return getJson(`/api/v1/evidence/${encodeURIComponent(evidenceId)}`);
 }
 
 export function getPersonalUsage(): Promise<PersonalUsageSummary> {

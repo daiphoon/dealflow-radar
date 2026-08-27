@@ -24,6 +24,39 @@ class EvidenceOut(BaseModel):
     final_url: str | None
     visibility_scope: str
     link_display_allowed: bool
+    link_kind: Literal["public_source", "licensed_provider", "unavailable"]
+    detail_available: bool
+
+
+class EvidenceDetailFieldOut(BaseModel):
+    label: str
+    value: str
+
+
+class EvidenceDetailRecordOut(BaseModel):
+    title: str
+    fields: list[EvidenceDetailFieldOut]
+    source_url: str | None = None
+
+
+class EvidenceDetailOut(BaseModel):
+    id: UUID
+    company_id: UUID
+    company_legal_name: str
+    event_id: UUID
+    event_title: str
+    source_name: str
+    source_quality: str
+    checked_at: datetime
+    heading: str
+    description: str
+    total_records: int | None
+    displayed_records: int
+    summary_fields: list[EvidenceDetailFieldOut]
+    records: list[EvidenceDetailRecordOut]
+    provider_url: str | None
+    provider_link_available: bool
+    provider_access_notice: str | None
 
 
 class EventOut(BaseModel):

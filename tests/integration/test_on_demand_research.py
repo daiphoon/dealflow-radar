@@ -32,6 +32,9 @@ from backend.app.models import (
 )
 from backend.app.on_demand_research import run_on_demand_worker_once
 from backend.app.tianyancha import (
+    TianyanchaEvidenceDetail,
+    TianyanchaEvidenceField,
+    TianyanchaEvidenceRecord,
     TianyanchaIdentityLookupResult,
     TianyanchaProviderError,
     TianyanchaResearchModuleCode,
@@ -195,6 +198,22 @@ class _ResearchProvider(_IdentityProvider):
                 if is_lead
                 else "licensed_structured_routine_fact"
             ],
+            evidence_detail=(
+                TianyanchaEvidenceDetail(
+                    heading="工商与股东基础资料",
+                    description="只展示必要字段。",
+                    total_records=1,
+                    summary_fields=[TianyanchaEvidenceField(label="登记状态", value="存续")],
+                    records=[
+                        TianyanchaEvidenceRecord(
+                            title="示例股东",
+                            fields=[TianyanchaEvidenceField(label="持股比例", value="20%")],
+                        )
+                    ],
+                )
+                if module_code == "company_base"
+                else None
+            ),
         )
         return TianyanchaResearchModuleResult(
             module_code=module_code,
@@ -887,6 +906,36 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
         migrated_app,
         provider,
     )
+    with migrated_app.state.session_factory() as session:
+        session.add(
+            Event(
+                company_id=company_id,
+                visibility_scope="platform_shared",
+                owner_user_id=None,
+                owner_tenant_id=None,
+                event_type="contract_commercial",
+                event_subtype="licensed_operation_overview",
+                status="published",
+                direction="neutral",
+                materiality_score=45,
+                risk_severity="none",
+                confidence_score=Decimal("0.900"),
+                source_quality="A",
+                title="旧的零记录概览",
+                summary="授权数据源返回经营记录 0 条。",
+                facts=[{"name": "来源记录数", "value": "0", "unit": "条"}],
+                uncertainties=[],
+                occurred_at=None,
+                published_at=None,
+                observed_at=datetime(2026, 8, 25, tzinfo=UTC),
+                fingerprint_version="tyc-v1",
+                event_fingerprint="f" * 64,
+                publication_route="licensed_structured_fact",
+                publication_policy_version="licensed-research-display-v1",
+                publication_reasons=["legacy_zero_record"],
+            )
+        )
+        session.commit()
 
     outcomes = [
         _run_worker(
@@ -946,14 +995,51 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
         assert all(event["evidence"] for event in detail["events"])
         assert all(event["evidence"] for event in detail["platform_unconfirmed_leads"])
 
+    company_base_event = next(
+        event
+        for event in personal_detail.json()["events"]
+        if event["event_subtype"] == "licensed_company_base_overview"
+    )
+    detail_evidence = company_base_event["evidence"][0]
+    assert detail_evidence["detail_available"] is True
+    assert detail_evidence["link_kind"] == "licensed_provider"
+    evidence_detail = client.get(
+        f"/api/v1/evidence/{detail_evidence['id']}",
+        headers=PERSONAL_HEADERS,
+    )
+    assert evidence_detail.status_code == 200
+    assert evidence_detail.json()["company_id"] == str(company_id)
+    assert evidence_detail.json()["summary_fields"] == [{"label": "登记状态", "value": "存续"}]
+    assert evidence_detail.json()["records"][0]["title"] == "示例股东"
+    with migrated_app.state.session_factory() as session:
+        evidence = session.get(EventEvidence, UUID(detail_evidence["id"]))
+        assert evidence is not None
+        evidence.display_canonical_url = "https://www.tianyancha.com/"
+        session.commit()
+    root_link_detail = client.get(
+        f"/api/v1/companies/{company_id}",
+        headers=PERSONAL_HEADERS,
+    ).json()
+    root_link_evidence = next(
+        event
+        for event in root_link_detail["events"]
+        if event["event_subtype"] == "licensed_company_base_overview"
+    )["evidence"][0]
+    assert root_link_evidence["link_display_allowed"] is False
+    assert root_link_evidence["link_kind"] == "unavailable"
+
     with migrated_app.state.session_factory() as session:
         job = session.get(CompanyResearchJob, research_job_id)
         assert job is not None
         assert job.status == "completed"
         assert job.external_calls == 6
         assert job.input_tokens == job.output_tokens == 0
-        assert session.scalar(select(func.count()).select_from(Event)) == 5
+        assert session.scalar(select(func.count()).select_from(Event)) == 6
         assert session.scalar(select(func.count()).select_from(EventEvidence)) == 5
+        zero_record_event = session.scalar(select(Event).where(Event.event_fingerprint == "f" * 64))
+        assert zero_record_event is not None
+        assert zero_record_event.status == "retracted"
+        assert "licensed_source_zero_record_reprojection" in zero_record_event.publication_reasons
         assert (
             session.scalar(
                 select(func.count())
@@ -997,8 +1083,28 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
     assert cached_outcomes[-1] == "research_completed"
     assert cached_provider.external_calls == 0
     assert cached_provider.cache_hits == 6
+    cached_detail = client.get(
+        f"/api/v1/companies/{company_id}",
+        headers=BETA_HEADERS,
+    ).json()
+    assert all(event["evidence"] for event in cached_detail["events"])
+    assert all(event["evidence"] for event in cached_detail["platform_unconfirmed_leads"])
+    cached_company_base = next(
+        event
+        for event in cached_detail["events"]
+        if event["event_subtype"] == "licensed_company_base_overview"
+    )
+    assert cached_company_base["evidence"][0]["detail_available"] is True
     with migrated_app.state.session_factory() as session:
-        assert session.scalar(select(func.count()).select_from(Event)) == 5
+        assert session.scalar(select(func.count()).select_from(Event)) == 6
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(Event)
+                .where(Event.status.in_(["published", "candidate"]))
+            )
+            == 5
+        )
         assert session.scalar(select(func.count()).select_from(EventEvidence)) == 5
         assert (
             session.scalar(
@@ -1024,7 +1130,15 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
         )
     assert later_provider.external_calls == 6
     with migrated_app.state.session_factory() as session:
-        assert session.scalar(select(func.count()).select_from(Event)) == 5
+        assert session.scalar(select(func.count()).select_from(Event)) == 6
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(Event)
+                .where(Event.status.in_(["published", "candidate"]))
+            )
+            == 5
+        )
         assert session.scalar(select(func.count()).select_from(EventEvidence)) == 5
         assert (
             session.scalar(

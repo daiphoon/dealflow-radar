@@ -73,6 +73,65 @@ def _registration_content(
     return {"sources": {"base": base, "type": {"status": "ok"}}}
 
 
+def _research_content(tool_name: str) -> dict[str, object]:
+    if tool_name == "get_shareholder_info":
+        return {
+            "sources": {
+                "holder": {
+                    "total": 2,
+                    "items": [
+                        {"name": "示例股东甲", "capital": "100 万元", "ftShareholding": "20%"},
+                        {"name": "示例股东乙", "capital": "50 万元", "ftShareholding": "10%"},
+                    ],
+                }
+            }
+        }
+    if tool_name == "get_risk_overview":
+        return {
+            "total": 1,
+            "toolRisks": [{"riskType": "司法记录", "riskLevel": "提示", "count": 1}],
+        }
+    if tool_name == "get_ipr_score":
+        return {
+            "inventionLicensingCount": 1,
+            "softwareCopyrightCount": 2,
+            "scienceAndTechnologyScore": 80,
+        }
+    if tool_name == "get_bidding_info":
+        return {
+            "total": "1",
+            "items": [
+                {
+                    "title": "示例采购项目",
+                    "publishTime": "2026-08-20",
+                    "purchaser": "示例采购方",
+                    "bidUrl": "https://example.gov.cn/bid/1",
+                }
+            ],
+        }
+    if tool_name == "get_historical_registration":
+        return {
+            "sources": {
+                "cb": {
+                    "changeList": [
+                        {
+                            "changeItem": "注册资本",
+                            "changeTime": "2026-08-01",
+                            "contentBefore": "100 万元",
+                            "contentAfter": "200 万元",
+                        }
+                    ]
+                }
+            }
+        }
+    return {
+        "total": 1,
+        "riskTotal": 8,
+        "groupCount": 1,
+        "riskGroups": [{"groupName": "任职相关记录", "count": 1}],
+    }
+
+
 def _response(content: dict[str, object], *, as_string: bool = False) -> httpx.Response:
     return httpx.Response(
         200,
@@ -472,13 +531,7 @@ def test_six_research_modules_use_approved_tools_and_conservative_classification
         tool_name = payload["tool_name"]
         if tool_name == "get_company_registration_info":
             return _response(_registration_content())
-        return _response(
-            {
-                "_summary": f"{tool_name} 返回了 1 条结构化记录。",
-                "total": 1,
-                "items": [{"creditCode": CREDIT_CODE, "id": f"{tool_name}-1"}],
-            }
-        )
+        return _response(_research_content(tool_name))
 
     provider = _provider(tmp_path, httpx.MockTransport(handler))
     provider.lookup_identity(company_name=None, credit_code=CREDIT_CODE)
@@ -521,6 +574,22 @@ def test_six_research_modules_use_approved_tools_and_conservative_classification
     assert all(result.records for result in results.values())
     assert results["risk"].records[0].classification == "unconfirmed_lead"
     assert results["executive"].records[0].classification == "unconfirmed_lead"
+    assert results["risk"].records[0].risk_severity == "none"
+    assert results["executive"].records[0].direction == "unknown"
+    assert results["executive"].records[0].evidence_detail is not None
+    assert results["executive"].records[0].evidence_detail.total_records == 8
+    assert results["company_base"].records[0].evidence_detail is not None
+    assert len(results["company_base"].records[0].evidence_detail.records) == 2
+    company_base_payload = json.dumps(
+        results["company_base"].records[0].evidence_detail.model_dump(mode="json"),
+        ensure_ascii=False,
+    )
+    assert "private-phone" not in company_base_payload
+    assert "private@example.invalid" not in company_base_payload
+    assert results["operation"].records[0].evidence_detail is not None
+    assert results["operation"].records[0].evidence_detail.records[0].source_url == (
+        "https://example.gov.cn/bid/1"
+    )
     for module in {"company_base", "intellectual_property", "operation", "history"}:
         assert results[module].records[0].classification == "verified_fact"
     assert provider.external_calls == 7
@@ -586,7 +655,17 @@ def test_research_record_count_prefers_positive_nested_total_and_ignores_metadat
             _response(
                 {
                     "sources": {
-                        "current": {"total": 0, "changeList": [{"id": "metadata"}]},
+                        "cb": {
+                            "total": 0,
+                            "changeList": [
+                                {
+                                    "changeItem": "企业名称",
+                                    "changeTime": "2026-01-01",
+                                    "contentBefore": "旧名称",
+                                    "contentAfter": LEGAL_NAME,
+                                }
+                            ],
+                        },
                         "history": {"total": 7, "items": [{"id": "history-1"}]},
                     }
                 }
@@ -596,6 +675,8 @@ def test_research_record_count_prefers_positive_nested_total_and_ignores_metadat
                     "companyName": LEGAL_NAME,
                     "profileTags": ["technology", "product"],
                     "scienceAndTechnologyScore": 80,
+                    "inventionLicensingCount": 0,
+                    "softwareCopyrightCount": 0,
                 }
             ),
         ]
@@ -615,8 +696,58 @@ def test_research_record_count_prefers_positive_nested_total_and_ignores_metadat
         provider_company_id="123456",
     )
 
-    assert history.records[0].facts == [{"name": "来源记录数", "value": "7", "unit": "条"}]
-    assert "共 7 条" in history.records[0].summary
-    assert intellectual_property.records[0].facts == []
-    assert "来源记录" in intellectual_property.records[0].summary
-    assert "共 2 条" not in intellectual_property.records[0].summary
+    assert history.records[0].facts == [{"name": "历史变更记录数", "value": "1", "unit": "条"}]
+    assert "1 条" in history.records[0].summary
+    assert intellectual_property.records == []
+    assert intellectual_property.no_reliable_data is True
+
+
+def test_zero_count_modules_do_not_generate_events_and_contacts_are_not_projected(
+    tmp_path: Path,
+) -> None:
+    responses = iter(
+        [
+            _response(_registration_content()),
+            _response({"sources": {"holder": {"total": 0, "items": []}}}),
+            _response({"total": 0, "toolRisks": []}),
+        ]
+    )
+    provider = _provider(tmp_path, httpx.MockTransport(lambda _: next(responses)))
+    provider.lookup_identity(company_name=None, credit_code=CREDIT_CODE)
+
+    company_base = provider.lookup_research_module(
+        module_code="company_base",
+        legal_name=LEGAL_NAME,
+        credit_code=CREDIT_CODE,
+        provider_company_id=None,
+    )
+    risk = provider.lookup_research_module(
+        module_code="risk",
+        legal_name=LEGAL_NAME,
+        credit_code=CREDIT_CODE,
+        provider_company_id=None,
+    )
+
+    assert company_base.records == []
+    assert company_base.no_reliable_data is True
+    assert risk.records == []
+    assert risk.no_reliable_data is True
+    projected = json.dumps(
+        [record.model_dump(mode="json") for record in company_base.records],
+        ensure_ascii=False,
+    )
+    assert "private-phone" not in projected
+    assert "private@example.invalid" not in projected
+
+
+def test_evidence_record_urls_only_allow_https_provider_or_government_hosts() -> None:
+    assert TianyanchaIdentityProvider._https_url("https://www.tianyancha.com/bid/1") == (
+        "https://www.tianyancha.com/bid/1"
+    )
+    assert TianyanchaIdentityProvider._https_url("https://example.gov.cn/bid/1") == (
+        "https://example.gov.cn/bid/1"
+    )
+    assert TianyanchaIdentityProvider._https_url("http://example.gov.cn/bid/1") is None
+    assert TianyanchaIdentityProvider._https_url("https://user@example.gov.cn/bid/1") is None
+    assert TianyanchaIdentityProvider._https_url("https://example.gov.cn:444/bid/1") is None
+    assert TianyanchaIdentityProvider._https_url("https://phishing.example/bid/1") is None

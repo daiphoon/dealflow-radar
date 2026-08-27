@@ -186,19 +186,28 @@ function EventCard({
               <strong>{evidence.title}</strong>
             </div>
             <blockquote>{evidence.excerpt}</blockquote>
+            {evidence.detail_available ? (
+              <Link href={`/evidence/${encodeURIComponent(evidence.id)}`}>
+                查看平台证据详情
+              </Link>
+            ) : null}
             {sourceAvailable ? (
               <a href={sourceUrl} rel="noreferrer" target="_blank">
-                查看公开来源链接 ↗
+                {evidence.link_kind === "licensed_provider"
+                  ? "查看供应商原始页面 ↗"
+                  : "查看公开来源链接 ↗"}
               </a>
             ) : (
               <span className="muted">
                 {evidence.url_health_status === "broken"
                   ? "来源链接已失效"
-                  : "来源链接不可开放"}
+                  : evidence.link_kind === "unavailable" && evidence.detail_available
+                    ? "供应商原始页面暂不可直接定位"
+                    : "来源链接不可开放"}
                 {evidence.url_http_status ? `（HTTP ${evidence.url_http_status}）` : ""}
               </span>
             )}
-            {evidence.url_health_status === "unchecked" ? (
+            {sourceAvailable && evidence.url_health_status === "unchecked" ? (
               <p className="link-warning">尚未自动验证；可打开不代表证据已实质核验。</p>
             ) : evidence.url_checked_at ? (
               <span className="muted">链接检查时间：{formatDate(evidence.url_checked_at)}</span>
