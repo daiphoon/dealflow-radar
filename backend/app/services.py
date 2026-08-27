@@ -73,6 +73,9 @@ from backend.app.schemas import (
     CompanySearchResult,
     CompanySuggestion,
     EventOut,
+    EvidenceDetailFieldOut,
+    EvidenceDetailOut,
+    EvidenceDetailRecordOut,
     EvidenceOut,
     IdentityCandidateOut,
     IdentityResolutionOut,
@@ -1633,12 +1636,24 @@ def _scope_owner_matches(
 
 def _link_can_be_displayed(url: str, health_status: str, license_status: str | None) -> bool:
     parsed = urlsplit(url)
+    if parsed.hostname in {"tianyancha.com", "www.tianyancha.com"} and not parsed.path.rstrip("/"):
+        return False
     return (
         license_status in {"public", "permission_confirmed"}
         and parsed.scheme in {"http", "https"}
         and bool(parsed.netloc)
         and health_status in {"healthy", "unchecked"}
     )
+
+
+def _link_kind(
+    url: str,
+    health_status: str,
+    license_status: str | None,
+) -> str:
+    if not _link_can_be_displayed(url, health_status, license_status):
+        return "unavailable"
+    return "licensed_provider" if license_status == "permission_confirmed" else "public_source"
 
 
 def _event_out(
@@ -1714,6 +1729,17 @@ def _event_out(
                         health_status,
                         evidence.display_license_status,
                     ),
+                    link_kind=_link_kind(
+                        evidence.display_final_url or evidence.display_canonical_url,
+                        health_status,
+                        evidence.display_license_status,
+                    ),
+                    detail_available=(
+                        evidence.visibility_scope == PLATFORM_SHARED_SCOPE
+                        and evidence.owner_user_id is None
+                        and evidence.owner_tenant_id is None
+                        and bool(evidence.display_detail_payload)
+                    ),
                 )
             )
             continue
@@ -1759,6 +1785,12 @@ def _event_out(
                     health_status,
                     document.license_status if source.license_status == "public" else None,
                 ),
+                link_kind=_link_kind(
+                    str(verification.get("final_url") or document.canonical_url),
+                    health_status,
+                    document.license_status if source.license_status == "public" else None,
+                ),
+                detail_available=False,
             )
         )
     return EventOut(
@@ -1784,6 +1816,140 @@ def _event_out(
         observed_at=event.observed_at,
         evidence=evidence_items,
         visibility_scope=event.visibility_scope,
+    )
+
+
+def get_evidence_detail(
+    session: Session,
+    user: User,
+    evidence_id: UUID,
+) -> EvidenceDetailOut:
+    evidence = session.scalar(
+        select(EventEvidence).where(
+            EventEvidence.id == evidence_id,
+            EventEvidence.visibility_scope == PLATFORM_SHARED_SCOPE,
+            EventEvidence.owner_user_id.is_(None),
+            EventEvidence.owner_tenant_id.is_(None),
+            EventEvidence.display_allowed.is_(True),
+        )
+    )
+    if evidence is None or not isinstance(evidence.display_detail_payload, dict):
+        raise NotFoundError("evidence detail not found")
+    event = session.scalar(
+        select(Event).where(
+            Event.id == evidence.event_id,
+            Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+            Event.owner_user_id.is_(None),
+            Event.owner_tenant_id.is_(None),
+            Event.status.in_(["published", "candidate"]),
+        )
+    )
+    if event is None:
+        raise NotFoundError("evidence detail not found")
+    company = session.scalar(
+        select(Company).where(
+            Company.id == event.company_id,
+            Company.tenant_id.is_(None),
+            Company.visibility_scope == "public",
+            Company.identity_status == "verified",
+        )
+    )
+    if company is None:
+        raise NotFoundError("evidence detail not found")
+    payload = evidence.display_detail_payload
+    if payload.get("schema_version") != "licensed-structured-evidence-v1":
+        raise NotFoundError("evidence detail not found")
+    summary_values = payload.get("summary_fields", [])
+    if not isinstance(summary_values, list):
+        raise NotFoundError("evidence detail not found")
+    try:
+        summary_fields = [
+            EvidenceDetailFieldOut.model_validate(field)
+            for field in summary_values
+            if isinstance(field, dict)
+        ]
+    except ValueError as exc:
+        raise NotFoundError("evidence detail not found") from exc
+    records = []
+    record_values = payload.get("records", [])
+    if not isinstance(record_values, list):
+        raise NotFoundError("evidence detail not found")
+    for item in record_values:
+        if not isinstance(item, dict):
+            continue
+        field_values = item.get("fields", [])
+        if not isinstance(field_values, list):
+            raise NotFoundError("evidence detail not found")
+        source_url = item.get("source_url")
+        if isinstance(source_url, str):
+            parsed_source = urlsplit(source_url)
+            try:
+                source_port = parsed_source.port
+            except ValueError:
+                source_port = -1
+            source_hostname = (parsed_source.hostname or "").lower()
+            source_host_allowed = (
+                source_hostname == "tianyancha.com"
+                or source_hostname.endswith(".tianyancha.com")
+                or source_hostname == "gov.cn"
+                or source_hostname.endswith(".gov.cn")
+            )
+            source_url = (
+                source_url
+                if parsed_source.scheme == "https"
+                and source_host_allowed
+                and parsed_source.username is None
+                and parsed_source.password is None
+                and source_port in {None, 443}
+                else None
+            )
+        else:
+            source_url = None
+        try:
+            records.append(
+                EvidenceDetailRecordOut(
+                    title=str(item.get("title") or "记录"),
+                    fields=[
+                        EvidenceDetailFieldOut.model_validate(field)
+                        for field in field_values
+                        if isinstance(field, dict)
+                    ],
+                    source_url=source_url,
+                )
+            )
+        except ValueError as exc:
+            raise NotFoundError("evidence detail not found") from exc
+    provider_url = evidence.display_final_url or evidence.display_canonical_url
+    health_status = evidence.display_url_health_status or "unchecked"
+    provider_link_available = _link_can_be_displayed(
+        provider_url,
+        health_status,
+        evidence.display_license_status,
+    )
+    return EvidenceDetailOut(
+        id=evidence.id,
+        company_id=company.id,
+        company_legal_name=company.legal_name,
+        event_id=event.id,
+        event_title=event.title,
+        source_name=evidence.display_source_name or "授权数据源",
+        source_quality=evidence.display_source_quality or event.source_quality,
+        checked_at=evidence.display_observed_at or event.observed_at,
+        heading=str(payload.get("heading") or event.title),
+        description=str(payload.get("description") or evidence.evidence_excerpt),
+        total_records=(
+            payload.get("total_records") if isinstance(payload.get("total_records"), int) else None
+        ),
+        displayed_records=len(records),
+        summary_fields=summary_fields,
+        records=records,
+        provider_url=provider_url if provider_link_available else None,
+        provider_link_available=provider_link_available,
+        provider_access_notice=(
+            "供应商原始页面可能需要供应商账户或会员权限。"
+            if provider_link_available and evidence.display_license_status == "permission_confirmed"
+            else None
+        ),
     )
 
 

@@ -76,6 +76,7 @@ from backend.app.schemas import (
     CompanyListItem,
     CompanySearchResult,
     CompanySuggestion,
+    EvidenceDetailOut,
     IdentityResolutionIn,
     IdentityResolutionOut,
     IngestResult,
@@ -114,6 +115,7 @@ from backend.app.services import (
     PromotionEligibilityError,
     decide_review,
     get_company_detail,
+    get_evidence_detail,
     ingest_mock_records,
     list_companies,
     list_review_workbench,
@@ -911,6 +913,17 @@ def create_app(
             )
         except NotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @app.get("/api/v1/evidence/{evidence_id}", response_model=EvidenceDetailOut)
+    def evidence_detail(
+        evidence_id: UUID,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> EvidenceDetailOut:
+        try:
+            return get_evidence_detail(session, user, evidence_id)
+        except NotFoundError as error:
+            raise HTTPException(status_code=404, detail="evidence detail not found") from error
 
     @app.post("/api/v1/demo/ingest", response_model=IngestResult)
     def demo_ingest(

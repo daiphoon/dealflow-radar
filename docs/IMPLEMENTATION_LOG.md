@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-27：M6A-4 授权数据明细与平台证据详情
+
+- 任务：从已有授权数据缓存投影股东、招投标、工商变更等明细，增加平台证据详情 API/页面，并纠正零记录、人员风险和天眼查首页的误导语义。
+- 关键文件：`migrations/versions/0020_add_evidence_display_details.py`、`backend/app/tianyancha.py`、`backend/app/on_demand_research.py`、`backend/app/services.py`、`frontend/app/evidence/[id]/page.tsx` 和 ADR-0016。
+- 实际命令：Ruff；授权数据/按需研究/权限/迁移针对性 Pytest；完整 Pytest；SQLite/PostgreSQL 迁移和 RLS；TypeScript 和 Next.js 生产构建。
+- 测试结果：Ruff 通过；Pytest `256 passed, 14 skipped`；独立 PostgreSQL 16 RLS `11 passed, 3 skipped`；SQLite `base → 0020 → 0019 → 0020 → base` 和 Alembic 漂移检查通过；前端无高危依赖漏洞、类型检查和生产构建通过；本地浏览器从公司详情进入平台证据详情，结构化字段、隐私提示和供应商首页不可定位提示均正常，无页面错误或控制台告警。
+- 未解决阻塞：代码 PR 未合并前不部署或重放生产缓存；风险和人员明细如需下钻，必须另行通过缓存和预算闸门。
+
 ## 2026-08-26：M6A-3 新公司按需研究 PR 2
 
 - 任务：在 `0018` 现有队列和作用域模型上完成六大模块按需研究 V1；每次 Worker 只处理一个模块，缓存先于预算，按来源记录与内容哈希去重；低风险结构化资料进入“已核实事实”，风险和人员资料进入“待核实线索”，原始供应商响应保持系统受限；不生成报告、不调用模型、不恢复自动发布。本 PR 未新增数据库迁移，也未查询既有 10 家真实样本。

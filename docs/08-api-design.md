@@ -28,6 +28,7 @@
 | `POST /me/company-requests/refresh/{company_id}` | 请求后台更新共享公司 | 默认 10 家/天、30 家/月；同目标 24 小时冷却；不同用户同公司后续复用全局研究任务 |
 | `GET /me/company-requests` | 查看本人申请、身份候选和队列状态 | 其他个人和机构不可见；断线后从 PostgreSQL 恢复；个人响应隐藏精确外部调用、缓存命中和私有档案冲突原因 |
 | `POST /me/company-requests/{id}/confirm` | 确认授权数据返回的工商主体 | 仅 owner；候选未过期且必要字段完整；确认后才可创建/复用全局公司和研究任务 |
+| `GET /evidence/{id}` | 读取平台共享授权数据的结构化证据详情 | 要求登录；仅允许无 owner 的 `platform_shared` 证据；不读私有原始响应或联系方式 |
 | `POST /me/company-requests/{id}/cancel` | 取消查询 | 只修改本人申请；Worker 确认全局任务没有其他活跃请求后才取消；日次数不退，零外调用时退月额度，合格缓存保留 |
 | `GET/POST /me/quota-increase-requests` | 查看或申请临时增加研究额度 | 每名用户仅一个待处理申请；前端不能自行提额 |
 | `GET/PATCH /platform/quota-increase-requests/{id}` | 平台管理员处理临时额度 | 明确批准的日/月增加量、到期时间和理由；其他角色禁止 |

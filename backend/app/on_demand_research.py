@@ -1135,7 +1135,7 @@ def _persist_research_record(
     record: TianyanchaResearchRecord,
 ) -> tuple[bool, bool]:
     safe_payload = {
-        "schema_version": "licensed-research-record-v1",
+        "schema_version": "licensed-research-record-v2",
         "research_job_id": str(job.id),
         "module_code": module_code,
         "provider_tool": result.tool_name,
@@ -1148,7 +1148,12 @@ def _persist_research_record(
         "uncertainties": record.uncertainties,
         "classification": record.classification,
         "classification_reasons": record.classification_reasons,
-        "policy_version": "licensed-research-display-v1",
+        "evidence_detail": (
+            record.evidence_detail.model_dump(mode="json")
+            if record.evidence_detail is not None
+            else None
+        ),
+        "policy_version": "licensed-research-display-v2",
     }
     dedupe_payload = {
         key: value
@@ -1196,17 +1201,28 @@ def _persist_research_record(
         session.flush()
         document_created = True
 
-    event_fingerprint = _sha256(
-        f"{company.id}:{module_code}:{record.external_record_id}:{content_hash}"
-    )
+    event_fingerprint = _sha256(f"{company.id}:{module_code}:{record.external_record_id}")
     event = session.scalar(
         select(Event).where(
             Event.company_id == company.id,
             Event.visibility_scope == PLATFORM_SHARED_SCOPE,
-            Event.fingerprint_version == "tyc-v1",
+            Event.fingerprint_version == "tyc-v2",
             Event.event_fingerprint == event_fingerprint,
         )
     )
+    if event is None:
+        event = session.scalar(
+            select(Event)
+            .where(
+                Event.company_id == company.id,
+                Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+                Event.fingerprint_version == "tyc-v1",
+                Event.event_subtype == record.event_subtype,
+                Event.publication_route.in_(["licensed_structured_fact", "unconfirmed_lead"]),
+            )
+            .order_by(Event.created_at)
+            .limit(1)
+        )
     event_created = False
     if event is None:
         is_verified = record.classification == "verified_fact"
@@ -1231,10 +1247,10 @@ def _persist_research_record(
             published_at=None,
             published_on=record.published_on,
             observed_at=result.checked_at,
-            fingerprint_version="tyc-v1",
+            fingerprint_version="tyc-v2",
             event_fingerprint=event_fingerprint,
             publication_route=("licensed_structured_fact" if is_verified else "unconfirmed_lead"),
-            publication_policy_version="licensed-research-display-v1",
+            publication_policy_version="licensed-research-display-v2",
             publication_reasons=[
                 *record.classification_reasons,
                 "subject_identity_verified",
@@ -1244,6 +1260,52 @@ def _persist_research_record(
         session.add(event)
         session.flush()
         event_created = True
+    else:
+        is_verified = record.classification == "verified_fact"
+        event.event_type = record.event_type
+        event.status = "published" if is_verified else "candidate"
+        event.direction = record.direction
+        event.materiality_score = record.materiality_score
+        event.risk_severity = record.risk_severity
+        event.confidence_score = record.confidence_score
+        event.title = record.title
+        event.summary = record.summary
+        event.facts = record.facts
+        event.uncertainties = record.uncertainties
+        event.observed_at = result.checked_at
+        event.fingerprint_version = "tyc-v2"
+        event.event_fingerprint = event_fingerprint
+        event.publication_route = "licensed_structured_fact" if is_verified else "unconfirmed_lead"
+        event.publication_policy_version = "licensed-research-display-v2"
+        event.publication_reasons = [
+            *record.classification_reasons,
+            "subject_identity_verified",
+            "licensed_source_record",
+        ]
+        for previous in session.scalars(
+            select(EventEvidence).where(
+                EventEvidence.event_id == event.id,
+                EventEvidence.display_allowed.is_(True),
+            )
+        ):
+            previous.display_allowed = False
+
+    for duplicate in session.scalars(
+        select(Event).where(
+            Event.company_id == company.id,
+            Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+            Event.event_subtype == record.event_subtype,
+            Event.id != event.id,
+            Event.status.in_(["published", "candidate"]),
+            Event.publication_route.in_(["licensed_structured_fact", "unconfirmed_lead"]),
+        )
+    ):
+        duplicate.status = "retracted"
+        duplicate.publication_reasons = list(
+            dict.fromkeys(
+                [*duplicate.publication_reasons, "licensed_source_duplicate_reprojection"]
+            )
+        )
 
     evidence = session.scalar(
         select(EventEvidence).where(
@@ -1253,33 +1315,58 @@ def _persist_research_record(
         )
     )
     if evidence is None:
-        session.add(
-            EventEvidence(
-                event_id=event.id,
-                raw_document_id=document.id,
-                source_event_evidence_id=None,
-                owner_user_id=None,
-                owner_tenant_id=None,
-                visibility_scope=PLATFORM_SHARED_SCOPE,
-                evidence_excerpt=record.evidence_excerpt,
-                span_hash=_sha256(record.evidence_excerpt),
-                support_type="supports",
-                display_source_name=source.name,
-                display_source_quality=source.source_quality,
-                display_title=record.title,
-                display_canonical_url=record.canonical_url,
-                display_published_at=None,
-                display_published_on=record.published_on,
-                display_observed_at=result.checked_at,
-                display_url_health_status="unchecked",
-                display_url_http_status=None,
-                display_url_checked_at=None,
-                display_final_url=None,
-                display_license_status="permission_confirmed",
-                display_allowed=True,
-            )
+        evidence = EventEvidence(
+            event_id=event.id,
+            raw_document_id=document.id,
+            source_event_evidence_id=None,
+            owner_user_id=None,
+            owner_tenant_id=None,
+            visibility_scope=PLATFORM_SHARED_SCOPE,
+            evidence_excerpt=record.evidence_excerpt,
+            span_hash=_sha256(record.evidence_excerpt),
+            support_type="supports",
         )
+        session.add(evidence)
+    evidence.display_source_name = source.name
+    evidence.display_source_quality = source.source_quality
+    evidence.display_title = record.title
+    evidence.display_canonical_url = record.canonical_url
+    evidence.display_published_at = None
+    evidence.display_published_on = record.published_on
+    evidence.display_observed_at = result.checked_at
+    evidence.display_url_health_status = "unchecked"
+    evidence.display_url_http_status = None
+    evidence.display_url_checked_at = None
+    evidence.display_final_url = None
+    evidence.display_license_status = "permission_confirmed"
+    evidence.display_allowed = True
+    evidence.display_detail_payload = (
+        record.evidence_detail.model_dump(mode="json")
+        if record.evidence_detail is not None
+        else None
+    )
     return document_created, event_created
+
+
+def _retract_zero_record_overview(
+    session: Session,
+    company_id: UUID,
+    module_code: TianyanchaResearchModuleCode,
+) -> None:
+    subtype = f"licensed_{module_code}_overview"
+    for event in session.scalars(
+        select(Event).where(
+            Event.company_id == company_id,
+            Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+            Event.event_subtype == subtype,
+            Event.fingerprint_version.in_(["tyc-v1", "tyc-v2"]),
+            Event.status.in_(["published", "candidate"]),
+        )
+    ):
+        event.status = "retracted"
+        event.publication_reasons = list(
+            dict.fromkeys([*event.publication_reasons, "licensed_source_zero_record_reprojection"])
+        )
 
 
 def _update_shared_snapshot_for_research(
@@ -1365,6 +1452,8 @@ def _complete_research_module(
     source = _identity_source(session)
     documents_created = 0
     events_created = 0
+    if result.no_reliable_data and not result.records:
+        _retract_zero_record_overview(session, company.id, lease.module_code)
     for record in result.records:
         document_created, event_created = _persist_research_record(
             session,
