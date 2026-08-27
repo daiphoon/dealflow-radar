@@ -673,19 +673,26 @@ class TianyanchaIdentityProvider:
 
     @staticmethod
     def _research_item_count(content: dict[str, object]) -> int | None:
+        explicit_counts: list[int] = []
         for key in ("total", "totalCount", "count"):
             value = content.get(key)
             if isinstance(value, int) and value >= 0:
-                return value
+                explicit_counts.append(value)
             if isinstance(value, str) and value.isdigit():
-                return int(value)
+                explicit_counts.append(int(value))
+        nested_counts: list[int] = []
         for value in content.values():
-            if isinstance(value, list):
-                return len(value)
             if isinstance(value, dict):
                 nested = TianyanchaIdentityProvider._research_item_count(value)
                 if nested is not None:
-                    return nested
+                    nested_counts.append(nested)
+        all_counts = explicit_counts + nested_counts
+        if all_counts:
+            return max(all_counts)
+        for key in ("items", "records", "list", "data"):
+            value = content.get(key)
+            if isinstance(value, list):
+                return len(value)
         return None
 
     @staticmethod

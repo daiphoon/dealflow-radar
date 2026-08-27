@@ -298,3 +298,5 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "personal_quota_increase_owner_read" in ddl
     assert "usage_ledger_tianyancha_platform_admin_read" in ddl
     assert "personal_usage_records_on_demand_admin_update" in ddl
+    assert "request_type = 'refresh' AND company_id IS NOT NULL" in ddl
+    assert "visible_shared_company.identity_status = 'verified'" in ddl

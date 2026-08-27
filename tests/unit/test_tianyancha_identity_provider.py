@@ -576,3 +576,47 @@ def test_research_module_handles_empty_result_and_rejects_subject_conflict(
             credit_code=CREDIT_CODE,
             provider_company_id="123456",
         )
+
+
+def test_research_record_count_prefers_positive_nested_total_and_ignores_metadata_lists(
+    tmp_path: Path,
+) -> None:
+    responses = iter(
+        [
+            _response(
+                {
+                    "sources": {
+                        "current": {"total": 0, "changeList": [{"id": "metadata"}]},
+                        "history": {"total": 7, "items": [{"id": "history-1"}]},
+                    }
+                }
+            ),
+            _response(
+                {
+                    "companyName": LEGAL_NAME,
+                    "profileTags": ["technology", "product"],
+                    "scienceAndTechnologyScore": 80,
+                }
+            ),
+        ]
+    )
+    provider = _provider(tmp_path, httpx.MockTransport(lambda _: next(responses)))
+
+    history = provider.lookup_research_module(
+        module_code="history",
+        legal_name=LEGAL_NAME,
+        credit_code=CREDIT_CODE,
+        provider_company_id="123456",
+    )
+    intellectual_property = provider.lookup_research_module(
+        module_code="intellectual_property",
+        legal_name=LEGAL_NAME,
+        credit_code=CREDIT_CODE,
+        provider_company_id="123456",
+    )
+
+    assert history.records[0].facts == [{"name": "来源记录数", "value": "7", "unit": "条"}]
+    assert "共 7 条" in history.records[0].summary
+    assert intellectual_property.records[0].facts == []
+    assert "来源记录" in intellectual_property.records[0].summary
+    assert "共 2 条" not in intellectual_property.records[0].summary
