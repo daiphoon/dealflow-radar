@@ -1647,7 +1647,7 @@ def test_on_demand_queue_and_global_tianyancha_budget_rls() -> None:
                 ) VALUES (
                     :id, :owner_user_id, 'refresh', :company_id,
                     '示例星河科技一号有限公司', '91310000MA1K000006',
-                    :target_key, 'identity_queued', NULL,
+                    :target_key, 'research_queued', NULL,
                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )
                 """
@@ -1659,6 +1659,28 @@ def test_on_demand_queue_and_global_tianyancha_budget_rls() -> None:
                 "target_key": f"rls-on-demand:{uuid4()}",
             },
         )
+        with pytest.raises(DBAPIError):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO personal_company_requests (
+                            id, owner_user_id, request_type, company_id,
+                            requested_name, requested_credit_code, target_key,
+                            status, created_at, updated_at
+                        ) VALUES (
+                            :id, :owner_user_id, 'inclusion', NULL,
+                            '不应跳过身份核验的公司', NULL, :target_key,
+                            'research_queued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {
+                        "id": str(uuid4()),
+                        "owner_user_id": str(BETA_USER_ID),
+                        "target_key": f"rls-invalid-inclusion:{uuid4()}",
+                    },
+                )
         assert (
             connection.execute(
                 text(

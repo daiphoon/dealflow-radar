@@ -291,3 +291,12 @@
 - 实际命令：相关个人查询、认证与留存 Pytest；完整 Ruff 与格式检查；完整 Pytest；一次性 SQLite `base → 0017 → base` 与 Schema 漂移检查；一次性 PostgreSQL 16 迁移、受限应用账户初始化和完整 RLS 套件；前端依赖审计、TypeScript 和生产构建；一次性 SQLite 虚构“博腾生物”双候选数据下完成桌面、390px 窄屏、鼠标、键盘、无结果和控制台浏览器验收；`git diff --check`。
 - 测试结果：完整 Pytest 205 项通过、10 项显式 PostgreSQL 测试按预期跳过，仅有既有 FastAPI TestClient 上游弃用警告；独立 PostgreSQL 16 的 10 项 RLS/API 测试全部通过，确认同租户机构私有别名也不会进入个人建议；SQLite 迁移往返与漂移检查通过；TypeScript、Next.js 生产构建和依赖审计通过，0 个已知漏洞。浏览器确认“博腾生物”显示两个带工商全称、注册地区和信用代码的候选，鼠标及方向键均可选择，提交简称后保留候选列表，无结果不自动创建公司；390px 窄屏无横向溢出，控制台无警告或错误。自查修复了结果页初次加载后自动再次请求并弹出候选的问题；联想请求不增加正式查询用量，额度耗尽后服务端返回 429。临时数据和服务均未进入现有数据库，业务外部调用、付费调用、模型 Token、估算费用和自动发布均为 0。
 - 未解决阻塞：V1 只做已核验名称和共享别名的包含/前缀提示，不做错别字、拼音或复杂相似度推断，避免身份误匹配。代码合并部署后仍需用真实 CloudBase 个人账号复核“博腾生物”生产数据；共享目录达到明显更大规模前不提前引入 PostgreSQL 三元组索引或独立搜索服务。
+
+## 2026-08-27｜按需刷新 RLS 与授权数据记录数修正
+
+- 日期：2026-08-27
+- 任务：修复按需研究开启时，普通用户无法为已核验平台共享公司创建 `research_queued` 刷新请求的 PostgreSQL RLS 缺陷；同时修正授权数据嵌套响应中无关 `0` 计数遮蔽有效正数、以及元数据列表被误当业务记录数的问题。
+- 关键文件：`migrations/versions/0019_fix_personal_refresh_request_rls.py`、`backend/app/tianyancha.py`、`tests/integration/test_postgres_rls.py`、`tests/integration/test_migrations.py`和 `tests/unit/test_tianyancha_identity_provider.py`。
+- 实际命令：针对性 Pytest；一次性 PostgreSQL 16 空库 `base → 0019 → 0018 → 0019`、`alembic check`、虚构数据导入和 `NOBYPASSRLS` 应用账户 RLS 套件；完整 Pytest；Ruff 与格式检查；TypeScript 和 Next.js 生产构建；Codex Security 工作区差异安全扫描。
+- 测试结果：针对性测试 22 项通过；PostgreSQL RLS 14 项通过，确认共享已核验公司可入队，新公司不能跳过身份核验；完整 Pytest 254 项通过、14 项未配置 PostgreSQL 的测试按预期跳过；Ruff、格式、TypeScript 和生产构建通过。安全差异扫描覆盖 2 个变更源文件，未发现可报告问题；TAC 状态因连接器未登录而无法验证。本修复的自动验证没有外部调用、模型 Token、付费或自动发布。
+- 未解决阻塞：需在代码 PR 合并、生产库升级到 `0019` 后，才能继续完成真实账号的取消查询和零调用缓存重放验收；本 PR 不自动合并或部署。
