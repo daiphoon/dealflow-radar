@@ -316,3 +316,12 @@
 - 实际命令：针对性 Pytest；一次性 PostgreSQL 16 空库 `base → 0019 → 0018 → 0019`、`alembic check`、虚构数据导入和 `NOBYPASSRLS` 应用账户 RLS 套件；完整 Pytest；Ruff 与格式检查；TypeScript 和 Next.js 生产构建；Codex Security 工作区差异安全扫描。
 - 测试结果：针对性测试 22 项通过；PostgreSQL RLS 14 项通过，确认共享已核验公司可入队，新公司不能跳过身份核验；完整 Pytest 254 项通过、14 项未配置 PostgreSQL 的测试按预期跳过；Ruff、格式、TypeScript 和生产构建通过。安全差异扫描覆盖 2 个变更源文件，未发现可报告问题；TAC 状态因连接器未登录而无法验证。本修复的自动验证没有外部调用、模型 Token、付费或自动发布。
 - 未解决阻塞：需在代码 PR 合并、生产库升级到 `0019` 后，才能继续完成真实账号的取消查询和零调用缓存重放验收；本 PR 不自动合并或部署。
+
+## 2026-08-28｜投资者重要变化事实基础
+
+- 日期：2026-08-28
+- 任务：依据 ADR-0017，把授权供应商模块从投资者展示逻辑中解耦；利用既有版本化公司快照保存可比较字段，确定性识别前后变化并按版本化重要性规则生成独立、有证据的变化事件。修正真实嵌套股东字段映射，工商历史详情只展示最近同批变更，并从默认研究中移除无法说明投资风险的人员概览。
+- 关键文件：`backend/app/change_detection.py`、`backend/app/tianyancha.py`、`backend/app/on_demand_research.py`、`backend/app/services.py`、`tests/unit/test_change_detection.py`、`tests/unit/test_tianyancha_identity_provider.py`、`tests/integration/test_on_demand_research.py`、`docs/DECISIONS/ADR-0017-investor-material-change-layer.md` 和实施计划。
+- 实际命令：针对性变化识别、天眼查映射和按需研究 Pytest；完整 Ruff 与格式检查；完整 Pytest；前端 TypeScript 与生产构建；`git diff --check`。全部测试使用 Mock 或已有缓存契约，没有访问真实 Provider 或模型。
+- 测试结果：完整 Pytest 266 项通过、14 项未配置 PostgreSQL 的显式测试按预期跳过，仅有既有 FastAPI TestClient 上游弃用警告；Ruff、格式、TypeScript 和 Next.js 生产构建通过。首次快照不产生变化，相同缓存重放保持幂等；20%→25% 的工商登记持股比例生成一条跨租户可复用且有证据的共享变化事件；普通快照刷新不会丢失比较基线；不完整股东分页不推断退出；低价值知识产权数量变化只随快照归档；风险数量变化只形成非风险结论的待核实线索。默认研究减少一次人员概览调用；外部调用、模型 Token、费用和自动发布增量均为 0。
+- 未解决阻塞：本 PR 不调用真实数据验证未来响应分页是否可返回完整股东清单，因此完整清单之外不自动判断股东新增或退出；PostgreSQL RLS 表结构未变，显式 PostgreSQL 套件与远端 CI 结果以 PR 检查为准。证据约束分析 Agent 和投资者变化卡片属于连续 PR 2，本 PR 不提前实现。

@@ -622,6 +622,117 @@ def test_six_research_modules_use_approved_tools_and_conservative_classification
     assert cached.cache_hits == 8
 
 
+def test_shareholder_projection_parses_nested_ratio_and_capital_fields(tmp_path: Path) -> None:
+    responses = iter(
+        [
+            _response(_registration_content()),
+            _response(
+                {
+                    "sources": {
+                        "holder": {
+                            "total": 1,
+                            "items": [
+                                {
+                                    "name": "示例股东甲",
+                                    "capital": [
+                                        {
+                                            "percent": "28.0747%",
+                                            "amomon": "280.747 万元人民币",
+                                            "paymet": "其他",
+                                            "time": "2023-02-27",
+                                        }
+                                    ],
+                                    "capitalActl": [
+                                        {
+                                            "amomon": "100 万元人民币",
+                                            "time": "2024-01-01",
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    }
+                }
+            ),
+        ]
+    )
+    provider = _provider(tmp_path, httpx.MockTransport(lambda _: next(responses)))
+    provider.lookup_identity(company_name=None, credit_code=CREDIT_CODE)
+
+    result = provider.lookup_research_module(
+        module_code="company_base",
+        legal_name=LEGAL_NAME,
+        credit_code=CREDIT_CODE,
+        provider_company_id="123456",
+    )
+
+    detail = result.records[0].evidence_detail
+    assert detail is not None
+    assert [(field.label, field.value) for field in detail.records[0].fields] == [
+        ("工商登记持股比例", "28.0747%"),
+        ("认缴金额", "280.747 万元人民币"),
+        ("认缴出资方式", "其他"),
+        ("认缴日期", "2023-02-27"),
+        ("实缴金额", "100 万元人民币"),
+        ("实缴日期", "2024-01-01"),
+    ]
+    state = result.records[0].comparison_state
+    assert state is not None
+    assert state["complete"] is True
+    records = state["records"]
+    assert isinstance(records, list)
+    assert records[0]["fields"]["shareholding_ratio"] == "28.0747%"
+
+
+def test_history_projection_only_displays_latest_change_batch(tmp_path: Path) -> None:
+    provider = _provider(
+        tmp_path,
+        httpx.MockTransport(
+            lambda _: _response(
+                {
+                    "sources": {
+                        "cb": {
+                            "changeList": [
+                                {
+                                    "changeItem": "注册资本",
+                                    "changeTime": "2026-05-09",
+                                    "contentBefore": "100 万元",
+                                    "contentAfter": "200 万元",
+                                },
+                                {
+                                    "changeItem": "章程备案",
+                                    "changeTime": "2026-05-09",
+                                    "contentBefore": "旧章程",
+                                    "contentAfter": "新章程",
+                                },
+                                {
+                                    "changeItem": "经营范围",
+                                    "changeTime": "2025-01-01",
+                                    "contentBefore": "范围甲",
+                                    "contentAfter": "范围乙",
+                                },
+                            ]
+                        }
+                    }
+                }
+            )
+        ),
+    )
+
+    result = provider.lookup_research_module(
+        module_code="history",
+        legal_name=LEGAL_NAME,
+        credit_code=CREDIT_CODE,
+        provider_company_id="123456",
+    )
+
+    detail = result.records[0].evidence_detail
+    assert detail is not None
+    assert detail.total_records == 3
+    assert [record.title for record in detail.records] == ["注册资本", "章程备案"]
+    assert "最近一批 2 条" in result.records[0].summary
+
+
 def test_research_module_handles_empty_result_and_rejects_subject_conflict(
     tmp_path: Path,
 ) -> None:

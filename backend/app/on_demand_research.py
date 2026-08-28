@@ -13,6 +13,11 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from backend.app.change_detection import (
+    CHANGE_POLICY_VERSION,
+    DetectedChange,
+    detect_research_changes,
+)
 from backend.app.config import OnDemandResearchPolicy
 from backend.app.database import set_request_context
 from backend.app.models import (
@@ -51,8 +56,8 @@ _MODULE_CODES = (
     "intellectual_property",
     "operation",
     "history",
-    "executive",
 )
+_RETIRED_MODULE_CODES = ("executive",)
 
 
 class IdentityLookupProvider(Protocol):
@@ -1153,6 +1158,7 @@ def _persist_research_record(
             if record.evidence_detail is not None
             else None
         ),
+        "comparison_state": record.comparison_state,
         "policy_version": "licensed-research-display-v2",
     }
     dedupe_payload = {
@@ -1387,11 +1393,196 @@ def _retract_zero_record_overview(
         )
 
 
+def _retract_retired_module_overviews(session: Session, company_id: UUID) -> None:
+    for module_code in _RETIRED_MODULE_CODES:
+        subtype = f"licensed_{module_code}_overview"
+        for event in session.scalars(
+            select(Event).where(
+                Event.company_id == company_id,
+                Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+                Event.event_subtype == subtype,
+                Event.status.in_(["published", "candidate"]),
+            )
+        ):
+            event.status = "retracted"
+            event.publication_reasons = list(
+                dict.fromkeys(
+                    [*event.publication_reasons, "retired_non_investor_material_overview"]
+                )
+            )
+
+
+def _current_structured_research_state(
+    session: Session,
+    company_id: UUID,
+) -> dict[str, object]:
+    snapshot = session.scalar(
+        select(CompanySnapshot).where(
+            CompanySnapshot.company_id == company_id,
+            CompanySnapshot.visibility_scope == PLATFORM_SHARED_SCOPE,
+            CompanySnapshot.owner_user_id.is_(None),
+            CompanySnapshot.owner_tenant_id.is_(None),
+            CompanySnapshot.is_current.is_(True),
+        )
+    )
+    if snapshot is None:
+        return {}
+    value = snapshot.summary.get("structured_research_state")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _structured_research_state(
+    previous_state: dict[str, object],
+    coverage: dict[str, object],
+) -> dict[str, object]:
+    merged = dict(previous_state)
+    modules = coverage.get("modules", {})
+    if not isinstance(modules, dict):
+        return merged
+    for module_code in _MODULE_CODES:
+        module = modules.get(module_code)
+        if not isinstance(module, dict):
+            continue
+        comparison_state = module.get("comparison_state")
+        if isinstance(comparison_state, dict):
+            merged[module_code] = comparison_state
+    for module_code in _RETIRED_MODULE_CODES:
+        merged.pop(module_code, None)
+    return merged
+
+
+def _source_evidence_for_change(
+    session: Session,
+    company_id: UUID,
+    module_code: str,
+) -> EventEvidence | None:
+    source_event = session.scalar(
+        select(Event)
+        .where(
+            Event.company_id == company_id,
+            Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+            Event.event_subtype == f"licensed_{module_code}_overview",
+            Event.status.in_(["published", "candidate"]),
+        )
+        .order_by(Event.observed_at.desc(), Event.created_at.desc())
+        .limit(1)
+    )
+    if source_event is None:
+        return None
+    return session.scalar(
+        select(EventEvidence)
+        .where(
+            EventEvidence.event_id == source_event.id,
+            EventEvidence.visibility_scope == PLATFORM_SHARED_SCOPE,
+            EventEvidence.display_allowed.is_(True),
+        )
+        .order_by(EventEvidence.created_at.desc())
+        .limit(1)
+    )
+
+
+def _persist_detected_change(
+    session: Session,
+    company: Company,
+    change: DetectedChange,
+) -> bool:
+    source_evidence = _source_evidence_for_change(session, company.id, change.module_code)
+    if source_evidence is None:
+        return False
+    event_fingerprint = _sha256(f"{company.id}:{change.fingerprint}")
+    existing = session.scalar(
+        select(Event).where(
+            Event.company_id == company.id,
+            Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+            Event.fingerprint_version == "change-v1",
+            Event.event_fingerprint == event_fingerprint,
+        )
+    )
+    if existing is not None:
+        return False
+    event = Event(
+        company_id=company.id,
+        owner_user_id=None,
+        owner_tenant_id=None,
+        visibility_scope=PLATFORM_SHARED_SCOPE,
+        event_type=change.event_type,
+        event_subtype=f"material_{change.change_type}"[:64],
+        status="published" if change.publishable else "candidate",
+        direction=change.direction,
+        materiality_score=change.materiality_score,
+        risk_severity=change.risk_severity,
+        confidence_score=Decimal("0.900" if change.publishable else "0.800"),
+        source_quality="B",
+        title=change.title,
+        summary=change.summary,
+        facts=[
+            {"name": "变化字段", "value": change.field_label, "unit": None},
+            {"name": "变更前", "value": change.before_value or "此前未记录", "unit": None},
+            {"name": "变更后", "value": change.after_value, "unit": None},
+            {"name": "变化类型", "value": change.change_type, "unit": None},
+        ],
+        uncertainties=list(change.uncertainties),
+        occurred_at=None,
+        published_at=None,
+        published_on=None,
+        observed_at=utc_now(),
+        fingerprint_version="change-v1",
+        event_fingerprint=event_fingerprint,
+        publication_route="deterministic_change" if change.publishable else "unconfirmed_lead",
+        publication_policy_version=CHANGE_POLICY_VERSION,
+        publication_reasons=[
+            "deterministic_before_after_diff",
+            "subject_identity_verified",
+            "licensed_source_evidence_preserved",
+        ],
+    )
+    session.add(event)
+    session.flush()
+    session.add(
+        EventEvidence(
+            event_id=event.id,
+            raw_document_id=None,
+            source_event_evidence_id=source_evidence.id,
+            owner_user_id=None,
+            owner_tenant_id=None,
+            visibility_scope=PLATFORM_SHARED_SCOPE,
+            evidence_excerpt=change.summary,
+            span_hash=_sha256(change.summary),
+            support_type="supports",
+            display_source_name=source_evidence.display_source_name,
+            display_source_quality=source_evidence.display_source_quality,
+            display_title=source_evidence.display_title,
+            display_canonical_url=source_evidence.display_canonical_url,
+            display_published_at=source_evidence.display_published_at,
+            display_published_on=source_evidence.display_published_on,
+            display_observed_at=source_evidence.display_observed_at,
+            display_url_health_status=source_evidence.display_url_health_status,
+            display_url_http_status=source_evidence.display_url_http_status,
+            display_url_checked_at=source_evidence.display_url_checked_at,
+            display_final_url=source_evidence.display_final_url,
+            display_license_status=source_evidence.display_license_status,
+            display_allowed=source_evidence.display_allowed,
+            display_detail_payload=source_evidence.display_detail_payload,
+        )
+    )
+    return True
+
+
 def _update_shared_snapshot_for_research(
     session: Session,
     company: Company,
     coverage: dict[str, object],
 ) -> None:
+    previous_state = _current_structured_research_state(session, company.id)
+    current_state = _structured_research_state(previous_state, coverage)
+    material_changes, archived_changes = detect_research_changes(
+        previous_state,
+        current_state,
+    )
+    created_change_count = sum(
+        int(_persist_detected_change(session, company, change)) for change in material_changes
+    )
+    _retract_retired_module_overviews(session, company.id)
     _refresh_company_snapshot(
         session,
         company,
@@ -1417,7 +1608,6 @@ def _update_shared_snapshot_for_research(
         "intellectual_property": "知识产权",
         "operation": "经营与公示",
         "history": "历史变更",
-        "executive": "董监高与人员",
     }
     module_gaps = [
         f"{no_data_labels[module]}：暂无可靠公开数据。"
@@ -1431,6 +1621,24 @@ def _update_shared_snapshot_for_research(
             module: _module_status(modules.get(module))
             for module in _MODULE_CODES
             if isinstance(modules, dict)
+        },
+        "structured_research_state": current_state,
+        "last_change_assessment": {
+            "policy_version": CHANGE_POLICY_VERSION,
+            "baseline_established": bool(previous_state),
+            "material_changes_detected": len(material_changes),
+            "material_change_events_created": created_change_count,
+            "low_value_changes_archived": [
+                {
+                    "module_code": change.module_code,
+                    "change_type": change.change_type,
+                    "field_label": change.field_label,
+                    "before_value": change.before_value,
+                    "after_value": change.after_value,
+                    "materiality_score": change.materiality_score,
+                }
+                for change in archived_changes
+            ],
         },
     }
 
@@ -1503,6 +1711,11 @@ def _complete_research_module(
         records_created=documents_created,
         events_created=events_created,
         warnings=result.warnings,
+        comparison_state=(
+            result.records[0].comparison_state
+            if len(result.records) == 1 and result.records[0].comparison_state is not None
+            else None
+        ),
         error_code=None,
     )
     _record_research_usage(

@@ -93,7 +93,7 @@ class TianyanchaEvidenceDetail(BaseModel):
     description: str = Field(min_length=1, max_length=1000)
     total_records: int | None = Field(default=None, ge=0)
     summary_fields: list[TianyanchaEvidenceField] = Field(default_factory=list, max_length=30)
-    records: list[TianyanchaEvidenceRecord] = Field(default_factory=list, max_length=10)
+    records: list[TianyanchaEvidenceRecord] = Field(default_factory=list, max_length=20)
 
 
 class TianyanchaResearchRecord(BaseModel):
@@ -129,6 +129,7 @@ class TianyanchaResearchRecord(BaseModel):
     classification: Literal["verified_fact", "licensed_source_record", "unconfirmed_lead"]
     classification_reasons: list[str] = Field(default_factory=list)
     evidence_detail: TianyanchaEvidenceDetail | None = None
+    comparison_state: dict[str, object] | None = None
 
 
 class TianyanchaResearchModuleResult(BaseModel):
@@ -773,6 +774,135 @@ class TianyanchaIdentityProvider:
         return fields
 
     @staticmethod
+    def _first_mapping(value: object) -> dict[str, object]:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    return item
+        return {}
+
+    @classmethod
+    def _shareholder_fields(cls, value: dict[str, object]) -> list[TianyanchaEvidenceField]:
+        """Project the real nested shareholder contract without guessing absent values."""
+
+        subscribed = cls._first_mapping(value.get("capital"))
+        paid = cls._first_mapping(value.get("capitalActl"))
+        fields = cls._detail_fields(
+            subscribed,
+            (
+                ("percent", "工商登记持股比例"),
+                ("amomon", "认缴金额"),
+                ("paymet", "认缴出资方式"),
+                ("time", "认缴日期"),
+            ),
+        )
+        fields.extend(
+            cls._detail_fields(
+                paid,
+                (
+                    ("amomon", "实缴金额"),
+                    ("paymet", "实缴出资方式"),
+                    ("time", "实缴日期"),
+                ),
+            )
+        )
+        # Retain a conservative fallback for older cached fixtures whose amount was scalar.
+        if not fields:
+            fields = cls._detail_fields(
+                value,
+                (
+                    ("capital", "认缴信息"),
+                    ("capitalActl", "实缴信息"),
+                ),
+            )
+        return fields
+
+    @classmethod
+    def _comparison_state(
+        cls,
+        module_code: TianyanchaResearchModuleCode,
+        detail: TianyanchaEvidenceDetail,
+    ) -> dict[str, object]:
+        summary_label_map = {
+            "登记状态": "registration_status",
+            "法定代表人": "legal_representative",
+            "注册资本": "registered_capital",
+            "登记机关": "registration_authority",
+            "成立日期": "established_on",
+            "发明授权": "invention_grants",
+            "发明公布": "invention_publications",
+            "实用新型": "utility_models",
+            "外观设计": "design_patents",
+            "软件著作权": "software_copyrights",
+        }
+        record_label_map = {
+            "工商登记持股比例": "shareholding_ratio",
+            "认缴金额": "subscribed_capital",
+            "认缴出资方式": "subscribed_method",
+            "认缴日期": "subscribed_on",
+            "实缴金额": "paid_capital",
+            "实缴出资方式": "paid_method",
+            "实缴日期": "paid_on",
+            "发布日期": "published_on",
+            "公示金额": "amount",
+            "采购方": "purchaser",
+            "中标方": "winner",
+            "企业身份": "enterprise_identity",
+            "变更日期": "changed_on",
+            "变更前": "before",
+            "变更后": "after",
+            "记录类别": "record_type",
+            "来源分级": "source_level",
+            "记录数量": "count",
+            "关联主体": "related_company",
+        }
+        fields = {
+            summary_label_map[field.label]: field.value
+            for field in detail.summary_fields
+            if field.label in summary_label_map
+        }
+        records: list[dict[str, object]] = []
+        for record in detail.records:
+            record_fields = {
+                record_label_map[field.label]: field.value
+                for field in record.fields
+                if field.label in record_label_map
+            }
+            if module_code == "company_base":
+                key = " ".join(record.title.lower().split())
+            else:
+                key_fields = dict(record_fields)
+                if module_code == "risk":
+                    key_fields.pop("count", None)
+                key = _sha256(
+                    json.dumps(
+                        {"title": record.title, "fields": key_fields},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+            records.append(
+                {
+                    "key": key,
+                    "label": record.title,
+                    "fields": record_fields,
+                }
+            )
+        return {
+            "schema_version": "structured-research-state-v1",
+            "module_code": module_code,
+            "complete": (
+                detail.total_records is not None and detail.total_records <= len(detail.records)
+            ),
+            "total_records": detail.total_records,
+            "fields": fields,
+            "records": records,
+        }
+
+    @staticmethod
     def _https_url(value: object) -> str | None:
         if not isinstance(value, str):
             return None
@@ -836,17 +966,11 @@ class TianyanchaIdentityProvider:
                     for field in summary_fields[:4]
                 )
             records: list[TianyanchaEvidenceRecord] = []
-            for index, item in enumerate(items if isinstance(items, list) else []):
+            for item in items if isinstance(items, list) else []:
                 if not isinstance(item, dict):
                     continue
                 name = cls._display_value(item.get("name"), limit=300)
-                fields = cls._detail_fields(
-                    item,
-                    (
-                        ("capital", "认缴信息"),
-                        ("capitalActl", "实缴信息"),
-                    ),
-                )
+                fields = cls._shareholder_fields(item)
                 if name:
                     records.append(
                         TianyanchaEvidenceRecord(
@@ -854,7 +978,7 @@ class TianyanchaIdentityProvider:
                             fields=fields,
                         )
                     )
-                if len(records) == 10:
+                if len(records) == 20:
                     break
             description = f"授权数据源返回股东记录 {total_count} 条"
             if records:
@@ -932,8 +1056,25 @@ class TianyanchaIdentityProvider:
             items = changes if isinstance(changes, list) else []
             if not items:
                 return None
+            latest_date = next(
+                (
+                    cls._display_value(item.get("changeTime"), limit=80)
+                    for item in items
+                    if isinstance(item, dict) and item.get("changeTime")
+                ),
+                None,
+            )
+            latest_items = [
+                item
+                for item in items
+                if isinstance(item, dict)
+                and (
+                    latest_date is None
+                    or cls._display_value(item.get("changeTime"), limit=80) == latest_date
+                )
+            ]
             records = []
-            for item in items:
+            for item in latest_items:
                 if not isinstance(item, dict):
                     continue
                 title = cls._display_value(item.get("changeItem"), limit=300) or "工商变更"
@@ -950,16 +1091,17 @@ class TianyanchaIdentityProvider:
                         ),
                     )
                 )
-                if len(records) == 10:
+                if len(records) == 20:
                     break
             total_count = len(items)
             facts.append({"name": "历史变更记录数", "value": str(total_count), "unit": "条"})
             return (
-                f"授权数据源返回工商历史变更记录 {total_count} 条，本页展示前 {len(records)} 条。",
+                f"授权数据源返回工商历史变更记录 {total_count} 条，"
+                f"本页展示最近一批 {len(records)} 条。",
                 facts,
                 TianyanchaEvidenceDetail(
                     heading="工商历史变更记录",
-                    description="展示工商字段变更前后内容；不据此推断变更原因或投资影响。",
+                    description="展示最近同一批次的工商字段变更前后内容；历史记录仍保留在授权缓存中。",
                     total_records=total_count,
                     records=records,
                 ),
@@ -1143,6 +1285,7 @@ class TianyanchaIdentityProvider:
                 else ["licensed_structured_routine_fact"]
             ),
             evidence_detail=evidence_detail,
+            comparison_state=cls._comparison_state(module_code, evidence_detail),
         )
 
     def _lookup_research_module_with(
