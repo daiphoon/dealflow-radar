@@ -236,7 +236,7 @@ export default async function WatchlistPage({
                   </div>
                   <p>{request.status_message}</p>
                   {Object.keys(request.research_modules).length > 0 ? (
-                    <ul className="research-module-list" aria-label="六大研究模块进度">
+                    <ul className="research-module-list" aria-label="研究模块进度">
                       {Object.entries(request.research_modules).map(([module, status]) => (
                         <li key={module}>
                           <span>{researchModuleLabels[module] ?? module}</span>
