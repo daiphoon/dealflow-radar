@@ -1166,6 +1166,53 @@ class EventEvidence(TimestampMixin, Base):
     display_detail_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
+class InvestorChangeAnalysis(TimestampMixin, Base):
+    __tablename__ = "investor_change_analyses"
+    __table_args__ = (
+        UniqueConstraint(
+            "event_id",
+            "prompt_version",
+            "input_hash",
+            name="uq_investor_change_analysis_input",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'completed', 'failed', 'budget_deferred')",
+            name="ck_investor_change_analysis_status",
+        ),
+        CheckConstraint(
+            "visibility_scope = 'platform_shared'",
+            name="ck_investor_change_analysis_platform_shared",
+        ),
+        Index(
+            "ix_investor_change_analysis_status_created",
+            "status",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    event_id: Mapped[UUID] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
+    visibility_scope: Mapped[str] = mapped_column(
+        String(32), default=PLATFORM_SHARED_SCOPE, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    provider: Mapped[str | None] = mapped_column(String(80))
+    model: Mapped[str | None] = mapped_column(String(120))
+    prompt_version: Mapped[str] = mapped_column(String(64))
+    schema_version: Mapped[str] = mapped_column(String(64))
+    input_hash: Mapped[str] = mapped_column(String(64))
+    evidence_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    analysis_output: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    response_id: Mapped[str | None] = mapped_column(String(200))
+    last_error_code: Mapped[str | None] = mapped_column(String(80))
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class EventSharingDecision(Base):
     __tablename__ = "event_sharing_decisions"
     __table_args__ = (

@@ -40,6 +40,7 @@ from backend.app.models import (
     Fund,
     FundAccessGrant,
     Investment,
+    InvestorChangeAnalysis,
     OfficialIdentityVerification,
     RawDocument,
     RefreshJob,
@@ -81,6 +82,7 @@ from backend.app.schemas import (
     IdentityResolutionOut,
     IngestResult,
     InvestmentOut,
+    InvestorChangeAnalysisOut,
     OfficialIdentityImportResult,
     RefreshResult,
     ResearchImportResult,
@@ -1813,6 +1815,31 @@ def _event_out(
                 detail_available=False,
             )
         )
+    analysis_output = None
+    if event.visibility_scope == PLATFORM_SHARED_SCOPE:
+        stored_analysis = session.scalar(
+            select(InvestorChangeAnalysis)
+            .where(
+                InvestorChangeAnalysis.event_id == event.id,
+                InvestorChangeAnalysis.visibility_scope == PLATFORM_SHARED_SCOPE,
+                InvestorChangeAnalysis.status == "completed",
+            )
+            .order_by(InvestorChangeAnalysis.created_at.desc())
+            .limit(1)
+        )
+        if stored_analysis is not None and isinstance(stored_analysis.analysis_output, dict):
+            try:
+                candidate_analysis = InvestorChangeAnalysisOut.model_validate(
+                    {
+                        **stored_analysis.analysis_output,
+                        "generated_at": stored_analysis.updated_at,
+                    }
+                )
+                visible_evidence_ids = {item.id for item in evidence_items}
+                if set(candidate_analysis.evidence_ids).issubset(visible_evidence_ids):
+                    analysis_output = candidate_analysis
+            except ValueError:
+                analysis_output = None
     return EventOut(
         id=event.id,
         event_type=event.event_type,
@@ -1836,6 +1863,7 @@ def _event_out(
         observed_at=event.observed_at,
         evidence=evidence_items,
         visibility_scope=event.visibility_scope,
+        analysis=analysis_output,
     )
 
 

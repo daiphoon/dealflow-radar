@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,7 +13,12 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from backend.app.auth import AuthTokenSet, VerificationChallenge, VerifiedIdentity
-from backend.app.config import CloudBaseAuthPolicy, OnDemandResearchPolicy, Settings
+from backend.app.config import (
+    CloudBaseAuthPolicy,
+    InvestorAnalysisPolicy,
+    OnDemandResearchPolicy,
+    Settings,
+)
 from backend.app.database import set_request_context
 from backend.app.demo import (
     ALPHA_TENANT_ID,
@@ -22,6 +28,14 @@ from backend.app.demo import (
     MOCK_SOURCE_ID,
     NO_ACCESS_USER_ID,
     demo_uuid,
+)
+from backend.app.investor_analysis import run_investor_analysis_worker_once
+from backend.app.investor_analysis_schema import (
+    INVESTOR_ANALYSIS_DISCLAIMER,
+    INVESTOR_ANALYSIS_SCHEMA_VERSION,
+    InvestorChangeAnalysisOutput,
+    InvestorChangeAnalysisRequest,
+    LLMProviderResult,
 )
 from backend.app.main import create_app
 from backend.app.models import User
@@ -387,14 +401,15 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
                         'personal_watchlist_items', 'personal_company_requests',
                         'personal_usage_records', 'personal_company_view_states',
                         'personal_event_view_receipts', 'personal_company_reports',
-                        'personal_quota_increase_requests', 'company_research_jobs'
+                        'personal_quota_increase_requests', 'company_research_jobs',
+                        'investor_change_analyses'
                     )
                       AND relrowsecurity
                     """
                 )
             )
         assert role == (False, False, False, False, False, True, 0)
-        assert enabled_rls_tables == 29
+        assert enabled_rls_tables == 30
         assert _visible_counts(connection) == (0, 0, 0, 0, 0)
         assert _visible_counts(connection, ALPHA_USER_ID, ALPHA_TENANT_ID) == (10, 1, 10, 1, 0)
         assert _visible_counts(connection, BETA_USER_ID, BETA_TENANT_ID) == (1, 1, 0, 0, 0)
@@ -665,6 +680,381 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
         transaction.rollback()
         connection.close()
         engine.dispose()
+
+
+def test_investor_change_analysis_rls_hides_queue_and_allows_completed_shared_read() -> None:
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    engine = create_engine(POSTGRES_RLS_DATABASE_URL, pool_pre_ping=True)
+    connection = engine.connect()
+    transaction = connection.begin()
+    event_id = str(uuid4())
+    analysis_id = str(uuid4())
+    try:
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO user_role_assignments (
+                    id, user_id, role_id, scope_id, valid_until, created_at, updated_at
+                )
+                SELECT :id, :user_id, roles.id, NULL, NULL,
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM roles
+                WHERE roles.code = 'platform_admin'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM user_role_assignments AS existing
+                      WHERE existing.user_id = :user_id
+                        AND existing.role_id = roles.id
+                  )
+                """
+            ),
+            {"id": str(uuid4()), "user_id": str(ALPHA_USER_ID)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO events (
+                    id, company_id, visibility_scope, owner_user_id, owner_tenant_id,
+                    event_type, event_subtype, status, direction, materiality_score,
+                    risk_severity, confidence_score, source_quality, title, summary,
+                    facts, uncertainties, occurred_at, published_at, published_on,
+                    observed_at, fingerprint_version, event_fingerprint,
+                    publication_route, publication_policy_version, publication_reasons,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, :company_id, 'platform_shared', NULL, NULL,
+                    'financing_cap_table', 'shareholder_ratio_changed', 'published',
+                    'neutral', 80, 'low', 0.950, 'A',
+                    'RLS investor change', '登记持股比例由20%变为25%。',
+                    CAST(:facts AS JSON),
+                    CAST('[]' AS JSON), CURRENT_TIMESTAMP, NULL, NULL,
+                    CURRENT_TIMESTAMP, 'change-v1', :fingerprint,
+                    'deterministic_change', 'investor-material-change-v1',
+                    CAST('["material_change_threshold_met"]' AS JSON),
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": event_id,
+                "company_id": str(demo_uuid("company-示例星河科技一号有限公司")),
+                "fingerprint": uuid4().hex.ljust(64, "0"),
+                "facts": (
+                    '[{"name":"变化字段","value":"工商登记持股比例","unit":null},'
+                    '{"name":"变更前","value":"20%","unit":null},'
+                    '{"name":"变更后","value":"25%","unit":null}]'
+                ),
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO investor_change_analyses (
+                    id, event_id, visibility_scope, status, provider, model,
+                    prompt_version, schema_version, input_hash, evidence_ids,
+                    analysis_output, input_tokens, output_tokens, estimated_cost,
+                    attempt_count, response_id, last_error_code, leased_until,
+                    heartbeat_at, created_at, updated_at
+                ) VALUES (
+                    :id, :event_id, 'platform_shared', 'pending', NULL, NULL,
+                    'investor-change-zh-v1', 'investor-change-analysis-v1',
+                    :input_hash, CAST('[]' AS JSON), NULL, 0, 0, 0, 0,
+                    NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": analysis_id,
+                "event_id": event_id,
+                "input_hash": "a" * 64,
+            },
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM investor_change_analyses WHERE id = :id"),
+                {"id": analysis_id},
+            )
+            == 1
+        )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(NO_ACCESS_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM investor_change_analyses WHERE id = :id"),
+                {"id": analysis_id},
+            )
+            == 0
+        )
+        with pytest.raises(DBAPIError):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO investor_change_analyses (
+                            id, event_id, visibility_scope, status, prompt_version,
+                            schema_version, input_hash, evidence_ids, input_tokens,
+                            output_tokens, estimated_cost, attempt_count,
+                            created_at, updated_at
+                        ) VALUES (
+                            :id, :event_id, 'platform_shared', 'pending', 'unauthorized',
+                            'investor-change-analysis-v1', :hash, CAST('[]' AS JSON),
+                            0, 0, 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {"id": str(uuid4()), "event_id": event_id, "hash": "b" * 64},
+                )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        connection.execute(
+            text(
+                "UPDATE investor_change_analyses "
+                "SET status = 'completed', analysis_output = CAST('{}' AS JSON), "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+            ),
+            {"id": analysis_id},
+        )
+
+        for user_id, tenant_id in (
+            (NO_ACCESS_USER_ID, ALPHA_TENANT_ID),
+            (BETA_USER_ID, BETA_TENANT_ID),
+        ):
+            connection.execute(
+                text(
+                    "SELECT set_config('app.current_user_id', :user_id, true), "
+                    "set_config('app.current_tenant_id', :tenant_id, true)"
+                ),
+                {"user_id": str(user_id), "tenant_id": str(tenant_id)},
+            )
+            assert (
+                connection.scalar(
+                    text("SELECT count(*) FROM investor_change_analyses WHERE id = :id"),
+                    {"id": analysis_id},
+                )
+                == 1
+            )
+    finally:
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
+def test_investor_analysis_worker_rebinds_postgres_rls_context_after_commits() -> None:
+    if not DATABASE_ADMIN_URL:
+        pytest.skip("set DATABASE_ADMIN_URL to prepare worker transaction fixtures")
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    role_assignment_id = uuid4()
+    document_id = uuid4()
+    event_id = uuid4()
+    evidence_id = uuid4()
+    company_id = demo_uuid("company-示例星河科技一号有限公司")
+
+    class FixedAnalysisProvider:
+        code = "postgres_analysis_test"
+        model = "fixed-output"
+
+        def analyze_investor_change(
+            self,
+            request: InvestorChangeAnalysisRequest,
+        ) -> LLMProviderResult:
+            return LLMProviderResult(
+                analysis=InvestorChangeAnalysisOutput(
+                    schema_version=INVESTOR_ANALYSIS_SCHEMA_VERSION,
+                    headline="工商登记持股比例发生变化",
+                    before_value=request.before_value,
+                    after_value=request.after_value,
+                    what_changed="工商登记持股比例由20%变为25%。",
+                    why_it_matters="该变化可能影响股东表决权和公司治理判断。",
+                    potential_impacts=["需要重新核对治理关系。"],
+                    uncertainties=["实际控制关系尚不确定。"],
+                    evidence_ids=[request.evidence[0].evidence_id],
+                    confidence=0.9,
+                    follow_up_items=["关注后续股东变更。"],
+                    impact_direction="uncertain",
+                    disclaimer=INVESTOR_ANALYSIS_DISCLAIMER,
+                ),
+                external_calls=0,
+                input_tokens=10,
+                output_tokens=5,
+                estimated_cost=Decimal("0"),
+                response_id="postgres-fixed-output",
+            )
+
+    admin_engine = create_engine(DATABASE_ADMIN_URL, pool_pre_ping=True)
+    app_engine = create_engine(POSTGRES_RLS_DATABASE_URL, pool_pre_ping=True)
+    try:
+        with admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO user_role_assignments (
+                        id, user_id, role_id, scope_id, valid_until, created_at, updated_at
+                    )
+                    SELECT :id, :user_id, roles.id, NULL, NULL,
+                           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    FROM roles
+                    WHERE roles.code = 'platform_admin'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM user_role_assignments AS existing
+                          WHERE existing.user_id = :user_id
+                            AND existing.role_id = roles.id
+                      )
+                    """
+                ),
+                {"id": str(role_assignment_id), "user_id": str(ALPHA_USER_ID)},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO raw_documents (
+                        id, source_id, research_import_id, candidate_document_id,
+                        owner_user_id, owner_tenant_id, visibility_scope,
+                        external_record_id, canonical_url, title, published_at,
+                        published_on, observed_at, content_hash, document_dedupe_key,
+                        license_status, payload, created_at, updated_at
+                    ) VALUES (
+                        :id, :source_id, NULL, NULL, NULL, NULL, 'platform_shared',
+                        :external_record_id, :canonical_url, '共享变化测试证据', NULL,
+                        NULL, CURRENT_TIMESTAMP, :content_hash, :dedupe_key,
+                        'permission_confirmed', CAST('{}' AS JSON),
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    )
+                    """
+                ),
+                {
+                    "id": str(document_id),
+                    "source_id": str(MOCK_SOURCE_ID),
+                    "external_record_id": f"postgres-analysis-{document_id}",
+                    "canonical_url": f"https://example.invalid/postgres-analysis-{document_id}",
+                    "content_hash": uuid4().hex.ljust(64, "0"),
+                    "dedupe_key": uuid4().hex.ljust(64, "0"),
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO events (
+                        id, company_id, visibility_scope, owner_user_id, owner_tenant_id,
+                        event_type, event_subtype, status, direction, materiality_score,
+                        risk_severity, confidence_score, source_quality, title, summary,
+                        facts, uncertainties, occurred_at, published_at, published_on,
+                        observed_at, fingerprint_version, event_fingerprint,
+                        publication_route, publication_policy_version, publication_reasons,
+                        created_at, updated_at
+                    ) VALUES (
+                        :id, :company_id, 'platform_shared', NULL, NULL,
+                        'financing_cap_table', 'shareholder_ratio_changed', 'published',
+                        'neutral', 80, 'low', 0.950, 'A',
+                        'PostgreSQL Worker 变化', '工商登记持股比例由20%变为25%。',
+                        CAST(:facts AS JSON), CAST(:uncertainties AS JSON),
+                        CURRENT_TIMESTAMP, NULL, NULL, CURRENT_TIMESTAMP,
+                        'change-v1', :fingerprint, 'deterministic_change',
+                        'investor-material-change-v1',
+                        CAST('["material_change_threshold_met"]' AS JSON),
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    )
+                    """
+                ),
+                {
+                    "id": str(event_id),
+                    "company_id": str(company_id),
+                    "fingerprint": uuid4().hex.ljust(64, "0"),
+                    "facts": (
+                        '[{"name":"变化字段","value":"工商登记持股比例","unit":null},'
+                        '{"name":"变更前","value":"20%","unit":null},'
+                        '{"name":"变更后","value":"25%","unit":null}]'
+                    ),
+                    "uncertainties": '["实际控制关系尚不确定。"]',
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO event_evidence (
+                        id, event_id, raw_document_id, source_event_evidence_id,
+                        owner_user_id, owner_tenant_id, visibility_scope,
+                        evidence_excerpt, span_hash, support_type,
+                        display_source_name, display_source_quality, display_title,
+                        display_canonical_url, display_observed_at,
+                        display_url_health_status, display_license_status,
+                        display_allowed, created_at, updated_at
+                    ) VALUES (
+                        :id, :event_id, :document_id, NULL, NULL, NULL,
+                        'platform_shared', '工商登记持股比例由20%变为25%。',
+                        :span_hash, 'supports', '授权工商数据源', 'A',
+                        '股东信息比较记录', :canonical_url, CURRENT_TIMESTAMP,
+                        'unchecked', 'permission_confirmed', TRUE,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    )
+                    """
+                ),
+                {
+                    "id": str(evidence_id),
+                    "event_id": str(event_id),
+                    "document_id": str(document_id),
+                    "span_hash": uuid4().hex.ljust(64, "0"),
+                    "canonical_url": f"https://example.invalid/postgres-analysis-{document_id}",
+                },
+            )
+
+        with Session(app_engine, expire_on_commit=False) as session:
+            set_request_context(session, ALPHA_USER_ID, ALPHA_TENANT_ID)
+            worker_user = session.get(User, ALPHA_USER_ID)
+            assert worker_user is not None
+            result = run_investor_analysis_worker_once(
+                session,
+                worker_user,
+                FixedAnalysisProvider(),
+                InvestorAnalysisPolicy(),
+            )
+
+        assert result.outcome == "completed"
+        with admin_engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    text("SELECT status FROM investor_change_analyses WHERE event_id = :event_id"),
+                    {"event_id": str(event_id)},
+                )
+                == "completed"
+            )
+    finally:
+        with admin_engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM usage_ledger WHERE metrics->>'event_id' = :event_id"),
+                {"event_id": str(event_id)},
+            )
+            connection.execute(
+                text("DELETE FROM events WHERE id = :event_id"),
+                {"event_id": str(event_id)},
+            )
+            connection.execute(
+                text("DELETE FROM raw_documents WHERE id = :document_id"),
+                {"document_id": str(document_id)},
+            )
+            connection.execute(
+                text("DELETE FROM user_role_assignments WHERE id = :id"),
+                {"id": str(role_assignment_id)},
+            )
+        app_engine.dispose()
+        admin_engine.dispose()
 
 
 def test_company_suggestions_keep_private_aliases_hidden_under_postgres_rls() -> None:

@@ -1137,6 +1137,101 @@ dd {
   line-height: 1.75;
 }
 
+.material-change-panel {
+  border-color: #a9c7ba;
+  background: linear-gradient(180deg, #f8fcfa 0%, var(--surface) 34%);
+}
+
+.section-intro {
+  margin: 0 0 20px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.change-comparison {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #c8dcd3;
+  border-radius: 14px;
+  background: #f4faf7;
+}
+
+.change-comparison > span,
+.change-comparison small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.change-comparison > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+}
+
+.change-comparison p {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.change-comparison strong {
+  overflow-wrap: anywhere;
+}
+
+.investor-analysis,
+.personal-change-analysis {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid #e1d2ad;
+  border-radius: 14px;
+  background: #fffaf0;
+}
+
+.investor-analysis p,
+.investor-analysis ul,
+.personal-change-analysis p {
+  margin: 0;
+  color: #4f4738;
+  line-height: 1.75;
+}
+
+.investor-analysis ul {
+  padding-left: 20px;
+}
+
+.analysis-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.analysis-heading h4 {
+  margin: 4px 0 0;
+  font-size: 18px;
+}
+
+.analysis-heading > span,
+.analysis-disclaimer,
+.personal-change-analysis small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.analysis-pending {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+  background: #f6f7f6;
+  font-size: 13px;
+}
+
 .score-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1px;
@@ -1767,5 +1862,13 @@ dd {
 
   .company-suggestion-grid {
     grid-template-columns: 1fr;
+  }
+
+  .change-comparison > div {
+    grid-template-columns: 1fr;
+  }
+
+  .analysis-heading {
+    flex-direction: column;
   }
 }

@@ -192,6 +192,21 @@ def test_auto_publish_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch) ->
     assert PublicationPolicy().enabled is False
 
 
+def test_investor_analysis_is_disabled_and_bounded_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("INVESTOR_ANALYSIS_ENABLED", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.investor_analysis_enabled is False
+    assert settings.investor_analysis_policy.provider == "deepseek"
+    assert settings.investor_analysis_policy.model == "deepseek-v4-flash"
+    assert settings.investor_analysis_policy.min_materiality_score == 60
+    assert settings.investor_analysis_policy.retry_limit == 1
+    assert settings.investor_analysis_policy.monthly_token_limit == 500_000
+
+
 def test_trusted_source_monitoring_is_disabled_and_bounded_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

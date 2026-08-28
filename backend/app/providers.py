@@ -6,6 +6,7 @@ import json
 import socket
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal, Protocol
 from urllib.error import HTTPError, URLError
@@ -16,6 +17,10 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.app.event_schema import Direction, EventType, Fact, RiskSeverity, SourceQuality
+from backend.app.investor_analysis_schema import (
+    InvestorChangeAnalysisRequest,
+    LLMProviderResult,
+)
 
 MAX_IMPORT_FILE_BYTES = 1024 * 1024
 DEFAULT_PRIVATE_IMPORT_ROOT = (
@@ -26,6 +31,33 @@ DEFAULT_PRIVATE_IDENTITY_IMPORT_ROOT = (
 )
 UNIFIED_CREDIT_CODE_CHARSET = "0123456789ABCDEFGHJKLMNPQRTUWXY"
 UNIFIED_CREDIT_CODE_WEIGHTS = (1, 3, 9, 27, 19, 26, 16, 17, 20, 29, 25, 13, 8, 24, 10, 30, 28)
+
+
+class LLMProvider(Protocol):
+    code: str
+    model: str
+
+    def analyze_investor_change(
+        self,
+        request: InvestorChangeAnalysisRequest,
+    ) -> LLMProviderResult: ...
+
+
+class LLMProviderError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        external_calls: int = 0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        estimated_cost: Decimal = Decimal("0"),
+    ) -> None:
+        super().__init__(message)
+        self.external_calls = external_calls
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.estimated_cost = estimated_cost
 
 
 def _validate_public_http_url(value: str) -> str:

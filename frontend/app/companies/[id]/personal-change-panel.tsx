@@ -45,7 +45,7 @@ export function PersonalChangePanel({ companyId }: { companyId: string }) {
       <div className="panel-heading">
         <div>
           <p className="eyebrow">个人回访层</p>
-          <h2>自上次查看以来的新增事实</h2>
+          <h2>自上次查看以来的新变化与事实</h2>
         </div>
         <span className="muted">
           {view
@@ -79,6 +79,13 @@ export function PersonalChangePanel({ companyId }: { companyId: string }) {
                 </div>
                 <h3>{event.title}</h3>
                 <p>{event.summary}</p>
+                {event.analysis ? (
+                  <div className="personal-change-analysis">
+                    <strong>为什么值得关注</strong>
+                    <p>{event.analysis.why_it_matters}</p>
+                    <small>{event.analysis.disclaimer}</small>
+                  </div>
+                ) : null}
                 {event.evidence.map((evidence) =>
                   evidence.link_display_allowed ? (
                     <a

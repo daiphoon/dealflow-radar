@@ -297,6 +297,25 @@ Worker 默认按工商与股东基础、司法与合规风险、知识产权、�
 当前未开通正式 VIP，PR 2 合并部署并准备最终一家具名新公司受控实测之前不得执行真实命令，也不得把 Key 写入命令历史、env 示例、Git 或日志。受控窗口结束后必须把 `TIANYANCHA_RESEARCH_CALLS_ENABLED`、`TIANYANCHA_IDENTITY_CALLS_ENABLED`、`EXTERNAL_CALLS_ENABLED` 和 `ON_DEMAND_RESEARCH_ENABLED` 恢复为 false。
 
 取消排队请求立即停止；个人接口只取消本人申请，平台 Worker 确认已无其他活跃请求后才取消全局任务。身份或模块查询正在传输时只记录取消，完成当前调用并保存通过校验的结果后不再开始下一模块。零外部调用只退当月额度，日提交次数不退，同主体仍保持 24 小时冷却。个人页面不显示精确外部调用、缓存命中或私有档案冲突原因；平台管理页保留诊断信息。服务重启、退出登录或断线不能删除任务；恢复后先查看申请、五个默认模块状态、租约、调用台账和全局活动任务唯一约束，不得手工重复建任务。若已存在同信用代码的租户私有公司，任务应停在管理员处理状态，不能为通过测试直接改成共享公司。Worker 每次提交或回滚事务后必须重新设置 RLS 上下文。
+### 投资者重要变化解读 Agent V1（默认关闭）
+
+数据库升级到 `0021` 后，可先用平台管理员身份执行零网络 dry-run。dry-run 只统计达到重要性门槛的已发布共享变化，不建队列、不读密钥、不调用模型：
+
+```bash
+export WORKER_TENANT_ID='replace_with_platform_operator_tenant_uuid'
+export ANALYSIS_WORKER_USER_ID='replace_with_platform_admin_user_uuid'
+APP_MODE=demo uv run python -m scripts.run_investor_analysis_worker --dry-run
+```
+
+真实运行只使用独立 Worker，不在 API 或公司页面同步调用。运行前必须将 DeepSeek Key 写入 Git 忽略且权限受限的部署 env，按供应商当期书面价格填写输入/输出 Token 单价；不得把 Key 放入命令、聊天、Git 或日志。只在受控窗口临时开启 `INVESTOR_ANALYSIS_ENABLED` 以及 Worker 专用的外部/可能计费开关；`AUTO_REFRESH_ENABLED` 和 `AUTO_PUBLISH_ENABLED` 必须保持 false，天眼查与可信来源开关也必须关闭。单机部署可用 analysis profile 排空当前队列：
+
+```bash
+docker compose -f compose.production.yml -f deploy/compose.single-host.yml \
+  --env-file deploy/single-host.env --profile analysis \
+  run --rm investor-analysis-worker
+```
+
+Worker 只为 `published + platform_shared + deterministic_change` 且重要性达标的事件生成解读。无新变化、静态基线、低价值变化和重复输入均为零模型调用；超出月 Token 上限时标记 `budget_deferred`，本月不重复空转。输出必须通过 JSON Schema、前后值、证据 ID、数字和投资建议禁语校验；失败时不展示半成品，不改写事件，不生成报告。运行后核对 `investor_change_analyses` 和 `usage_ledger`，再立即恢复全部专用开关为 false。
 
 ### 身份例外与历史审核工作台 V1（仅本机受控环境）
 

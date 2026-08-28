@@ -124,6 +124,8 @@ Mock Worker V1 仅为虚构数据提供单任务命令入口：按租户使用 `
 13. Usage Ledger 按 Provider、任务、公司和租户记录用量、估价与有效产出。
 14. Scheduler 根据变化结果调整 `next_check_at` 和连续无变化次数。
 
+确定性变化事件与模型解读分成两层：程序先比较版本化快照并发布有证据的 `deterministic_change`；独立 Agent Worker 只为达到重要性门槛的共享变化生成派生解读。模型输入不含私有原始文档，只含允许展示的最小证据快照；输出经过版本化 JSON Schema、前后值、证据 ID、数字和投资建议禁语校验后才可读取。公司详情始终读取已完成结果，不同步调用模型；证据被撤下时，依赖该证据的解读同步停止展示。
+
 Provider 协议、Kimi 导入和 DeepSeek 边界见[数据源策略](05-data-source-strategy.md)。
 
 ## 6. 幂等、事务与恢复

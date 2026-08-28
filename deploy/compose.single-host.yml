@@ -53,6 +53,11 @@ services:
       database:
         condition: service_healthy
 
+  investor-analysis-worker:
+    depends_on:
+      database:
+        condition: service_healthy
+
   preflight:
     environment:
       DEPLOYMENT_PROFILE: ${DEPLOYMENT_PROFILE:-single_host}
