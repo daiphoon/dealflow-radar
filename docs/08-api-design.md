@@ -37,7 +37,7 @@
 | `POST /me/companies/{company_id}/reports` | 生成个人公司报告 | 只读共享公司、共享快照和已发布共享事件；V2 模板保存中文分类、方向、风险、可信度和数据状态；每月 10 次测试上限；幂等生成；不调用 LLM 或外部 Provider |
 | `GET /me/reports` 与 `GET /me/reports/{report_id}` | 查看本人报告 | 其他用户统一按不存在处理；报告是不可变时点快照 |
 | `GET/PATCH /platform/company-requests` | 平台处理旧版人工申请 | 仅 `platform_admin`；自动按需研究状态不能从该旧端点越过流程直接关闭 |
-| `GET /companies/{id}` | 公司详情 | 已实现共享基础层独立读取，并按基金/owner 授权叠加私有层 |
+| `GET /companies/{id}` | 公司详情 | 已实现共享基础层独立读取，并按基金/owner 授权叠加私有层；重要变化可带已完成的 `analysis`，不返回待处理队列、Provider、Token 或费用字段 |
 | `GET /companies/{id}/events` | 事件时间线 | 按有效权益和记录作用域返回事件；业务状态不代替授权 |
 | `GET /events/{id}/evidence` | 证据 | 对证据引用和原始文档分别授权，只返回许可允许的最小内容 |
 | `GET /companies/{id}/metrics` | 指标历史 | 返回来源性质、期间、单位和审核状态 |

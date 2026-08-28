@@ -19,7 +19,7 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     command.upgrade(config, "head")
     command.check(config)
     engine = create_engine(database_url)
-    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 34
+    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 35
     user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
     assert {"auth_provider", "auth_subject"} <= user_columns
     assert "uq_users_auth_identity" in {
@@ -204,6 +204,23 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "uq_company_research_job_active" in {
         index["name"] for index in inspect(engine).get_indexes("company_research_jobs")
     }
+    assert "investor_change_analyses" in inspect(engine).get_table_names()
+    assert {
+        "event_id",
+        "visibility_scope",
+        "status",
+        "prompt_version",
+        "schema_version",
+        "input_hash",
+        "evidence_ids",
+        "analysis_output",
+        "input_tokens",
+        "output_tokens",
+        "estimated_cost",
+    } <= {column["name"] for column in inspect(engine).get_columns("investor_change_analyses")}
+    assert "ix_investor_change_analysis_status_created" in {
+        index["name"] for index in inspect(engine).get_indexes("investor_change_analyses")
+    }
 
     command.downgrade(config, "0007")
     assert "visibility_scope" not in {
@@ -304,3 +321,8 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "request_type = 'refresh' AND company_id IS NOT NULL" in ddl
     assert "visible_shared_company.identity_status = 'verified'" in ddl
     assert "ADD COLUMN display_detail_payload" in ddl
+    assert "CREATE TABLE investor_change_analyses" in ddl
+    assert "investor_change_analyses_read" in ddl
+    assert "investor_change_analyses_platform_admin_read" in ddl
+    assert "investor_change_analyses_insert" in ddl
+    assert "investor_change_analyses_update" in ddl

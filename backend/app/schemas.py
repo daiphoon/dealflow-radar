@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from backend.app.investor_analysis_schema import InvestorChangeAnalysisOutput
+
 
 class EvidenceOut(BaseModel):
     id: UUID
@@ -59,6 +61,10 @@ class EvidenceDetailOut(BaseModel):
     provider_access_notice: str | None
 
 
+class InvestorChangeAnalysisOut(InvestorChangeAnalysisOutput):
+    generated_at: datetime
+
+
 class EventOut(BaseModel):
     id: UUID
     event_type: str
@@ -82,6 +88,7 @@ class EventOut(BaseModel):
     observed_at: datetime
     evidence: list[EvidenceOut]
     visibility_scope: str
+    analysis: InvestorChangeAnalysisOut | None = None
 
 
 class InvestmentOut(BaseModel):

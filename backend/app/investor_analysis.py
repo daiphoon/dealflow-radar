@@ -1,0 +1,525 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from uuid import UUID
+
+from pydantic import ValidationError
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session
+
+from backend.app.config import InvestorAnalysisPolicy
+from backend.app.database import set_request_context
+from backend.app.investor_analysis_schema import (
+    INVESTOR_ANALYSIS_PROMPT_VERSION,
+    INVESTOR_ANALYSIS_SCHEMA_VERSION,
+    InvestorChangeAnalysisOutput,
+    InvestorChangeAnalysisRequest,
+    InvestorEvidenceInput,
+)
+from backend.app.models import (
+    PLATFORM_SHARED_SCOPE,
+    Company,
+    Event,
+    EventEvidence,
+    InvestorChangeAnalysis,
+    UsageLedger,
+    User,
+    utc_now,
+)
+from backend.app.providers import LLMProvider, LLMProviderError
+from backend.app.services import user_has_role
+
+_NUMERIC_TOKEN = re.compile(r"(?<![A-Za-z0-9])\d+(?:\.\d+)?%?")
+_FORBIDDEN_ADVICE = ("建议买入", "建议卖出", "值得投资", "保证收益", "确定上涨")
+
+
+@dataclass(frozen=True)
+class InvestorAnalysisWorkerResult:
+    status: str
+    analysis_id: UUID | None = None
+    event_id: UUID | None = None
+    outcome: str | None = None
+    external_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    estimated_cost: Decimal = Decimal("0")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "analysis_id": str(self.analysis_id) if self.analysis_id else None,
+            "event_id": str(self.event_id) if self.event_id else None,
+            "outcome": self.outcome,
+            "external_calls": self.external_calls,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "estimated_cost": str(self.estimated_cost),
+        }
+
+
+@dataclass(frozen=True)
+class _AnalysisLease:
+    analysis_id: UUID
+    event_id: UUID
+    leased_until: datetime
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _sha256(value: object) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _event_fact(event: Event, name: str) -> str | None:
+    for fact in event.facts:
+        if fact.get("name") == name:
+            value = fact.get("value")
+            return str(value) if value is not None else None
+    return None
+
+
+def _analysis_request(session: Session, event: Event) -> InvestorChangeAnalysisRequest | None:
+    company = session.get(Company, event.company_id)
+    if company is None:
+        return None
+    before_value = _event_fact(event, "变更前")
+    after_value = _event_fact(event, "变更后")
+    field_label = _event_fact(event, "变化字段")
+    if before_value is None or after_value is None or field_label is None:
+        return None
+    evidence_rows = list(
+        session.scalars(
+            select(EventEvidence)
+            .where(
+                EventEvidence.event_id == event.id,
+                EventEvidence.visibility_scope == PLATFORM_SHARED_SCOPE,
+                EventEvidence.owner_user_id.is_(None),
+                EventEvidence.owner_tenant_id.is_(None),
+                EventEvidence.display_allowed.is_(True),
+            )
+            .order_by(EventEvidence.created_at, EventEvidence.id)
+            .limit(5)
+        )
+    )
+    if not evidence_rows:
+        return None
+    try:
+        return InvestorChangeAnalysisRequest(
+            event_id=event.id,
+            company_name=company.legal_name,
+            event_type=event.event_type,
+            field_label=field_label,
+            before_value=before_value,
+            after_value=after_value,
+            deterministic_summary=event.summary,
+            uncertainties=event.uncertainties,
+            evidence=[
+                InvestorEvidenceInput(
+                    evidence_id=evidence.id,
+                    source_name=evidence.display_source_name or "平台证据",
+                    excerpt=evidence.evidence_excerpt,
+                    observed_at=(evidence.display_observed_at or event.observed_at).isoformat(),
+                )
+                for evidence in evidence_rows
+            ],
+        )
+    except ValidationError:
+        return None
+
+
+def _event_is_eligible(event: Event, policy: InvestorAnalysisPolicy) -> bool:
+    return (
+        event.visibility_scope == PLATFORM_SHARED_SCOPE
+        and event.owner_user_id is None
+        and event.owner_tenant_id is None
+        and event.status == "published"
+        and event.publication_route == "deterministic_change"
+        and event.materiality_score >= policy.min_materiality_score
+    )
+
+
+def enqueue_pending_investor_analyses(
+    session: Session,
+    policy: InvestorAnalysisPolicy,
+    *,
+    limit: int = 20,
+) -> int:
+    events = session.scalars(
+        select(Event)
+        .where(
+            Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+            Event.owner_user_id.is_(None),
+            Event.owner_tenant_id.is_(None),
+            Event.status == "published",
+            Event.publication_route == "deterministic_change",
+            Event.materiality_score >= policy.min_materiality_score,
+        )
+        .order_by(Event.created_at, Event.id)
+    ).yield_per(100)
+    creation_limit = max(1, min(limit, 100))
+    created = 0
+    for event in events:
+        if created >= creation_limit:
+            break
+        request = _analysis_request(session, event)
+        if request is None:
+            continue
+        input_hash = _sha256(request.model_dump(mode="json"))
+        existing = session.scalar(
+            select(InvestorChangeAnalysis).where(
+                InvestorChangeAnalysis.event_id == event.id,
+                InvestorChangeAnalysis.prompt_version == INVESTOR_ANALYSIS_PROMPT_VERSION,
+                InvestorChangeAnalysis.input_hash == input_hash,
+            )
+        )
+        if existing is not None:
+            continue
+        session.add(
+            InvestorChangeAnalysis(
+                event_id=event.id,
+                visibility_scope=PLATFORM_SHARED_SCOPE,
+                status="pending",
+                provider=None,
+                model=None,
+                prompt_version=INVESTOR_ANALYSIS_PROMPT_VERSION,
+                schema_version=INVESTOR_ANALYSIS_SCHEMA_VERSION,
+                input_hash=input_hash,
+                evidence_ids=[str(item.evidence_id) for item in request.evidence],
+                analysis_output=None,
+                input_tokens=0,
+                output_tokens=0,
+                estimated_cost=Decimal("0"),
+                attempt_count=0,
+                response_id=None,
+                last_error_code=None,
+                leased_until=None,
+                heartbeat_at=None,
+            )
+        )
+        created += 1
+    session.commit()
+    return created
+
+
+def validate_investor_analysis_worker_user(session: Session, user: User) -> None:
+    if not user_has_role(session, user.id, "platform_admin"):
+        raise RuntimeError("investor analysis worker requires platform_admin")
+
+
+def _month_start(now: datetime) -> datetime:
+    utc = now.astimezone(UTC)
+    return datetime(utc.year, utc.month, 1, tzinfo=UTC)
+
+
+def _monthly_tokens(session: Session, tenant_id: UUID, now: datetime) -> int:
+    return int(
+        session.scalar(
+            select(
+                func.coalesce(
+                    func.sum(UsageLedger.input_tokens + UsageLedger.output_tokens),
+                    0,
+                )
+            ).where(
+                UsageLedger.tenant_id == tenant_id,
+                UsageLedger.operation == "investor_change_analysis",
+                UsageLedger.created_at >= _month_start(now),
+            )
+        )
+        or 0
+    )
+
+
+def _lease_next_analysis(
+    session: Session,
+    policy: InvestorAnalysisPolicy,
+    now: datetime,
+) -> _AnalysisLease | None:
+    analysis = session.scalar(
+        select(InvestorChangeAnalysis)
+        .where(
+            or_(
+                InvestorChangeAnalysis.status == "pending",
+                (
+                    (InvestorChangeAnalysis.status == "budget_deferred")
+                    & (InvestorChangeAnalysis.updated_at < _month_start(now))
+                ),
+                (
+                    (InvestorChangeAnalysis.status == "running")
+                    & (
+                        (InvestorChangeAnalysis.leased_until.is_(None))
+                        | (InvestorChangeAnalysis.leased_until <= now)
+                    )
+                ),
+            )
+        )
+        .order_by(InvestorChangeAnalysis.created_at, InvestorChangeAnalysis.id)
+        .with_for_update(skip_locked=True)
+    )
+    if analysis is None:
+        session.rollback()
+        return None
+    leased_until = now + timedelta(seconds=policy.worker_lease_seconds)
+    analysis.status = "running"
+    analysis.leased_until = leased_until
+    analysis.heartbeat_at = now
+    analysis.attempt_count += 1
+    session.commit()
+    return _AnalysisLease(
+        analysis_id=analysis.id,
+        event_id=analysis.event_id,
+        leased_until=leased_until,
+    )
+
+
+def _analysis_text_values(output: InvestorChangeAnalysisOutput) -> list[str]:
+    return [
+        output.headline,
+        output.what_changed,
+        output.why_it_matters,
+        *output.potential_impacts,
+        *output.uncertainties,
+        *output.follow_up_items,
+    ]
+
+
+def _validate_evidence_constrained_output(
+    request: InvestorChangeAnalysisRequest,
+    output: InvestorChangeAnalysisOutput,
+) -> None:
+    if output.before_value != request.before_value or output.after_value != request.after_value:
+        raise ValueError("analysis changed deterministic before/after values")
+    allowed_evidence_ids = {item.evidence_id for item in request.evidence}
+    if not set(output.evidence_ids) <= allowed_evidence_ids:
+        raise ValueError("analysis referenced evidence outside the request")
+    source_text = _canonical_json(request.model_dump(mode="json"))
+    allowed_numbers = set(_NUMERIC_TOKEN.findall(source_text))
+    output_text = " ".join(_analysis_text_values(output))
+    invented_numbers = set(_NUMERIC_TOKEN.findall(output_text)) - allowed_numbers
+    if invented_numbers:
+        raise ValueError("analysis introduced numbers absent from evidence")
+    if any(phrase in output_text for phrase in _FORBIDDEN_ADVICE):
+        raise ValueError("analysis contains prohibited investment advice")
+
+
+def _record_usage(
+    session: Session,
+    user: User,
+    analysis: InvestorChangeAnalysis,
+    *,
+    provider: str,
+    model: str,
+    external_calls: int,
+    input_tokens: int,
+    output_tokens: int,
+    estimated_cost: Decimal,
+    outcome: str,
+) -> None:
+    session.add(
+        UsageLedger(
+            tenant_id=user.tenant_id,
+            company_id=session.scalar(
+                select(Event.company_id).where(Event.id == analysis.event_id)
+            ),
+            provider=provider,
+            operation="investor_change_analysis",
+            external_calls=external_calls,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            estimated_cost=estimated_cost,
+            metrics={
+                "analysis_id": str(analysis.id),
+                "event_id": str(analysis.event_id),
+                "model": model,
+                "prompt_version": analysis.prompt_version,
+                "schema_version": analysis.schema_version,
+                "outcome": outcome,
+                "automatic_publication": False,
+                "report_generated": False,
+            },
+            idempotency_key=_sha256(
+                {
+                    "operation": "investor_change_analysis",
+                    "analysis_id": str(analysis.id),
+                    "attempt_count": analysis.attempt_count,
+                }
+            ),
+        )
+    )
+
+
+def run_investor_analysis_worker_once(
+    session: Session,
+    user: User,
+    provider: LLMProvider,
+    policy: InvestorAnalysisPolicy,
+    *,
+    now: datetime | None = None,
+) -> InvestorAnalysisWorkerResult:
+    validate_investor_analysis_worker_user(session, user)
+    checked_at = (now or utc_now()).astimezone(UTC)
+    worker_user_id = user.id
+    worker_tenant_id = user.tenant_id
+    set_request_context(session, worker_user_id, worker_tenant_id)
+    enqueue_pending_investor_analyses(session, policy)
+    set_request_context(session, worker_user_id, worker_tenant_id)
+    lease = _lease_next_analysis(session, policy, checked_at)
+    if lease is None:
+        return InvestorAnalysisWorkerResult(status="idle")
+    set_request_context(session, worker_user_id, worker_tenant_id)
+    analysis = session.scalar(
+        select(InvestorChangeAnalysis)
+        .where(InvestorChangeAnalysis.id == lease.analysis_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    event = session.get(Event, lease.event_id)
+    if analysis is None or event is None or analysis.status != "running":
+        session.rollback()
+        return InvestorAnalysisWorkerResult(status="lease_lost", analysis_id=lease.analysis_id)
+    if not _event_is_eligible(event, policy):
+        analysis.status = "failed"
+        analysis.last_error_code = "event_no_longer_eligible"
+        analysis.leased_until = None
+        session.commit()
+        return InvestorAnalysisWorkerResult(
+            status="completed",
+            analysis_id=analysis.id,
+            event_id=event.id,
+            outcome="event_no_longer_eligible",
+        )
+    request = _analysis_request(session, event)
+    if request is None or _sha256(request.model_dump(mode="json")) != analysis.input_hash:
+        analysis.status = "failed"
+        analysis.last_error_code = "analysis_input_changed"
+        analysis.leased_until = None
+        session.commit()
+        return InvestorAnalysisWorkerResult(
+            status="completed",
+            analysis_id=analysis.id,
+            event_id=event.id,
+            outcome="analysis_input_changed",
+        )
+    projected_tokens = (
+        len(_canonical_json(request.model_dump(mode="json"))) + policy.max_output_tokens
+    )
+    if (
+        _monthly_tokens(session, user.tenant_id, checked_at) + projected_tokens
+        > policy.monthly_token_limit
+    ):
+        analysis.status = "budget_deferred"
+        analysis.last_error_code = "monthly_token_budget_exceeded"
+        analysis.leased_until = None
+        session.commit()
+        return InvestorAnalysisWorkerResult(
+            status="completed",
+            analysis_id=analysis.id,
+            event_id=event.id,
+            outcome="budget_deferred",
+        )
+    try:
+        result = provider.analyze_investor_change(request)
+    except LLMProviderError as error:
+        analysis.status = "failed"
+        analysis.provider = provider.code
+        analysis.model = provider.model
+        analysis.input_tokens = error.input_tokens
+        analysis.output_tokens = error.output_tokens
+        analysis.last_error_code = str(error)[:80]
+        analysis.leased_until = None
+        _record_usage(
+            session,
+            user,
+            analysis,
+            provider=provider.code,
+            model=provider.model,
+            external_calls=error.external_calls,
+            input_tokens=error.input_tokens,
+            output_tokens=error.output_tokens,
+            estimated_cost=error.estimated_cost,
+            outcome="provider_failed",
+        )
+        session.commit()
+        return InvestorAnalysisWorkerResult(
+            status="completed",
+            analysis_id=analysis.id,
+            event_id=event.id,
+            outcome="provider_failed",
+            external_calls=error.external_calls,
+            input_tokens=error.input_tokens,
+            output_tokens=error.output_tokens,
+            estimated_cost=error.estimated_cost,
+        )
+    try:
+        _validate_evidence_constrained_output(request, result.analysis)
+    except ValueError:
+        analysis.status = "failed"
+        analysis.provider = provider.code
+        analysis.model = provider.model
+        analysis.last_error_code = "evidence_validation_failed"
+        analysis.leased_until = None
+        _record_usage(
+            session,
+            user,
+            analysis,
+            provider=provider.code,
+            model=provider.model,
+            external_calls=result.external_calls,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            estimated_cost=result.estimated_cost,
+            outcome="evidence_validation_failed",
+        )
+        session.commit()
+        return InvestorAnalysisWorkerResult(
+            status="completed",
+            analysis_id=analysis.id,
+            event_id=event.id,
+            outcome="evidence_validation_failed",
+            external_calls=result.external_calls,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            estimated_cost=result.estimated_cost,
+        )
+
+    analysis.status = "completed"
+    analysis.provider = provider.code
+    analysis.model = provider.model
+    analysis.analysis_output = result.analysis.model_dump(mode="json")
+    analysis.evidence_ids = [str(item) for item in result.analysis.evidence_ids]
+    analysis.input_tokens = result.input_tokens
+    analysis.output_tokens = result.output_tokens
+    analysis.estimated_cost = result.estimated_cost
+    analysis.response_id = result.response_id
+    analysis.last_error_code = None
+    analysis.leased_until = None
+    analysis.heartbeat_at = checked_at
+    _record_usage(
+        session,
+        user,
+        analysis,
+        provider=provider.code,
+        model=provider.model,
+        external_calls=result.external_calls,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        estimated_cost=result.estimated_cost,
+        outcome="completed",
+    )
+    session.commit()
+    return InvestorAnalysisWorkerResult(
+        status="completed",
+        analysis_id=analysis.id,
+        event_id=event.id,
+        outcome="completed",
+        external_calls=result.external_calls,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        estimated_cost=result.estimated_cost,
+    )

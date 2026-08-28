@@ -129,12 +129,18 @@ function EventCard({
 }) {
   const eventDate = event.occurred_at ?? event.published_at ?? event.published_on;
   const isLicensedSourceRecord = event.publication_route === "licensed_source_record";
+  const isDeterministicChange = event.publication_route === "deterministic_change";
+  const changeField = event.facts.find((fact) => fact.name === "变化字段")?.value;
+  const beforeValue = event.facts.find((fact) => fact.name === "变更前")?.value;
+  const afterValue = event.facts.find((fact) => fact.name === "变更后")?.value;
   const publicationLabel = unconfirmed
     ? "未确认线索"
     : privateRecord
       ? "机构私有已确认"
       : event.publication_route === "licensed_structured_fact"
         ? "授权来源已核实事实"
+        : isDeterministicChange
+          ? "程序核验的重要变化"
         : isLicensedSourceRecord
           ? "授权来源记录·影响待判断"
         : event.publication_route === "auto_published"
@@ -155,6 +161,22 @@ function EventCard({
       </div>
       <h3>{event.title}</h3>
       <p>{event.summary}</p>
+      {isDeterministicChange && changeField && beforeValue && afterValue ? (
+        <div className="change-comparison" aria-label={`${changeField}前后变化`}>
+          <span>{changeField}</span>
+          <div>
+            <p>
+              <small>变更前</small>
+              <strong>{beforeValue}</strong>
+            </p>
+            <span aria-hidden="true">→</span>
+            <p>
+              <small>变更后</small>
+              <strong>{afterValue}</strong>
+            </p>
+          </div>
+        </div>
+      ) : null}
       <dl className="score-grid">
         <div>
           <dt>重要性</dt>
@@ -187,6 +209,59 @@ function EventCard({
         <p className="privacy-note">
           这是授权数据源已返回的记录概览，可供查看；平台尚未将数量、关联关系或评分解释为风险结论。
         </p>
+      ) : null}
+      {isDeterministicChange ? (
+        event.analysis ? (
+          <section className="investor-analysis" aria-label="模型辅助解读">
+            <div className="analysis-heading">
+              <div>
+                <p className="eyebrow">模型辅助解读</p>
+                <h4>{event.analysis.headline}</h4>
+              </div>
+              <span>可信度 {Math.round(Number(event.analysis.confidence) * 100)}%</span>
+            </div>
+            <p>{event.analysis.what_changed}</p>
+            <div>
+              <strong>为什么值得关注</strong>
+              <p>{event.analysis.why_it_matters}</p>
+            </div>
+            {event.analysis.potential_impacts.length > 0 ? (
+              <div>
+                <strong>可能影响</strong>
+                <ul>
+                  {event.analysis.potential_impacts.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {event.analysis.uncertainties.length > 0 ? (
+              <div>
+                <strong>仍需注意</strong>
+                <ul>
+                  {event.analysis.uncertainties.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {event.analysis.follow_up_items.length > 0 ? (
+              <div>
+                <strong>后续观察</strong>
+                <ul>
+                  {event.analysis.follow_up_items.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            <p className="analysis-disclaimer">{event.analysis.disclaimer}</p>
+          </section>
+        ) : (
+          <p className="analysis-pending">
+            变化事实已经程序核验；辅助解读尚未生成，不影响查看原始变化和证据。
+          </p>
+        )
       ) : null}
       {event.evidence.map((evidence) => {
         const sourceUrl = evidence.final_url ?? evidence.canonical_url;
@@ -248,6 +323,12 @@ export default async function CompanyDetailPage({
     ]);
     const isFollowed = watchlist.some((item) => item.company_id === company.id);
     const reportIdempotencyKey = randomBytes(32).toString("hex");
+    const materialChanges = company.events.filter(
+      (event) => event.publication_route === "deterministic_change",
+    );
+    const baselineEvents = company.events.filter(
+      (event) => event.publication_route !== "deterministic_change",
+    );
     const feedback = result
       ? result === "followed"
         ? "已加入个人关注。关注仅用于整理，不改变公司或私有数据权限。"
@@ -350,20 +431,42 @@ export default async function CompanyDetailPage({
 
         {company.is_platform_shared ? <PersonalChangePanel companyId={company.id} /> : null}
 
+        <section className="panel material-change-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">投资者变化层</p>
+              <h2>值得关注的重要变化</h2>
+            </div>
+            <span className="muted">{materialChanges.length} 条变化</span>
+          </div>
+          <p className="section-intro">
+            这里只展示相较前一次结构化快照发生、且达到重要性门槛的变化；没有变化的静态资料不会重复占用阅读时间。
+          </p>
+          {materialChanges.length === 0 ? (
+            <div className="empty-state">目前尚未发现达到展示门槛的新变化。</div>
+          ) : (
+            <div className="timeline">
+              {materialChanges.map((event) => (
+                <EventCard event={event} key={event.id} />
+              ))}
+            </div>
+          )}
+        </section>
+
         <section className="panel">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">平台共享基础层</p>
-              <h2>已核实事实与可见证据</h2>
+              <h2>当前资料基线与可见证据</h2>
             </div>
-            <span className="muted">{company.events.length} 条事件</span>
+            <span className="muted">{baselineEvents.length} 条资料</span>
           </div>
 
-          {company.events.length === 0 ? (
-            <div className="empty-state">暂无已发布事实。</div>
+          {baselineEvents.length === 0 ? (
+            <div className="empty-state">暂无已核实的当前资料。</div>
           ) : (
             <div className="timeline">
-              {company.events.map((event) => (
+              {baselineEvents.map((event) => (
                 <EventCard event={event} key={event.id} />
               ))}
             </div>

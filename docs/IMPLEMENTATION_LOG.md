@@ -325,3 +325,12 @@
 - 实际命令：针对性变化识别、天眼查映射和按需研究 Pytest；完整 Ruff 与格式检查；完整 Pytest；前端 TypeScript 与生产构建；`git diff --check`。全部测试使用 Mock 或已有缓存契约，没有访问真实 Provider 或模型。
 - 测试结果：完整 Pytest 266 项通过、14 项未配置 PostgreSQL 的显式测试按预期跳过，仅有既有 FastAPI TestClient 上游弃用警告；Ruff、格式、TypeScript 和 Next.js 生产构建通过。首次快照不产生变化，相同缓存重放保持幂等；20%→25% 的工商登记持股比例生成一条跨租户可复用且有证据的共享变化事件；普通快照刷新不会丢失比较基线；不完整股东分页不推断退出；低价值知识产权数量变化只随快照归档；风险数量变化只形成非风险结论的待核实线索。默认研究减少一次人员概览调用；外部调用、模型 Token、费用和自动发布增量均为 0。
 - 未解决阻塞：本 PR 不调用真实数据验证未来响应分页是否可返回完整股东清单，因此完整清单之外不自动判断股东新增或退出；PostgreSQL RLS 表结构未变，显式 PostgreSQL 套件与远端 CI 结果以 PR 检查为准。证据约束分析 Agent 和投资者变化卡片属于连续 PR 2，本 PR 不提前实现。
+
+## 2026-08-28｜证据约束的投资者变化解读
+
+- 日期：2026-08-28
+- 任务：在确定性重要变化事实之上增加独立、默认关闭的异步解读 Worker；仅处理中高重要性的已发布平台共享变化，使用严格 JSON Schema、前后值、可展示证据 ID、数字和投资建议禁语校验。公司页面分开呈现重要变化、当前资料基线和模型辅助解读；模型不改写事件、不读取私有原始文档、不在同步请求中运行，也不自动生成报告。
+- 关键文件：`backend/app/investor_analysis.py`、`backend/app/investor_analysis_schema.py`、`backend/app/deepseek.py`、`migrations/versions/0021_add_investor_change_analyses.py`、`scripts/run_investor_analysis_worker.py`、`schemas/investor_change_analysis.schema.json`、公司详情前端、部署配置、RLS/Provider/Worker 测试和 ADR-0017 配套文档。
+- 实际命令：针对性和完整 Ruff/Pytest；SQLite 与一次性 PostgreSQL 16 的 `0020 → 0021 → 0020 → 0021`、`alembic check`、应用角色/RLS；前端依赖审计、TypeScript 和生产构建；单机 analysis profile Compose 解析；虚构共享变化和无基金个人身份的桌面及 390px 浏览器验收；`git diff --check`。
+- 测试结果：完整 Pytest 288 项通过、16 项未配置 PostgreSQL 时按预期跳过；独立 PostgreSQL 16 的 16 项 RLS/API/真实提交测试全部通过；前端构建、类型检查和依赖审计通过，0 个已知漏洞。浏览器确认重要变化、前后对比、解读和证据分层展示，桌面/窄屏无横向溢出，无基金用户看不到投资字段。自查补上每次事务提交后的 RLS 上下文重绑、证据撤下即隐藏关联解读，以及异常历史输入安全跳过。所有业务外部调用、真实模型调用、模型 Token、费用和自动发布均为 0。
+- 未解决阻塞：真实 DeepSeek 输出的中文质量和供应商实际 Token 计费尚未调用验证；合并部署前保持专用开关和价格配置为 0/false。结构化校验能阻止明显数字、证据和前后值越界，但不能证明模型每句语义都正确，下一闸门只用一家具名新公司做受控价值验收，不扩充样本或自动监测范围。

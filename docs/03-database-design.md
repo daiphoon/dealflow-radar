@@ -4,7 +4,7 @@
 
 PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；不修改已应用迁移。UUID 主键、UTC `timestamptz`、显式外键和状态约束为默认。原始事实追加保存，派生快照可重建。个人、机构与基金私有行必须通过应用授权和 PostgreSQL 行级安全（RLS）双重限制。
 
-本文件同时描述当前 `0020` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询、受控共享事实晋升、授权工商身份 Provider、受控可信来源监测、候选研究交接、CloudBase 身份映射、个人留存、按需研究和版本化变化检测已经实现；标记为“目标”的 organization 和商业订阅权益仍未实现。当前 `tenant` 继续作为技术隔离边界，CloudBase 只提供外部身份，业务授权仍由本地用户、角色、基金授权和 RLS 决定。
+本文件同时描述当前 `0021` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询、受控共享事实晋升、授权工商身份 Provider、受控可信来源监测、候选研究交接、CloudBase 身份映射、个人留存、按需研究、版本化变化检测和证据约束投资者解读队列已经实现；标记为“目标”的 organization 和商业订阅权益仍未实现。当前 `tenant` 继续作为技术隔离边界，CloudBase 只提供外部身份，业务授权仍由本地用户、角色、基金授权和 RLS 决定。
 
 ## 2. 表目录：身份、投资与权限
 
@@ -45,6 +45,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `metric_definitions` | 指标编码、类型、单位集合、周期和行业命名空间 | 唯一 `metric_code`; 行业索引 |
 | `metric_observations` | 公司指标历史值、单位、期间、`as_of_date`、来源性质、审核状态 | 观测幂等键唯一；公司/指标/基准日降序索引 |
 | `company_snapshots` | 派生状态、信息缺口、新鲜度、构建版本、可空的事实水位 | 唯一 `(company_id, snapshot_version)`；当前快照条件唯一；没有可靠事件/来源日期时 `data_as_of` 保持空 |
+| `investor_change_analyses` | 对已核验共享变化的模型辅助解读；保存 prompt/Schema/输入哈希、证据 ID、结构化输出、Token、费用和队列状态 | 唯一 `(event_id, prompt_version, input_hash)`；只允许 `platform_shared`；普通活跃用户只读已完成解读，平台管理员处理队列 |
 | `personal_company_reports` | 个人生成的确定性 Markdown 公司报告时点快照 | owner 私有且只追加；保存模板版本、事件 ID 快照、正文校验和幂等键；不含私有候选、文档或投资字段 |
 | `report_templates` | 固定模板、版本、适用报告类型和可见范围 | 唯一 `(template_code, version, tenant_id)` |
 | `generated_reports` | 模板版本、事实水位、`as_of_date`、存储引用、可见范围 | 唯一报告幂等键；tenant/fund/as-of 索引 |

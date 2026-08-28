@@ -43,6 +43,17 @@ def _as_rate(name: str, default: str) -> Decimal:
     return value
 
 
+def _as_non_negative_decimal(name: str, default: str) -> Decimal:
+    raw_value = os.getenv(name, default)
+    try:
+        value = Decimal(raw_value)
+    except InvalidOperation as error:
+        raise ValueError(f"{name} must be a non-negative decimal") from error
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative decimal")
+    return value
+
+
 @dataclass(frozen=True)
 class RefreshPolicy:
     version: str = "demo-v1"
@@ -276,6 +287,53 @@ class OnDemandResearchPolicy:
         return self.provider_monthly_call_limit * (100 - self.provider_reserve_percent) // 100
 
 
+DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT = "https://api.deepseek.com/chat/completions"
+
+
+@dataclass(frozen=True)
+class InvestorAnalysisPolicy:
+    version: str = "investor-analysis-v1"
+    provider: str = "deepseek"
+    model: str = "deepseek-v4-flash"
+    endpoint_url: str = DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT
+    min_materiality_score: int = 60
+    max_input_characters: int = 12_000
+    max_output_tokens: int = 1_200
+    monthly_token_limit: int = 500_000
+    timeout_seconds: int = 30
+    max_response_bytes: int = 128_000
+    retry_limit: int = 1
+    worker_lease_seconds: int = 300
+    input_cost_per_million_tokens: Decimal = Decimal("0")
+    output_cost_per_million_tokens: Decimal = Decimal("0")
+
+    def __post_init__(self) -> None:
+        if not self.version.strip():
+            raise ValueError("INVESTOR_ANALYSIS_POLICY_VERSION must not be empty")
+        if self.provider != "deepseek":
+            raise ValueError("INVESTOR_ANALYSIS_PROVIDER must be deepseek in V1")
+        if not self.model.strip():
+            raise ValueError("INVESTOR_ANALYSIS_MODEL must not be empty")
+        if self.endpoint_url != DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT:
+            raise ValueError("INVESTOR_ANALYSIS_ENDPOINT must use the approved endpoint")
+        if not 0 <= self.min_materiality_score <= 100:
+            raise ValueError("INVESTOR_ANALYSIS_MIN_MATERIALITY must be between 0 and 100")
+        for name, value in (
+            ("INVESTOR_ANALYSIS_MAX_INPUT_CHARACTERS", self.max_input_characters),
+            ("INVESTOR_ANALYSIS_MAX_OUTPUT_TOKENS", self.max_output_tokens),
+            ("INVESTOR_ANALYSIS_MONTHLY_TOKEN_LIMIT", self.monthly_token_limit),
+            ("INVESTOR_ANALYSIS_TIMEOUT_SECONDS", self.timeout_seconds),
+            ("INVESTOR_ANALYSIS_MAX_RESPONSE_BYTES", self.max_response_bytes),
+            ("INVESTOR_ANALYSIS_WORKER_LEASE_SECONDS", self.worker_lease_seconds),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.retry_limit < 0 or self.retry_limit > 1:
+            raise ValueError("INVESTOR_ANALYSIS_RETRY_LIMIT must be 0 or 1")
+        if self.input_cost_per_million_tokens < 0 or self.output_cost_per_million_tokens < 0:
+            raise ValueError("investor analysis token costs must be non-negative")
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
@@ -288,6 +346,7 @@ class Settings:
     tianyancha_identity_calls_enabled: bool = False
     tianyancha_research_calls_enabled: bool = False
     on_demand_research_enabled: bool = False
+    investor_analysis_enabled: bool = False
     review_workbench_enabled: bool = False
     auth_provider: str = "demo"
     refresh_policy: RefreshPolicy = field(default_factory=RefreshPolicy)
@@ -304,6 +363,7 @@ class Settings:
     on_demand_research_policy: OnDemandResearchPolicy = field(
         default_factory=OnDemandResearchPolicy
     )
+    investor_analysis_policy: InvestorAnalysisPolicy = field(default_factory=InvestorAnalysisPolicy)
 
     def __post_init__(self) -> None:
         if self.app_mode not in {"demo", "production"}:
@@ -342,6 +402,7 @@ class Settings:
                 os.getenv("TIANYANCHA_RESEARCH_CALLS_ENABLED", "false")
             ),
             on_demand_research_enabled=_as_bool(os.getenv("ON_DEMAND_RESEARCH_ENABLED", "false")),
+            investor_analysis_enabled=_as_bool(os.getenv("INVESTOR_ANALYSIS_ENABLED", "false")),
             review_workbench_enabled=_as_bool(os.getenv("REVIEW_WORKBENCH_ENABLED", "false")),
             auth_provider=os.getenv("AUTH_PROVIDER", "demo").strip().lower(),
             refresh_policy=RefreshPolicy(
@@ -458,6 +519,58 @@ class Settings:
                 max_provider_calls_per_company=_as_positive_int(
                     "ON_DEMAND_MAX_PROVIDER_CALLS_PER_COMPANY",
                     8,
+                ),
+            ),
+            investor_analysis_policy=InvestorAnalysisPolicy(
+                version=os.getenv(
+                    "INVESTOR_ANALYSIS_POLICY_VERSION",
+                    "investor-analysis-v1",
+                ),
+                provider=os.getenv("INVESTOR_ANALYSIS_PROVIDER", "deepseek").strip().lower(),
+                model=os.getenv("INVESTOR_ANALYSIS_MODEL", "deepseek-v4-flash").strip(),
+                endpoint_url=os.getenv(
+                    "INVESTOR_ANALYSIS_ENDPOINT",
+                    DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT,
+                ).strip(),
+                min_materiality_score=_as_non_negative_int(
+                    "INVESTOR_ANALYSIS_MIN_MATERIALITY",
+                    60,
+                ),
+                max_input_characters=_as_positive_int(
+                    "INVESTOR_ANALYSIS_MAX_INPUT_CHARACTERS",
+                    12_000,
+                ),
+                max_output_tokens=_as_positive_int(
+                    "INVESTOR_ANALYSIS_MAX_OUTPUT_TOKENS",
+                    1_200,
+                ),
+                monthly_token_limit=_as_positive_int(
+                    "INVESTOR_ANALYSIS_MONTHLY_TOKEN_LIMIT",
+                    500_000,
+                ),
+                timeout_seconds=_as_positive_int(
+                    "INVESTOR_ANALYSIS_TIMEOUT_SECONDS",
+                    30,
+                ),
+                max_response_bytes=_as_positive_int(
+                    "INVESTOR_ANALYSIS_MAX_RESPONSE_BYTES",
+                    128_000,
+                ),
+                retry_limit=_as_non_negative_int(
+                    "INVESTOR_ANALYSIS_RETRY_LIMIT",
+                    1,
+                ),
+                worker_lease_seconds=_as_positive_int(
+                    "INVESTOR_ANALYSIS_WORKER_LEASE_SECONDS",
+                    300,
+                ),
+                input_cost_per_million_tokens=_as_non_negative_decimal(
+                    "INVESTOR_ANALYSIS_INPUT_COST_PER_MILLION_TOKENS",
+                    "0",
+                ),
+                output_cost_per_million_tokens=_as_non_negative_decimal(
+                    "INVESTOR_ANALYSIS_OUTPUT_COST_PER_MILLION_TOKENS",
+                    "0",
                 ),
             ),
         )

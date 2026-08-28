@@ -108,6 +108,24 @@ export type Event = {
   observed_at: string;
   evidence: Evidence[];
   visibility_scope: string;
+  analysis: InvestorChangeAnalysis | null;
+};
+
+export type InvestorChangeAnalysis = {
+  schema_version: "investor-change-analysis-v1";
+  headline: string;
+  before_value: string;
+  after_value: string;
+  what_changed: string;
+  why_it_matters: string;
+  potential_impacts: string[];
+  uncertainties: string[];
+  evidence_ids: string[];
+  confidence: number;
+  follow_up_items: string[];
+  impact_direction: "positive" | "negative" | "mixed" | "neutral" | "uncertain";
+  disclaimer: "模型辅助解读，不构成投资建议。";
+  generated_at: string;
 };
 
 export type ReviewWorkbenchItem = {
