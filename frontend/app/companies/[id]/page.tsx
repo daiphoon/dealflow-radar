@@ -128,12 +128,15 @@ function EventCard({
   privateRecord?: boolean;
 }) {
   const eventDate = event.occurred_at ?? event.published_at ?? event.published_on;
+  const isLicensedSourceRecord = event.publication_route === "licensed_source_record";
   const publicationLabel = unconfirmed
     ? "未确认线索"
     : privateRecord
       ? "机构私有已确认"
       : event.publication_route === "licensed_structured_fact"
         ? "授权来源已核实事实"
+        : isLicensedSourceRecord
+          ? "授权来源记录·影响待判断"
         : event.publication_route === "auto_published"
           ? "规则自动发布"
           : "人工或历史确认";
@@ -142,8 +145,12 @@ function EventCard({
       <div className="event-meta">
         <span>{eventTypeLabels[event.event_type] ?? event.event_type}</span>
         <span>{formatDate(eventDate)}</span>
-        <span className={`risk risk-${event.risk_severity}`}>
-          {riskLabels[event.risk_severity] ?? event.risk_severity}
+        <span
+          className={`risk ${isLicensedSourceRecord ? "risk-unknown" : `risk-${event.risk_severity}`}`}
+        >
+          {isLicensedSourceRecord
+            ? "影响待判断"
+            : (riskLabels[event.risk_severity] ?? event.risk_severity)}
         </span>
       </div>
       <h3>{event.title}</h3>
@@ -174,6 +181,11 @@ function EventCard({
                 .map((reason) => publicationReasonLabels[reason] ?? "仍需进一步核实")
                 .join("、")}。`
             : ""}
+        </p>
+      ) : null}
+      {isLicensedSourceRecord ? (
+        <p className="privacy-note">
+          这是授权数据源已返回的记录概览，可供查看；平台尚未将数量、关联关系或评分解释为风险结论。
         </p>
       ) : null}
       {event.evidence.map((evidence) => {

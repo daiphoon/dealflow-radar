@@ -22,7 +22,7 @@ export default async function EvidenceDetailPage({
   try {
     const evidence = await getEvidenceDetail(id);
     return (
-      <main className="page-shell detail-shell">
+      <main className="shell page-stack detail-shell evidence-detail-shell">
         <Link className="back-link" href={`/companies/${evidence.company_id}`}>
           ← 返回公司详情
         </Link>
@@ -63,6 +63,21 @@ export default async function EvidenceDetailPage({
           <p className="privacy-note">
             本页展示授权结构化数据的必要字段，不展示供应商完整响应、联系方式或客户私有资料。
           </p>
+          {evidence.total_records !== null &&
+          evidence.displayed_records > 0 &&
+          evidence.total_records > evidence.displayed_records ? (
+            <p className="detail-coverage-note">
+              当前来源共返回 {evidence.total_records} 条记录，本页已取得并展示其中 {evidence.displayed_records}
+              条；未取得的逐条内容不会由平台推测或补写。
+            </p>
+          ) : null}
+          {evidence.total_records !== null &&
+          evidence.total_records > 0 &&
+          evidence.displayed_records === 0 ? (
+            <p className="detail-coverage-note">
+              当前授权接口仅提供分类数量或评分概览，尚未取得可展示的逐条明细。
+            </p>
+          ) : null}
         </section>
 
         {evidence.summary_fields.length > 0 ? (
@@ -134,7 +149,7 @@ export default async function EvidenceDetailPage({
       </main>
     );
   } catch (error) {
-    redirectIfAuthenticationRequired(error, `/evidence/${encodeURIComponent(id)}`);
+    await redirectIfAuthenticationRequired(error, `/evidence/${encodeURIComponent(id)}`);
     throw error;
   }
 }

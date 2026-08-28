@@ -638,6 +638,40 @@ a {
   margin-bottom: 1rem;
 }
 
+.evidence-detail-shell {
+  max-width: 960px;
+}
+
+.detail-coverage-note {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border-left: 3px solid var(--warm);
+  color: #5e4a24;
+  background: #fff8e8;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.friendly-error-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.friendly-error-panel h1,
+.friendly-error-panel p {
+  margin: 0;
+}
+
+.friendly-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.friendly-error-actions a {
+  text-decoration: none;
+}
+
 .personal-detail-controls {
   display: grid;
   justify-items: end;

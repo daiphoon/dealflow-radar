@@ -292,7 +292,7 @@ APP_MODE=demo uv run python -m scripts.run_on_demand_research_worker --dry-run
 
 正式 Worker 只允许单实例运行，并要求 `ON_DEMAND_RESEARCH_ENABLED=true`、`EXTERNAL_CALLS_ENABLED=true` 和 `TIANYANCHA_IDENTITY_CALLS_ENABLED=true`。`TIANYANCHA_RESEARCH_CALLS_ENABLED` 单独决定是否在身份确认后执行六大模块；首次部署和身份链路验证时保持 false，只有准备执行受控新公司验收时才临时改为 true。`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED`、可信来源调用和来源调度必须保持 false。默认供应商合同参数为 1000 次/日、10000 次/月，自动任务保留 10% 后实际闸门为 900/日、9000/月；每家公司研究阶段最多 8 次供应商调用，首版每模块最多一次请求和一次失败重试预算。平台用量按全部天眼查 Provider 调用汇总。
 
-Worker 按工商与股东基础、司法与合规风险、知识产权、经营与公示、历史变更、董监高与人员顺序逐项运行，每次循环最多处理一个身份或一个研究模块。每个模块先查权限受限缓存，缓存未命中才检查公司、日和月预算；相同来源记录与内容哈希不重复生成文档或事件。低风险例行结构化资料显示为“已核实事实”，风险和人员资料显示为“待核实线索”；两者的页面证据都是独立最小展示快照，完整供应商响应仍只在私有缓存。无记录显示“暂无可靠公开数据”。该 Worker 不调用模型、不自动生成报告，且 `AUTO_PUBLISH_ENABLED=false` 不得因结构化事实展示而改变。同一进程复用 Provider 以保持跨任务限速；引入原子预算预留前不得启动第二个 Worker或多实例部署。
+Worker 按工商与股东基础、司法与合规风险、知识产权、经营与公示、历史变更、董监高与人员顺序逐项运行，每次循环最多处理一个身份或一个研究模块。每个模块先查权限受限缓存，缓存未命中才检查公司、日和月预算；相同来源记录与内容哈希不重复生成文档或事件。结构化资料分为“已核实事实”和“授权来源记录·影响待判断”；风险和人员数量概览属于后者，可展示来源记录，但不能据此生成责任或风险结论。真正的身份、来源或可信度冲突才进入“待核实线索”。页面证据都是独立最小展示快照，完整供应商响应仍只在私有缓存。无记录显示“暂无可靠公开数据”。该 Worker 不调用模型、不自动生成报告，且 `AUTO_PUBLISH_ENABLED=false` 不得因结构化事实展示而改变。同一进程复用 Provider 以保持跨任务限速；引入原子预算预留前不得启动第二个 Worker或多实例部署。
 
 当前未开通正式 VIP，PR 2 合并部署并准备最终一家具名新公司受控实测之前不得执行真实命令，也不得把 Key 写入命令历史、env 示例、Git 或日志。受控窗口结束后必须把 `TIANYANCHA_RESEARCH_CALLS_ENABLED`、`TIANYANCHA_IDENTITY_CALLS_ENABLED`、`EXTERNAL_CALLS_ENABLED` 和 `ON_DEMAND_RESEARCH_ENABLED` 恢复为 false。
 

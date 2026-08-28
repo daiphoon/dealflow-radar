@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 from sqlalchemy.engine import URL, make_url
 
@@ -57,7 +57,7 @@ def _url_identity(url: URL) -> tuple[str, int, str, str]:
     )
 
 
-def _check_site_address(value: str) -> str:
+def _parse_safe_public_url(name: str, value: str) -> SplitResult:
     explicit_scheme = "://" in value
     parsed = urlsplit(value if explicit_scheme else f"https://{value}")
     if (
@@ -69,15 +69,28 @@ def _check_site_address(value: str) -> str:
         or parsed.query
         or parsed.fragment
     ):
-        raise RuntimeError("SITE_ADDRESS must be a bare HTTPS host without credentials or paths")
+        raise RuntimeError(f"{name} must be a bare HTTPS host without credentials or paths")
     local_hosts = {"localhost", "127.0.0.1", "::1"}
     allow_local = os.getenv("ALLOW_INSECURE_LOCALHOST", "false").strip().lower() == "true"
     if parsed.hostname in local_hosts and not allow_local:
-        raise RuntimeError("localhost SITE_ADDRESS requires explicit local test authorization")
+        raise RuntimeError(f"localhost {name} requires explicit local test authorization")
     if parsed.scheme == "http":
         if parsed.hostname not in local_hosts or not allow_local:
-            raise RuntimeError("SITE_ADDRESS must use HTTPS outside an explicit localhost test")
-    return parsed.scheme
+            raise RuntimeError(f"{name} must use HTTPS outside an explicit localhost test")
+    return parsed
+
+
+def _check_public_addresses(site_address: str, app_public_origin: str) -> str:
+    site = _parse_safe_public_url("SITE_ADDRESS", site_address)
+    public_origin = _parse_safe_public_url("APP_PUBLIC_ORIGIN", app_public_origin)
+    if site.hostname != public_origin.hostname:
+        raise RuntimeError("APP_PUBLIC_ORIGIN hostname must match SITE_ADDRESS")
+    if site.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        site_port = site.port or (443 if site.scheme == "https" else 80)
+        public_port = public_origin.port or (443 if public_origin.scheme == "https" else 80)
+        if site.scheme != public_origin.scheme or site_port != public_port:
+            raise RuntimeError("APP_PUBLIC_ORIGIN scheme and port must match SITE_ADDRESS")
+    return site.scheme
 
 
 def check_production_config() -> dict[str, object]:
@@ -86,7 +99,10 @@ def check_production_config() -> dict[str, object]:
         raise RuntimeError("APP_MODE must be production")
     _required("CLOUDBASE_ENV_ID")
 
-    site_scheme = _check_site_address(_required("SITE_ADDRESS"))
+    site_scheme = _check_public_addresses(
+        _required("SITE_ADDRESS"),
+        _required("APP_PUBLIC_ORIGIN"),
+    )
     for name in INITIAL_DISABLED_SWITCHES:
         if os.getenv(name, "false").strip().lower() != "false":
             raise RuntimeError(f"{name} must be false for the initial external environment")

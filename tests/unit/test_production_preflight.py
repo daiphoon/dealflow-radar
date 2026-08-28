@@ -8,6 +8,7 @@ from scripts.check_production_config import check_production_config, main
 def _set_valid_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     values = {
         "SITE_ADDRESS": "app.dealflow.test",
+        "APP_PUBLIC_ORIGIN": "https://app.dealflow.test",
         "ALLOW_INSECURE_LOCALHOST": "false",
         "APP_MODE": "production",
         "AUTH_PROVIDER": "cloudbase",
@@ -69,6 +70,7 @@ def test_production_preflight_allows_explicit_local_http_only(
 ) -> None:
     _set_valid_environment(monkeypatch)
     monkeypatch.setenv("SITE_ADDRESS", "http://localhost")
+    monkeypatch.setenv("APP_PUBLIC_ORIGIN", "http://localhost:3100")
     monkeypatch.setenv("ALLOW_INSECURE_LOCALHOST", "true")
 
     assert check_production_config()["site_scheme"] == "http"
@@ -81,6 +83,26 @@ def test_production_preflight_rejects_unapproved_localhost(
     monkeypatch.setenv("SITE_ADDRESS", "localhost")
 
     with pytest.raises(RuntimeError, match="local test authorization"):
+        check_production_config()
+
+
+def test_production_preflight_rejects_public_origin_hostname_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_valid_environment(monkeypatch)
+    monkeypatch.setenv("APP_PUBLIC_ORIGIN", "https://internal.example.net")
+
+    with pytest.raises(RuntimeError, match="must match SITE_ADDRESS"):
+        check_production_config()
+
+
+def test_production_preflight_rejects_public_origin_port_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_valid_environment(monkeypatch)
+    monkeypatch.setenv("APP_PUBLIC_ORIGIN", "https://app.dealflow.test:8443")
+
+    with pytest.raises(RuntimeError, match="scheme and port"):
         check_production_config()
 
 
