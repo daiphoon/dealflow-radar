@@ -81,6 +81,7 @@ services:
     environment:
       NODE_ENV: production
       API_BASE_URL: http://api:8000
+      APP_PUBLIC_ORIGIN: ${APP_PUBLIC_ORIGIN:?APP_PUBLIC_ORIGIN is required}
       AUTH_PROVIDER: ${AUTH_PROVIDER:-cloudbase}
       PHONE_LOGIN_ENABLED: ${PHONE_LOGIN_ENABLED:-false}
     expose:
@@ -142,6 +143,7 @@ services:
     environment:
       <<: *backend-environment
       SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS is required}
+      APP_PUBLIC_ORIGIN: ${APP_PUBLIC_ORIGIN:?APP_PUBLIC_ORIGIN is required}
       ALLOW_INSECURE_LOCALHOST: ${ALLOW_INSECURE_LOCALHOST:-false}
       DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL:?DATABASE_ADMIN_URL is required}
       BACKUP_DATABASE_URL: ${BACKUP_DATABASE_URL:?BACKUP_DATABASE_URL is required}

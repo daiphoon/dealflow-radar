@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
@@ -138,9 +139,9 @@ class _ResearchProvider(_IdentityProvider):
             "risk": (
                 "legal_compliance",
                 "licensed_risk_overview",
-                "司法与合规风险待核实线索",
-                "授权来源返回了风险记录，仍需核对详情及后续状态。",
-                "unconfirmed_lead",
+                "司法与合规授权来源记录概览",
+                "授权来源返回了相关概览记录，具体责任和影响尚未判断。",
+                "licensed_source_record",
             ),
             "intellectual_property": (
                 "product_technology",
@@ -159,9 +160,9 @@ class _ResearchProvider(_IdentityProvider):
             "executive": (
                 "governance_people",
                 "licensed_executive_overview",
-                "董监高与人员待核实线索",
-                "授权来源返回了人员风险记录，仍需核对同名与任职关系。",
-                "unconfirmed_lead",
+                "人员相关授权来源记录概览",
+                "授权来源返回了人员相关概览记录，同名、任职和影响尚未判断。",
+                "licensed_source_record",
             ),
         }
         if module_code == "operation":
@@ -175,27 +176,27 @@ class _ResearchProvider(_IdentityProvider):
                 warnings=[],
             )
         event_type, subtype, title, summary, classification = definitions[module_code]
-        is_lead = classification == "unconfirmed_lead"
+        is_source_record = classification == "licensed_source_record"
         record = TianyanchaResearchRecord(
             external_record_id=f"mock-{module_code}-record-1",
             title=title,
             summary=summary,
             event_type=event_type,
             event_subtype=subtype,
-            direction="negative" if is_lead else "neutral",
-            materiality_score=75 if is_lead else 45,
-            risk_severity="high" if is_lead else "none",
-            confidence_score=Decimal("0.800" if is_lead else "0.950"),
+            direction="unknown" if is_source_record else "neutral",
+            materiality_score=45,
+            risk_severity="none",
+            confidence_score=Decimal("0.800" if is_source_record else "0.950"),
             facts=[{"name": "来源记录数", "value": "1", "unit": "条"}],
-            uncertainties=["需人工核对"] if is_lead else [],
+            uncertainties=["具体责任和影响尚未判断"] if is_source_record else [],
             occurred_at=datetime(2026, 8, 20, 0, 0, tzinfo=UTC),
             published_on=date(2026, 8, 21),
             canonical_url="https://www.tianyancha.com/company/mock-company-001",
             evidence_excerpt=summary,
             classification=classification,
             classification_reasons=[
-                "licensed_source_risk_record_requires_review"
-                if is_lead
+                "licensed_source_record_impact_not_assessed"
+                if is_source_record
                 else "licensed_structured_routine_fact"
             ],
             evidence_detail=(
@@ -986,14 +987,19 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
     )
     assert personal_detail.status_code == other_tenant_detail.status_code == 200
     for detail in (personal_detail.json(), other_tenant_detail.json()):
-        assert len(detail["events"]) == 3
-        assert len(detail["platform_unconfirmed_leads"]) == 2
+        assert len(detail["events"]) == 5
+        assert detail["platform_unconfirmed_leads"] == []
         assert detail["private_events"] == []
         assert detail["unconfirmed_leads"] == []
         assert detail["investments"] == []
         assert "经营与公示：暂无可靠公开数据。" in detail["information_gaps"]
         assert all(event["evidence"] for event in detail["events"])
-        assert all(event["evidence"] for event in detail["platform_unconfirmed_leads"])
+        assert (
+            sum(
+                event["publication_route"] == "licensed_source_record" for event in detail["events"]
+            )
+            == 2
+        )
 
     company_base_event = next(
         event
@@ -1003,6 +1009,13 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
     detail_evidence = company_base_event["evidence"][0]
     assert detail_evidence["detail_available"] is True
     assert detail_evidence["link_kind"] == "licensed_provider"
+    with migrated_app.state.session_factory() as session:
+        stored_evidence = session.get(EventEvidence, UUID(detail_evidence["id"]))
+        assert stored_evidence is not None
+        legacy_payload = copy.deepcopy(stored_evidence.display_detail_payload)
+        legacy_payload["records"][0]["fields"].append({"label": "持股比例", "value": "2025-01-02"})
+        stored_evidence.display_detail_payload = legacy_payload
+        session.commit()
     evidence_detail = client.get(
         f"/api/v1/evidence/{detail_evidence['id']}",
         headers=PERSONAL_HEADERS,
@@ -1011,6 +1024,7 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
     assert evidence_detail.json()["company_id"] == str(company_id)
     assert evidence_detail.json()["summary_fields"] == [{"label": "登记状态", "value": "存续"}]
     assert evidence_detail.json()["records"][0]["title"] == "示例股东"
+    assert evidence_detail.json()["records"][0]["fields"] == [{"label": "持股比例", "value": "20%"}]
     with migrated_app.state.session_factory() as session:
         evidence = session.get(EventEvidence, UUID(detail_evidence["id"]))
         assert evidence is not None
@@ -1088,7 +1102,7 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
         headers=BETA_HEADERS,
     ).json()
     assert all(event["evidence"] for event in cached_detail["events"])
-    assert all(event["evidence"] for event in cached_detail["platform_unconfirmed_leads"])
+    assert cached_detail["platform_unconfirmed_leads"] == []
     cached_company_base = next(
         event
         for event in cached_detail["events"]
@@ -1239,8 +1253,8 @@ def test_failed_module_does_not_erase_prior_results_and_can_resume(
         f"/api/v1/companies/{company_id}",
         headers=PERSONAL_HEADERS,
     ).json()
-    assert len(partial_detail["events"]) == 3
-    assert len(partial_detail["platform_unconfirmed_leads"]) == 1
+    assert len(partial_detail["events"]) == 4
+    assert partial_detail["platform_unconfirmed_leads"] == []
     with migrated_app.state.session_factory() as session:
         job = session.get(CompanyResearchJob, research_job_id)
         assert job is not None
@@ -1265,5 +1279,5 @@ def test_failed_module_does_not_erase_prior_results_and_can_resume(
         f"/api/v1/companies/{company_id}",
         headers=BETA_HEADERS,
     ).json()
-    assert len(recovered_detail["events"]) == 3
-    assert len(recovered_detail["platform_unconfirmed_leads"]) == 2
+    assert len(recovered_detail["events"]) == 5
+    assert recovered_detail["platform_unconfirmed_leads"] == []

@@ -1906,13 +1906,26 @@ def get_evidence_detail(
         else:
             source_url = None
         try:
+            safe_field_values = []
+            for field in field_values:
+                if not isinstance(field, dict):
+                    continue
+                label = field.get("label")
+                value = field.get("value")
+                if label == "持股比例" and isinstance(value, str):
+                    try:
+                        date.fromisoformat(value)
+                    except ValueError:
+                        pass
+                    else:
+                        # 早期映射曾将入股日期误标为持股比例；读取时保守隐藏旧数据。
+                        continue
+                safe_field_values.append(field)
             records.append(
                 EvidenceDetailRecordOut(
                     title=str(item.get("title") or "记录"),
                     fields=[
-                        EvidenceDetailFieldOut.model_validate(field)
-                        for field in field_values
-                        if isinstance(field, dict)
+                        EvidenceDetailFieldOut.model_validate(field) for field in safe_field_values
                     ],
                     source_url=source_url,
                 )

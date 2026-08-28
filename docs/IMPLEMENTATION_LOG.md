@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-28：M6A-4 证据体验与授权来源记录语义修正
+
+- 任务：改善平台证据详情页宽度、覆盖提示和中文错误页；把天眼查风险/人员数量概览从“待核实线索”拆为可展示但不作风险结论的“授权来源记录·影响待判断”；停止把 `ftShareholding` 误标为持股比例，并保守隐藏旧快照中被误标的日期；会话过期统一使用经生产预检的公网域名跳转。
+- 关键文件：`backend/app/tianyancha.py`、`backend/app/on_demand_research.py`、`backend/app/services.py`、`frontend/app/evidence/[id]/`、`frontend/app/companies/[id]/page.tsx`、`frontend/lib/public-origin.ts`、`scripts/check_production_config.py` 及相关配置、测试和文档。
+- 实际命令：Ruff 逻辑和格式检查；定点及完整 Pytest；SQLite 迁移往返与 Schema 漂移；全新 PostgreSQL 16 迁移、受限应用账户和 RLS 回归；前端依赖审计、TypeScript、Next.js 生产构建和生产容器构建；Compose 解析与初始安全开关预检；Codex Security 工作区差异扫描。
+- 测试结果：定点测试 `50 passed`；完整离线 Pytest `258 passed, 14 skipped`；PostgreSQL RLS `11 passed, 3 skipped`；SQLite `base → 0020 → base` 与 Alembic 漂移检查通过；前端无已知高危依赖漏洞，类型检查、生产构建、生产容器和失败关闭预检通过；安全差异扫描未发现可报告漏洞。真实天眼查、付费 API、业务模型 Token、费用和自动发布均为 0。
+- 未解决阻塞：无代码阻塞。本 PR 不猜测天眼查未验证字段，因此知识产权逐条明细和真实股东持股比例留给下一个受控响应契约 PR；浏览器视觉验收待部署后由真实账号完成。
+
 ## 2026-08-27：M6A-4 授权数据明细与平台证据详情
 
 - 任务：从已有授权数据缓存投影股东、招投标、工商变更等明细，增加平台证据详情 API/页面，并纠正零记录、人员风险和天眼查首页的误导语义。

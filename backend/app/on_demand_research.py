@@ -1218,14 +1218,23 @@ def _persist_research_record(
                 Event.visibility_scope == PLATFORM_SHARED_SCOPE,
                 Event.fingerprint_version == "tyc-v1",
                 Event.event_subtype == record.event_subtype,
-                Event.publication_route.in_(["licensed_structured_fact", "unconfirmed_lead"]),
+                Event.publication_route.in_(
+                    ["licensed_structured_fact", "licensed_source_record", "unconfirmed_lead"]
+                ),
             )
             .order_by(Event.created_at)
             .limit(1)
         )
     event_created = False
     if event is None:
-        is_verified = record.classification == "verified_fact"
+        is_displayable = record.classification in {"verified_fact", "licensed_source_record"}
+        publication_route = (
+            "licensed_structured_fact"
+            if record.classification == "verified_fact"
+            else "licensed_source_record"
+            if record.classification == "licensed_source_record"
+            else "unconfirmed_lead"
+        )
         event = Event(
             company_id=company.id,
             owner_user_id=None,
@@ -1233,7 +1242,7 @@ def _persist_research_record(
             visibility_scope=PLATFORM_SHARED_SCOPE,
             event_type=record.event_type,
             event_subtype=record.event_subtype,
-            status="published" if is_verified else "candidate",
+            status="published" if is_displayable else "candidate",
             direction=record.direction,
             materiality_score=record.materiality_score,
             risk_severity=record.risk_severity,
@@ -1249,7 +1258,7 @@ def _persist_research_record(
             observed_at=result.checked_at,
             fingerprint_version="tyc-v2",
             event_fingerprint=event_fingerprint,
-            publication_route=("licensed_structured_fact" if is_verified else "unconfirmed_lead"),
+            publication_route=publication_route,
             publication_policy_version="licensed-research-display-v2",
             publication_reasons=[
                 *record.classification_reasons,
@@ -1261,9 +1270,16 @@ def _persist_research_record(
         session.flush()
         event_created = True
     else:
-        is_verified = record.classification == "verified_fact"
+        is_displayable = record.classification in {"verified_fact", "licensed_source_record"}
+        publication_route = (
+            "licensed_structured_fact"
+            if record.classification == "verified_fact"
+            else "licensed_source_record"
+            if record.classification == "licensed_source_record"
+            else "unconfirmed_lead"
+        )
         event.event_type = record.event_type
-        event.status = "published" if is_verified else "candidate"
+        event.status = "published" if is_displayable else "candidate"
         event.direction = record.direction
         event.materiality_score = record.materiality_score
         event.risk_severity = record.risk_severity
@@ -1275,7 +1291,7 @@ def _persist_research_record(
         event.observed_at = result.checked_at
         event.fingerprint_version = "tyc-v2"
         event.event_fingerprint = event_fingerprint
-        event.publication_route = "licensed_structured_fact" if is_verified else "unconfirmed_lead"
+        event.publication_route = publication_route
         event.publication_policy_version = "licensed-research-display-v2"
         event.publication_reasons = [
             *record.classification_reasons,
@@ -1297,7 +1313,9 @@ def _persist_research_record(
             Event.event_subtype == record.event_subtype,
             Event.id != event.id,
             Event.status.in_(["published", "candidate"]),
-            Event.publication_route.in_(["licensed_structured_fact", "unconfirmed_lead"]),
+            Event.publication_route.in_(
+                ["licensed_structured_fact", "licensed_source_record", "unconfirmed_lead"]
+            ),
         )
     ):
         duplicate.status = "retracted"

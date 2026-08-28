@@ -126,7 +126,7 @@ class TianyanchaResearchRecord(BaseModel):
     published_on: date | None = None
     canonical_url: str = Field(min_length=1, max_length=1000)
     evidence_excerpt: str = Field(min_length=1, max_length=2000)
-    classification: Literal["verified_fact", "unconfirmed_lead"]
+    classification: Literal["verified_fact", "licensed_source_record", "unconfirmed_lead"]
     classification_reasons: list[str] = Field(default_factory=list)
     evidence_detail: TianyanchaEvidenceDetail | None = None
 
@@ -845,7 +845,6 @@ class TianyanchaIdentityProvider:
                     (
                         ("capital", "认缴信息"),
                         ("capitalActl", "实缴信息"),
-                        ("ftShareholding", "持股比例"),
                     ),
                 )
                 if name:
@@ -1039,10 +1038,11 @@ class TianyanchaIdentityProvider:
                     break
             facts.append({"name": "风险相关概览记录数", "value": str(total_count), "unit": "条"})
             return (
-                f"授权数据源返回风险相关概览记录 {total_count} 条，具体责任、状态和影响尚待核实。",
+                f"授权数据源返回司法与合规相关概览记录 {total_count} 条，"
+                "具体责任、状态和影响尚未判断。",
                 facts,
                 TianyanchaEvidenceDetail(
-                    heading="司法与合规待核实记录概览",
+                    heading="司法与合规授权来源记录概览",
                     description="当前接口只返回分类和数量，不能作为公司存在重大风险的结论。",
                     total_records=total_count,
                     records=records,
@@ -1076,7 +1076,7 @@ class TianyanchaIdentityProvider:
             f"授权数据源返回人员相关概览记录 {total_count} 条，尚不能据此判断公司或个人存在风险。",
             facts,
             TianyanchaEvidenceDetail(
-                heading="人员相关待核实记录概览",
+                heading="人员相关授权来源记录概览",
                 description="当前接口只返回分类和数量；同名、任职关系、责任和影响均需进一步核对。",
                 total_records=total_count,
                 summary_fields=summary_fields,
@@ -1109,14 +1109,14 @@ class TianyanchaIdentityProvider:
             "history": "governance_people",
             "executive": "governance_people",
         }[module_code]
-        is_risk_lead = module_code in {"risk", "executive"}
+        is_source_overview = module_code in {"risk", "executive"}
         title = {
             "company_base": "工商与股东基础资料",
-            "risk": "司法与合规待核实记录概览",
+            "risk": "司法与合规授权来源记录概览",
             "intellectual_property": "知识产权资料",
             "operation": "招投标与经营公示资料",
             "history": "工商历史变更资料",
-            "executive": "人员相关待核实记录概览",
+            "executive": "人员相关授权来源记录概览",
         }[module_code]
         return TianyanchaResearchRecord(
             external_record_id=f"{module_code}:overview",
@@ -1124,18 +1124,22 @@ class TianyanchaIdentityProvider:
             summary=summary,
             event_type=event_type,
             event_subtype=f"licensed_{module_code}_overview",
-            direction="unknown" if is_risk_lead else "neutral",
+            direction="unknown" if is_source_overview else "neutral",
             materiality_score=45,
             risk_severity="none",
-            confidence_score=Decimal("0.900") if not is_risk_lead else Decimal("0.800"),
+            confidence_score=Decimal("0.900") if not is_source_overview else Decimal("0.800"),
             facts=facts,
-            uncertainties=(["需核对具体记录、主体身份及后续状态"] if is_risk_lead else []),
+            uncertainties=(
+                ["已取得授权来源概览，但具体记录、主体责任及影响尚未判断"]
+                if is_source_overview
+                else []
+            ),
             canonical_url=canonical_url,
             evidence_excerpt=summary[:1000],
-            classification="unconfirmed_lead" if is_risk_lead else "verified_fact",
+            classification=("licensed_source_record" if is_source_overview else "verified_fact"),
             classification_reasons=(
-                ["licensed_source_risk_record_requires_review"]
-                if is_risk_lead
+                ["licensed_source_record_impact_not_assessed"]
+                if is_source_overview
                 else ["licensed_structured_routine_fact"]
             ),
             evidence_detail=evidence_detail,

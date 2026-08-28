@@ -8,18 +8,19 @@ import {
   sessionCookieOptions,
   VERIFICATION_ID_COOKIE,
 } from "@/lib/auth-session";
+import { publicRedirectUrl } from "@/lib/public-origin";
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const returnTo = safeReturnPath(request.nextUrl.searchParams.get("next"));
   const refreshToken = request.cookies.get(REFRESH_TOKEN_COOKIE)?.value;
   if (!refreshToken) {
     return NextResponse.redirect(
-      new URL(`/login?next=${encodeURIComponent(returnTo)}`, request.url),
+      publicRedirectUrl(`/login?next=${encodeURIComponent(returnTo)}`, request.url),
     );
   }
   try {
     const tokens = await refreshAuthentication(refreshToken);
-    const response = NextResponse.redirect(new URL(returnTo, request.url));
+    const response = NextResponse.redirect(publicRedirectUrl(returnTo, request.url));
     response.cookies.set(
       ACCESS_TOKEN_COOKIE,
       tokens.access_token,
@@ -38,7 +39,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         ? "unavailable"
         : "session_expired";
     const response = NextResponse.redirect(
-      new URL(`/login?error=${reason}&next=${encodeURIComponent(returnTo)}`, request.url),
+      publicRedirectUrl(
+        `/login?error=${reason}&next=${encodeURIComponent(returnTo)}`,
+        request.url,
+      ),
     );
     response.cookies.delete(ACCESS_TOKEN_COOKIE);
     response.cookies.delete(REFRESH_TOKEN_COOKIE);

@@ -80,8 +80,16 @@ def _research_content(tool_name: str) -> dict[str, object]:
                 "holder": {
                     "total": 2,
                     "items": [
-                        {"name": "示例股东甲", "capital": "100 万元", "ftShareholding": "20%"},
-                        {"name": "示例股东乙", "capital": "50 万元", "ftShareholding": "10%"},
+                        {
+                            "name": "示例股东甲",
+                            "capital": "100 万元",
+                            "ftShareholding": "2025-01-02",
+                        },
+                        {
+                            "name": "示例股东乙",
+                            "capital": "50 万元",
+                            "ftShareholding": "2025-03-04",
+                        },
                     ],
                 }
             }
@@ -572,8 +580,8 @@ def test_six_research_modules_use_approved_tools_and_conservative_classification
         "humanName": "不应进入身份记录",
     }
     assert all(result.records for result in results.values())
-    assert results["risk"].records[0].classification == "unconfirmed_lead"
-    assert results["executive"].records[0].classification == "unconfirmed_lead"
+    assert results["risk"].records[0].classification == "licensed_source_record"
+    assert results["executive"].records[0].classification == "licensed_source_record"
     assert results["risk"].records[0].risk_severity == "none"
     assert results["executive"].records[0].direction == "unknown"
     assert results["executive"].records[0].evidence_detail is not None
@@ -586,6 +594,8 @@ def test_six_research_modules_use_approved_tools_and_conservative_classification
     )
     assert "private-phone" not in company_base_payload
     assert "private@example.invalid" not in company_base_payload
+    assert "持股比例" not in company_base_payload
+    assert "2025-01-02" not in company_base_payload
     assert results["operation"].records[0].evidence_detail is not None
     assert results["operation"].records[0].evidence_detail.records[0].source_url == (
         "https://example.gov.cn/bid/1"
