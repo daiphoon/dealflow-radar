@@ -1064,6 +1064,22 @@ def _refresh_company_snapshot(
         owner_user_id,
         owner_tenant_id,
     )
+    previous_snapshot = session.scalar(
+        select(CompanySnapshot).where(
+            CompanySnapshot.company_id == company.id,
+            CompanySnapshot.is_current.is_(True),
+            *scope_filters,
+        )
+    )
+    preserved_research_summary = {
+        key: previous_snapshot.summary[key]
+        for key in (
+            "research_modules",
+            "structured_research_state",
+            "last_change_assessment",
+        )
+        if previous_snapshot is not None and key in previous_snapshot.summary
+    }
     session.execute(
         update(CompanySnapshot)
         .where(
@@ -1123,7 +1139,11 @@ def _refresh_company_snapshot(
             data_as_of=max(event_dates, default=None),
             last_checked_at=utc_now(),
             freshness_status="fresh",
-            summary={"published_event_count": len(published_events), "highest_risk": highest_risk},
+            summary={
+                "published_event_count": len(published_events),
+                "highest_risk": highest_risk,
+                **preserved_research_summary,
+            },
             information_gaps=information_gaps,
         )
     )

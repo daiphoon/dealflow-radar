@@ -32,6 +32,7 @@ from backend.app.models import (
     UserRoleAssignment,
 )
 from backend.app.on_demand_research import run_on_demand_worker_once
+from backend.app.services import _refresh_company_snapshot
 from backend.app.tianyancha import (
     TianyanchaEvidenceDetail,
     TianyanchaEvidenceField,
@@ -118,10 +119,12 @@ class _ResearchProvider(_IdentityProvider):
         *,
         cached_modules: bool = False,
         checked_at: datetime | None = None,
+        shareholder_ratio: str = "20%",
     ) -> None:
         super().__init__()
         self.cached_modules = cached_modules
         self.checked_at = checked_at or datetime(2026, 8, 26, 10, 0, tzinfo=UTC)
+        self.shareholder_ratio = shareholder_ratio
         self.research_calls: list[str] = []
 
     def _module_result(
@@ -208,10 +211,37 @@ class _ResearchProvider(_IdentityProvider):
                     records=[
                         TianyanchaEvidenceRecord(
                             title="示例股东",
-                            fields=[TianyanchaEvidenceField(label="持股比例", value="20%")],
+                            fields=[
+                                TianyanchaEvidenceField(
+                                    label="工商登记持股比例",
+                                    value=self.shareholder_ratio,
+                                )
+                            ],
                         )
                     ],
                 )
+                if module_code == "company_base"
+                else None
+            ),
+            comparison_state=(
+                {
+                    "schema_version": "structured-research-state-v1",
+                    "module_code": "company_base",
+                    "complete": False,
+                    "total_records": 10,
+                    "fields": {
+                        "registration_status": "存续",
+                        "legal_representative": "示例法定代表人",
+                        "registered_capital": "1000 万元人民币",
+                    },
+                    "records": [
+                        {
+                            "key": "示例股东",
+                            "label": "示例股东",
+                            "fields": {"shareholding_ratio": self.shareholder_ratio},
+                        }
+                    ],
+                }
                 if module_code == "company_base"
                 else None
             ),
@@ -895,7 +925,7 @@ def test_existing_private_company_is_not_silently_promoted(
         assert session.scalar(select(func.count()).select_from(RawDocument)) == 0
 
 
-def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
+def test_investor_research_modules_separate_facts_leads_and_reuse_cache(
     client: TestClient,
     migrated_app: FastAPI,
 ) -> None:
@@ -944,7 +974,7 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
             provider,
             research_calls_enabled=True,
         ).outcome
-        for _ in range(6)
+        for _ in range(5)
     ]
 
     assert provider.research_calls == [
@@ -953,10 +983,8 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
         "intellectual_property",
         "operation",
         "history",
-        "executive",
     ]
     assert outcomes == [
-        "module_completed",
         "module_completed",
         "module_completed",
         "module_completed",
@@ -974,7 +1002,6 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
         "intellectual_property": "completed",
         "operation": "no_data",
         "history": "completed",
-        "executive": "completed",
     }
 
     personal_detail = client.get(
@@ -987,7 +1014,7 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
     )
     assert personal_detail.status_code == other_tenant_detail.status_code == 200
     for detail in (personal_detail.json(), other_tenant_detail.json()):
-        assert len(detail["events"]) == 5
+        assert len(detail["events"]) == 4
         assert detail["platform_unconfirmed_leads"] == []
         assert detail["private_events"] == []
         assert detail["unconfirmed_leads"] == []
@@ -998,7 +1025,7 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
             sum(
                 event["publication_route"] == "licensed_source_record" for event in detail["events"]
             )
-            == 2
+            == 1
         )
 
     company_base_event = next(
@@ -1024,7 +1051,9 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
     assert evidence_detail.json()["company_id"] == str(company_id)
     assert evidence_detail.json()["summary_fields"] == [{"label": "登记状态", "value": "存续"}]
     assert evidence_detail.json()["records"][0]["title"] == "示例股东"
-    assert evidence_detail.json()["records"][0]["fields"] == [{"label": "持股比例", "value": "20%"}]
+    assert evidence_detail.json()["records"][0]["fields"] == [
+        {"label": "工商登记持股比例", "value": "20%"}
+    ]
     with migrated_app.state.session_factory() as session:
         evidence = session.get(EventEvidence, UUID(detail_evidence["id"]))
         assert evidence is not None
@@ -1046,10 +1075,10 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
         job = session.get(CompanyResearchJob, research_job_id)
         assert job is not None
         assert job.status == "completed"
-        assert job.external_calls == 6
+        assert job.external_calls == 5
         assert job.input_tokens == job.output_tokens == 0
-        assert session.scalar(select(func.count()).select_from(Event)) == 6
-        assert session.scalar(select(func.count()).select_from(EventEvidence)) == 5
+        assert session.scalar(select(func.count()).select_from(Event)) == 5
+        assert session.scalar(select(func.count()).select_from(EventEvidence)) == 4
         zero_record_event = session.scalar(select(Event).where(Event.event_fingerprint == "f" * 64))
         assert zero_record_event is not None
         assert zero_record_event.status == "retracted"
@@ -1060,7 +1089,7 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
                 .select_from(RawDocument)
                 .where(RawDocument.visibility_scope == SYSTEM_RESTRICTED_SCOPE)
             )
-            == 6
+            == 5
         )
         snapshot = session.scalar(
             select(CompanySnapshot).where(
@@ -1075,8 +1104,8 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
                 select(UsageLedger).where(UsageLedger.operation == "on_demand_research_module")
             )
         )
-        assert len(research_usage) == 6
-        assert sum(row.external_calls for row in research_usage) == 6
+        assert len(research_usage) == 5
+        assert sum(row.external_calls for row in research_usage) == 5
         assert sum(row.input_tokens + row.output_tokens for row in research_usage) == 0
 
     cached_provider = _ResearchProvider(cached_modules=True)
@@ -1092,11 +1121,11 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
             cached_provider,
             research_calls_enabled=True,
         ).outcome
-        for _ in range(6)
+        for _ in range(5)
     ]
     assert cached_outcomes[-1] == "research_completed"
     assert cached_provider.external_calls == 0
-    assert cached_provider.cache_hits == 6
+    assert cached_provider.cache_hits == 5
     cached_detail = client.get(
         f"/api/v1/companies/{company_id}",
         headers=BETA_HEADERS,
@@ -1110,23 +1139,23 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
     )
     assert cached_company_base["evidence"][0]["detail_available"] is True
     with migrated_app.state.session_factory() as session:
-        assert session.scalar(select(func.count()).select_from(Event)) == 6
+        assert session.scalar(select(func.count()).select_from(Event)) == 5
         assert (
             session.scalar(
                 select(func.count())
                 .select_from(Event)
                 .where(Event.status.in_(["published", "candidate"]))
             )
-            == 5
+            == 4
         )
-        assert session.scalar(select(func.count()).select_from(EventEvidence)) == 5
+        assert session.scalar(select(func.count()).select_from(EventEvidence)) == 4
         assert (
             session.scalar(
                 select(func.count())
                 .select_from(RawDocument)
                 .where(RawDocument.visibility_scope == SYSTEM_RESTRICTED_SCOPE)
             )
-            == 6
+            == 5
         )
 
     later_provider = _ResearchProvider(checked_at=datetime(2026, 8, 27, 10, 0, tzinfo=UTC))
@@ -1136,32 +1165,126 @@ def test_six_module_research_separates_verified_facts_leads_and_reuses_cache(
     )
     assert later_refresh.status_code == 200
     assert _run_worker(migrated_app, later_provider).outcome == "research_job_queued"
-    for _ in range(6):
+    for _ in range(5):
         _run_worker(
             migrated_app,
             later_provider,
             research_calls_enabled=True,
         )
-    assert later_provider.external_calls == 6
+    assert later_provider.external_calls == 5
     with migrated_app.state.session_factory() as session:
-        assert session.scalar(select(func.count()).select_from(Event)) == 6
+        assert session.scalar(select(func.count()).select_from(Event)) == 5
         assert (
             session.scalar(
                 select(func.count())
                 .select_from(Event)
                 .where(Event.status.in_(["published", "candidate"]))
             )
-            == 5
+            == 4
         )
-        assert session.scalar(select(func.count()).select_from(EventEvidence)) == 5
+        assert session.scalar(select(func.count()).select_from(EventEvidence)) == 4
         assert (
             session.scalar(
                 select(func.count())
                 .select_from(RawDocument)
                 .where(RawDocument.visibility_scope == SYSTEM_RESTRICTED_SCOPE)
             )
-            == 6
+            == 5
         )
+
+
+def test_refresh_creates_one_evidence_backed_change_from_versioned_snapshots(
+    client: TestClient,
+    migrated_app: FastAPI,
+) -> None:
+    _enable_on_demand(migrated_app)
+    _grant_platform_admin(migrated_app)
+    baseline_provider = _ResearchProvider(shareholder_ratio="20%")
+    _, company_id, _ = _prepare_new_company_research(
+        client,
+        migrated_app,
+        baseline_provider,
+    )
+    for _ in range(5):
+        _run_worker(migrated_app, baseline_provider, research_calls_enabled=True)
+
+    baseline_detail = client.get(
+        f"/api/v1/companies/{company_id}",
+        headers=PERSONAL_HEADERS,
+    ).json()
+    assert not any(
+        event["publication_route"] == "deterministic_change" for event in baseline_detail["events"]
+    )
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, company_id)
+        assert company is not None
+        _refresh_company_snapshot(session, company, "platform_shared", None, None)
+        session.commit()
+        preserved = session.scalar(
+            select(CompanySnapshot).where(
+                CompanySnapshot.company_id == company_id,
+                CompanySnapshot.is_current.is_(True),
+            )
+        )
+        assert preserved is not None
+        assert "structured_research_state" in preserved.summary
+
+    refreshed = client.post(
+        f"/api/v1/me/company-requests/refresh/{company_id}",
+        headers=BETA_HEADERS,
+    )
+    assert refreshed.status_code == 200
+    changed_provider = _ResearchProvider(
+        checked_at=datetime(2026, 8, 27, 10, 0, tzinfo=UTC),
+        shareholder_ratio="25%",
+    )
+    assert _run_worker(migrated_app, changed_provider).outcome == "research_job_queued"
+    for _ in range(5):
+        _run_worker(migrated_app, changed_provider, research_calls_enabled=True)
+
+    for headers in (PERSONAL_HEADERS, BETA_HEADERS):
+        detail = client.get(f"/api/v1/companies/{company_id}", headers=headers).json()
+        changes = [
+            event
+            for event in detail["events"]
+            if event["publication_route"] == "deterministic_change"
+        ]
+        assert len(changes) == 1
+        assert changes[0]["title"] == "工商登记持股比例发生变化"
+        assert changes[0]["facts"][1]["value"] == "20%"
+        assert changes[0]["facts"][2]["value"] == "25%"
+        assert changes[0]["evidence"][0]["detail_available"] is True
+        assert detail["investments"] == []
+        assert detail["private_events"] == []
+
+    with migrated_app.state.session_factory() as session:
+        snapshots = list(
+            session.scalars(
+                select(CompanySnapshot)
+                .where(CompanySnapshot.company_id == company_id)
+                .order_by(CompanySnapshot.snapshot_version)
+            )
+        )
+        assert len(snapshots) == 3
+        assert (
+            snapshots[0].summary["structured_research_state"]["company_base"]["records"][0][
+                "fields"
+            ]["shareholding_ratio"]
+            == "20%"
+        )
+        assert (
+            snapshots[2].summary["structured_research_state"]["company_base"]["records"][0][
+                "fields"
+            ]["shareholding_ratio"]
+            == "25%"
+        )
+        assert snapshots[2].summary["last_change_assessment"] == {
+            "policy_version": "investor-material-change-v1",
+            "baseline_established": True,
+            "material_changes_detected": 1,
+            "material_change_events_created": 1,
+            "low_value_changes_archived": [],
+        }
 
 
 def test_cancel_during_research_keeps_current_result_and_stops_later_modules(
@@ -1244,7 +1367,7 @@ def test_failed_module_does_not_erase_prior_results_and_can_resume(
             provider,
             research_calls_enabled=True,
         )
-        for _ in range(6)
+        for _ in range(5)
     ]
 
     assert results[1].outcome == "module_failed_continuing"
@@ -1253,7 +1376,7 @@ def test_failed_module_does_not_erase_prior_results_and_can_resume(
         f"/api/v1/companies/{company_id}",
         headers=PERSONAL_HEADERS,
     ).json()
-    assert len(partial_detail["events"]) == 4
+    assert len(partial_detail["events"]) == 3
     assert partial_detail["platform_unconfirmed_leads"] == []
     with migrated_app.state.session_factory() as session:
         job = session.get(CompanyResearchJob, research_job_id)
@@ -1279,5 +1402,5 @@ def test_failed_module_does_not_erase_prior_results_and_can_resume(
         f"/api/v1/companies/{company_id}",
         headers=BETA_HEADERS,
     ).json()
-    assert len(recovered_detail["events"]) == 5
+    assert len(recovered_detail["events"]) == 4
     assert recovered_detail["platform_unconfirmed_leads"] == []
