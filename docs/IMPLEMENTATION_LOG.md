@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-29：按需研究 Worker 持久化缓存部署修复
+
+- 任务：为生产 Compose 增加默认关闭的专用按需研究 Worker，在香港单机环境将天眼查私有 Provider 缓存绑定到固定主机目录，避免一次性容器退出后丢失缓存并重复消耗 API 次数；常驻 API 不获得该缓存访问权。
+- 关键文件：`compose.production.yml`、`deploy/compose.single-host.yml`、环境变量示例、`.github/workflows/ci.yml`、`tests/unit/test_on_demand_worker_deployment.py`和本运维手册。
+- 实际命令：针对部署与缓存契约 Pytest；完整 Ruff、格式和 Pytest；SQLite `base → 0021 → base` 与 Schema 漂移；一次性 PostgreSQL 16 迁移、应用角色和 RLS 套件；前端依赖审计、TypeScript 和生产构建；生产镜像与 Compose 解析；两个相继退出的新容器共享同一私有目录完成缓存写入/重放；profile、开关隔离、缺失目录失败和文件权限检查；Codex Security 工作区差异扫描；`git diff --check`。
+- 测试结果：部署/Provider/Worker 针对性测试 13 项通过；完整 Pytest 289 项通过、16 项按预期跳过；独立 PostgreSQL RLS/API 套件 16 项通过；SQLite 和 PostgreSQL 迁移、Ruff、格式、前端类型检查、生产构建、生产镜像及 Compose 均通过，前端依赖审计为 0 个已知漏洞。首个容器写入时 `external_calls=1`、`cache_hits=0`，退出后第二个全新容器重放为 `external_calls=0`、`cache_hits=1`，缓存文件权限为 `0600`；默认 profile 不包含该 Worker，Worker 临时开关不影响 API，缓存目录缺失时安全失败。Codex Security 扫描未发现可报告问题；真实天眼查、付费 API、大模型和自动发布调用均为 0。
+- 未解决阻塞：代码无阻塞；合并后部署前需由运维以 `10001:10001`、`0700` 创建私有缓存目录并配置 `PROVIDER_CACHE_DIRECTORY`，再按受控窗口临时开启专用 Worker 开关。本 PR 不部署或修改生产数据。缓存保留期限、静态加密和文件型 Docker Secret 可作为后续独立加固，不阻塞本修复；TAC 状态因 Codex Security Access 连接器未登录而无法验证。
+
 ## 2026-08-28：M6A-4 证据体验与授权来源记录语义修正
 
 - 任务：改善平台证据详情页宽度、覆盖提示和中文错误页；把天眼查风险/人员数量概览从“待核实线索”拆为可展示但不作风险结论的“授权来源记录·影响待判断”；停止把 `ftShareholding` 误标为持股比例，并保守隐藏旧快照中被误标的日期；会话过期统一使用经生产预检的公网域名跳转。

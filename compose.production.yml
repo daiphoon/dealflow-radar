@@ -142,6 +142,37 @@ services:
     networks:
       - app
 
+  on-demand-research-worker:
+    image: ${BACKEND_IMAGE:-dealflow-radar-backend:local}
+    profiles: ["research"]
+    environment:
+      <<: *backend-environment
+      EXTERNAL_CALLS_ENABLED: ${ON_DEMAND_WORKER_EXTERNAL_CALLS_ENABLED:-false}
+      PAID_API_CALLS_ENABLED: "false"
+      AUTO_REFRESH_ENABLED: "false"
+      AUTO_PUBLISH_ENABLED: "false"
+      TRUSTED_SOURCE_CALLS_ENABLED: "false"
+      SOURCE_MONITOR_SCHEDULER_ENABLED: "false"
+      TIANYANCHA_IDENTITY_CALLS_ENABLED: ${ON_DEMAND_WORKER_IDENTITY_CALLS_ENABLED:-false}
+      TIANYANCHA_RESEARCH_CALLS_ENABLED: ${ON_DEMAND_WORKER_RESEARCH_CALLS_ENABLED:-false}
+      ON_DEMAND_RESEARCH_ENABLED: ${ON_DEMAND_WORKER_ENABLED:-false}
+      TIANYANCHA_AUTHORIZATION: ${TIANYANCHA_AUTHORIZATION:-}
+      ON_DEMAND_WORKER_USER_ID: ${ON_DEMAND_WORKER_USER_ID:-}
+      WORKER_TENANT_ID: ${WORKER_TENANT_ID:-}
+    command: ["python", "-m", "scripts.run_on_demand_research_worker", "--once"]
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - provider_cache:/app/data/private/provider_cache
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - app
+
   proxy:
     <<: *service-defaults
     image: caddy:2.10.2-alpine
@@ -245,3 +276,4 @@ networks:
 volumes:
   caddy_data:
   caddy_config:
+  provider_cache:
