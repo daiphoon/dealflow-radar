@@ -58,6 +58,17 @@ services:
       database:
         condition: service_healthy
 
+  on-demand-research-worker:
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${PROVIDER_CACHE_DIRECTORY:?PROVIDER_CACHE_DIRECTORY is required}
+        target: /app/data/private/provider_cache
+        bind:
+          create_host_path: false
+
   preflight:
     environment:
       DEPLOYMENT_PROFILE: ${DEPLOYMENT_PROFILE:-single_host}

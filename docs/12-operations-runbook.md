@@ -296,6 +296,28 @@ Worker 默认按工商与股东基础、司法与合规风险、知识产权、�
 
 当前未开通正式 VIP，PR 2 合并部署并准备最终一家具名新公司受控实测之前不得执行真实命令，也不得把 Key 写入命令历史、env 示例、Git 或日志。受控窗口结束后必须把 `TIANYANCHA_RESEARCH_CALLS_ENABLED`、`TIANYANCHA_IDENTITY_CALLS_ENABLED`、`EXTERNAL_CALLS_ENABLED` 和 `ON_DEMAND_RESEARCH_ENABLED` 恢复为 false。
 
+香港单机环境必须通过 `research` profile 的一次性 `on-demand-research-worker` 运行，不得再用未挂载缓存的临时 API 容器代替。先由主机管理员创建固定目录：
+
+```bash
+sudo install -d -o 10001 -g 10001 -m 0700 \
+  /opt/dealflow-radar/private/provider_cache
+```
+
+`deploy/single-host.env` 只长期保存 `PROVIDER_CACHE_DIRECTORY=/opt/dealflow-radar/private/provider_cache`、Worker 用户和租户 ID；四个 `ON_DEMAND_WORKER_*_ENABLED` 必须长期为 false。真实受控运行时，在不记录 Secret 的维护 shell 中读入权限受限的天眼查 Secret，只对该次容器临时开启 Worker 专用开关：
+
+```bash
+export ON_DEMAND_WORKER_ENABLED=true
+export ON_DEMAND_WORKER_EXTERNAL_CALLS_ENABLED=true
+export ON_DEMAND_WORKER_IDENTITY_CALLS_ENABLED=true
+export ON_DEMAND_WORKER_RESEARCH_CALLS_ENABLED=true
+prod --profile research run --rm on-demand-research-worker
+unset ON_DEMAND_WORKER_ENABLED ON_DEMAND_WORKER_EXTERNAL_CALLS_ENABLED \
+  ON_DEMAND_WORKER_IDENTITY_CALLS_ENABLED ON_DEMAND_WORKER_RESEARCH_CALLS_ENABLED \
+  TIANYANCHA_AUTHORIZATION
+```
+
+上述窗口中不得执行会展开容器环境的 `docker compose config`，也不得使用 shell 追踪模式。Worker 的根文件系统只读，只有 `/app/data/private/provider_cache` 映射到固定主机目录后可写；常驻 API 不挂载也不读取该缓存。容器退出后再次运行必须复用同一目录，相同且未过期的供应商请求应记为缓存命中，新增外部调用为 0。`create_host_path=false` 会在目录缺失时直接失败，防止 Docker 静默创建 root 所有且无法安全复用的目录。
+
 取消排队请求立即停止；个人接口只取消本人申请，平台 Worker 确认已无其他活跃请求后才取消全局任务。身份或模块查询正在传输时只记录取消，完成当前调用并保存通过校验的结果后不再开始下一模块。零外部调用只退当月额度，日提交次数不退，同主体仍保持 24 小时冷却。个人页面不显示精确外部调用、缓存命中或私有档案冲突原因；平台管理页保留诊断信息。服务重启、退出登录或断线不能删除任务；恢复后先查看申请、五个默认模块状态、租约、调用台账和全局活动任务唯一约束，不得手工重复建任务。若已存在同信用代码的租户私有公司，任务应停在管理员处理状态，不能为通过测试直接改成共享公司。Worker 每次提交或回滚事务后必须重新设置 RLS 上下文。
 ### 投资者重要变化解读 Agent V1（默认关闭）
 
