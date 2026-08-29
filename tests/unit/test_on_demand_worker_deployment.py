@@ -63,12 +63,22 @@ def test_single_host_research_worker_uses_private_persistent_cache_mount() -> No
     assert worker["environment"]["AUTO_REFRESH_ENABLED"] == "false"
     assert worker["environment"]["AUTO_PUBLISH_ENABLED"] == "false"
     assert worker["environment"]["TIANYANCHA_AUTHORIZATION"] == ""
-    assert worker["volumes"] == [
-        {
-            "type": "bind",
-            "source": "/opt/dealflow-radar/private/provider_cache",
-            "target": "/app/data/private/provider_cache",
-            "bind": {"create_host_path": False},
-        }
-    ]
+    assert len(worker["volumes"]) == 1
+    cache_mount = worker["volumes"][0]
+    assert cache_mount["type"] == "bind"
+    assert cache_mount["source"] == "/opt/dealflow-radar/private/provider_cache"
+    assert cache_mount["target"] == "/app/data/private/provider_cache"
+
+    # Older Compose releases omit an explicit default false from rendered JSON.
+    # Keep the source-level assertion here; CI also proves fail-closed behavior
+    # by attempting to start the worker with a missing host directory.
+    single_host_override = (REPOSITORY_ROOT / "deploy" / "compose.single-host.yml").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        """        bind:
+          create_host_path: false
+"""
+        in single_host_override
+    )
     assert not api.get("volumes")
