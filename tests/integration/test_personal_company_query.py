@@ -326,6 +326,78 @@ def test_no_fund_user_searches_shared_company_without_creating_or_leaking(
         assert session.scalar(select(func.sum(UsageLedger.output_tokens))) == 0
 
 
+def test_demo_evidence_detail_renders_change_and_hides_unsupported_payloads(
+    client: TestClient,
+    migrated_app: FastAPI,
+) -> None:
+    event_id = _ingest_and_publish_shared_event(client, migrated_app)
+    observed_at = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+    with migrated_app.state.session_factory() as session:
+        evidence = session.scalar(select(EventEvidence).where(EventEvidence.event_id == event_id))
+        assert evidence is not None
+        evidence.display_source_name = "虚构 Demo 证据"
+        evidence.display_source_quality = "A"
+        evidence.display_title = "股东持股比例变化"
+        evidence.display_canonical_url = "https://example.invalid/demo-change"
+        evidence.display_observed_at = observed_at
+        evidence.display_license_status = "synthetic_demo"
+        evidence.display_allowed = True
+        evidence.display_detail_payload = {
+            "schema_version": "demo-evidence-v1",
+            "synthetic_demo": True,
+            "before": "20%",
+            "after": "25%",
+        }
+        session.commit()
+        evidence_id = evidence.id
+
+    company_detail = client.get(
+        f"/api/v1/companies/{SHARED_COMPANY_ID}",
+        headers=NO_ACCESS_HEADERS,
+    )
+    assert company_detail.status_code == 200
+    demo_evidence = company_detail.json()["events"][0]["evidence"][0]
+    assert demo_evidence["id"] == str(evidence_id)
+    assert demo_evidence["detail_available"] is True
+
+    detail = client.get(
+        f"/api/v1/evidence/{evidence_id}",
+        headers=NO_ACCESS_HEADERS,
+    )
+    assert detail.status_code == 200
+    assert detail.json()["summary_fields"] == [
+        {"label": "变化前", "value": "20%"},
+        {"label": "变化后", "value": "25%"},
+    ]
+    assert detail.json()["records"] == []
+    assert detail.json()["provider_link_available"] is False
+
+    with migrated_app.state.session_factory() as session:
+        evidence = session.get(EventEvidence, evidence_id)
+        assert evidence is not None
+        evidence.display_detail_payload = {
+            "schema_version": "unsupported-evidence-v1",
+            "synthetic_demo": True,
+            "before": "20%",
+            "after": "25%",
+        }
+        session.commit()
+
+    unsupported_company_detail = client.get(
+        f"/api/v1/companies/{SHARED_COMPANY_ID}",
+        headers=NO_ACCESS_HEADERS,
+    )
+    unsupported_evidence = unsupported_company_detail.json()["events"][0]["evidence"][0]
+    assert unsupported_evidence["detail_available"] is False
+    assert (
+        client.get(
+            f"/api/v1/evidence/{evidence_id}",
+            headers=NO_ACCESS_HEADERS,
+        ).status_code
+        == 404
+    )
+
+
 def test_company_suggestions_are_bounded_scoped_and_read_only(
     client: TestClient,
     migrated_app: FastAPI,
