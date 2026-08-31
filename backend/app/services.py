@@ -94,6 +94,8 @@ from backend.app.schemas import (
 
 MANUAL_EVENT_FINGERPRINT_VERSION = "manual-v1"
 SHARING_POLICY_VERSION = "controlled-promotion-v1"
+LICENSED_EVIDENCE_DETAIL_SCHEMA = "licensed-structured-evidence-v1"
+DEMO_EVIDENCE_DETAIL_SCHEMA = "demo-evidence-v1"
 
 
 class AccessDeniedError(Exception):
@@ -1678,6 +1680,47 @@ def _link_kind(
     return "licensed_provider" if license_status == "permission_confirmed" else "public_source"
 
 
+def _evidence_detail_schema(
+    payload: object,
+    license_status: str | None,
+) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    schema_version = payload.get("schema_version")
+    if schema_version == LICENSED_EVIDENCE_DETAIL_SCHEMA:
+        summary_values = payload.get("summary_fields", [])
+        record_values = payload.get("records", [])
+        if not isinstance(summary_values, list) or not isinstance(record_values, list):
+            return None
+        try:
+            for field in summary_values:
+                if isinstance(field, dict):
+                    EvidenceDetailFieldOut.model_validate(field)
+            for record in record_values:
+                if not isinstance(record, dict):
+                    continue
+                field_values = record.get("fields", [])
+                if not isinstance(field_values, list):
+                    return None
+                for field in field_values:
+                    if isinstance(field, dict):
+                        EvidenceDetailFieldOut.model_validate(field)
+        except ValueError:
+            return None
+        return schema_version
+    if (
+        schema_version == DEMO_EVIDENCE_DETAIL_SCHEMA
+        and license_status == "synthetic_demo"
+        and payload.get("synthetic_demo") is True
+        and isinstance(payload.get("before"), str)
+        and bool(payload["before"].strip())
+        and isinstance(payload.get("after"), str)
+        and bool(payload["after"].strip())
+    ):
+        return schema_version
+    return None
+
+
 def _event_out(
     session: Session,
     event: Event,
@@ -1760,7 +1803,11 @@ def _event_out(
                         evidence.visibility_scope == PLATFORM_SHARED_SCOPE
                         and evidence.owner_user_id is None
                         and evidence.owner_tenant_id is None
-                        and bool(evidence.display_detail_payload)
+                        and _evidence_detail_schema(
+                            evidence.display_detail_payload,
+                            evidence.display_license_status,
+                        )
+                        is not None
                     ),
                 )
             )
@@ -1881,7 +1928,7 @@ def get_evidence_detail(
             EventEvidence.display_allowed.is_(True),
         )
     )
-    if evidence is None or not isinstance(evidence.display_detail_payload, dict):
+    if evidence is None:
         raise NotFoundError("evidence detail not found")
     event = session.scalar(
         select(Event).where(
@@ -1905,9 +1952,17 @@ def get_evidence_detail(
     if company is None:
         raise NotFoundError("evidence detail not found")
     payload = evidence.display_detail_payload
-    if payload.get("schema_version") != "licensed-structured-evidence-v1":
+    detail_schema = _evidence_detail_schema(payload, evidence.display_license_status)
+    if detail_schema is None or not isinstance(payload, dict):
         raise NotFoundError("evidence detail not found")
-    summary_values = payload.get("summary_fields", [])
+    summary_values = (
+        [
+            {"label": "变化前", "value": payload["before"]},
+            {"label": "变化后", "value": payload["after"]},
+        ]
+        if detail_schema == DEMO_EVIDENCE_DETAIL_SCHEMA
+        else payload.get("summary_fields", [])
+    )
     if not isinstance(summary_values, list):
         raise NotFoundError("evidence detail not found")
     try:
@@ -1919,7 +1974,9 @@ def get_evidence_detail(
     except ValueError as exc:
         raise NotFoundError("evidence detail not found") from exc
     records = []
-    record_values = payload.get("records", [])
+    record_values = (
+        [] if detail_schema == DEMO_EVIDENCE_DETAIL_SCHEMA else payload.get("records", [])
+    )
     if not isinstance(record_values, list):
         raise NotFoundError("evidence detail not found")
     for item in record_values:
