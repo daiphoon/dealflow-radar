@@ -42,6 +42,7 @@ from backend.app.services import platform_shared_event_out, user_has_role
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _REPORT_VERSION = "personal-company-v2"
+_FIRST_VIEW_LOOKBACK_DAYS = 90
 
 _EVENT_TYPE_LABELS = {
     "financial_operation": "财务与经营",
@@ -1108,12 +1109,18 @@ def record_personal_company_view(
     first_view = state is None
     previous_viewed_at = state.last_viewed_at if state is not None else None
     unseen_events = _unseen_shared_events(session, user, company_id)
-    event_outputs = (
-        []
-        if first_view
-        else [platform_shared_event_out(session, event, user) for event in unseen_events]
-    )
     viewed_at = utc_now()
+    window_start_at = previous_viewed_at or viewed_at - timedelta(days=_FIRST_VIEW_LOOKBACK_DAYS)
+    visible_events = unseen_events
+    if first_view:
+        visible_events = [
+            event
+            for event in unseen_events
+            if event.publication_route == "deterministic_change"
+            and _aware_utc(event.occurred_at or event.published_at or event.observed_at)
+            >= _aware_utc(window_start_at)
+        ]
+    event_outputs = [platform_shared_event_out(session, event, user) for event in visible_events]
     session.add_all(
         [
             PersonalEventViewReceipt(
@@ -1138,6 +1145,7 @@ def record_personal_company_view(
         company_id=company_id,
         first_view=first_view,
         previous_viewed_at=previous_viewed_at,
+        window_start_at=window_start_at,
         viewed_at=viewed_at,
         new_events=event_outputs,
     )

@@ -313,6 +313,7 @@ class PersonalCompanyViewOut(BaseModel):
     company_id: UUID
     first_view: bool
     previous_viewed_at: datetime | None
+    window_start_at: datetime
     viewed_at: datetime
     new_events: list[EventOut]
 

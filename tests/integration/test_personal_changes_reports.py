@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from backend.app import personal_features
 from backend.app.config import PersonalEntitlementPolicy
 from backend.app.demo import (
     ALPHA_TENANT_ID,
@@ -56,9 +57,16 @@ def _set_report_limit(app: FastAPI, limit: int) -> None:
     )
 
 
-def _add_shared_event(app: FastAPI, suffix: str) -> UUID:
+def _add_shared_event(
+    app: FastAPI,
+    suffix: str,
+    *,
+    observed_at: datetime | None = None,
+    publication_route: str = "manual_shared_promotion",
+) -> UUID:
     with app.state.session_factory() as session:
-        observed_at = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+        observed_at = observed_at or datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+        is_material_change = publication_route == "deterministic_change"
         source = Source(
             id=uuid4(),
             code=f"personal-report-{suffix}",
@@ -103,17 +111,33 @@ def _add_shared_event(app: FastAPI, suffix: str) -> UUID:
             visibility_scope=PLATFORM_SHARED_SCOPE,
             owner_user_id=None,
             owner_tenant_id=None,
-            event_type="product_technology",
-            event_subtype="verified_milestone",
+            event_type="financing_cap_table" if is_material_change else "product_technology",
+            event_subtype="ownership_ratio_change" if is_material_change else "verified_milestone",
             status="published",
             direction="positive",
-            materiality_score=55,
+            materiality_score=80 if is_material_change else 55,
             risk_severity="low",
             confidence_score=Decimal("0.910"),
             source_quality="A",
-            title=f"已审核共享进展 {suffix}",
-            summary=f"公开证据支持公司完成一项可复核进展 {suffix}。",
-            facts=[{"name": "milestone", "value": suffix, "unit": None}],
+            title=(
+                f"工商登记持股比例发生变化 {suffix}"
+                if is_material_change
+                else f"已审核共享进展 {suffix}"
+            ),
+            summary=(
+                f"工商登记持股比例由20%变为25% {suffix}。"
+                if is_material_change
+                else f"公开证据支持公司完成一项可复核进展 {suffix}。"
+            ),
+            facts=(
+                [
+                    {"name": "变化字段", "value": "工商登记持股比例", "unit": None},
+                    {"name": "变更前", "value": "20%", "unit": None},
+                    {"name": "变更后", "value": "25%", "unit": None},
+                ]
+                if is_material_change
+                else [{"name": "milestone", "value": suffix, "unit": None}]
+            ),
             uncertainties=["未披露金额"],
             occurred_at=observed_at,
             published_at=observed_at,
@@ -121,9 +145,15 @@ def _add_shared_event(app: FastAPI, suffix: str) -> UUID:
             observed_at=observed_at,
             fingerprint_version="personal-report-v1",
             event_fingerprint=_sha256(f"shared-event:{suffix}"),
-            publication_route="manual_shared_promotion",
-            publication_policy_version="controlled-sharing-v1",
-            publication_reasons=["platform_admin_approved"],
+            publication_route=publication_route,
+            publication_policy_version=(
+                "investor-material-change-v1" if is_material_change else "controlled-sharing-v1"
+            ),
+            publication_reasons=(
+                ["deterministic_snapshot_change"]
+                if is_material_change
+                else ["platform_admin_approved"]
+            ),
         )
         session.add(event)
         session.flush()
@@ -239,6 +269,54 @@ def test_personal_change_receipts_are_independent_and_exclude_private_candidates
         assert {baseline_event_id, new_event_id, shared_after_both} <= receipts
         assert private_event_id not in receipts
         assert session.scalar(select(func.count()).select_from(PersonalCompanyViewState)) == 2
+
+
+def test_first_personal_view_returns_only_recent_material_changes(
+    client: TestClient,
+    migrated_app: FastAPI,
+    monkeypatch,
+) -> None:
+    viewed_at = datetime(2026, 8, 31, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr(personal_features, "utc_now", lambda: viewed_at)
+    recent_change_id = _add_shared_event(
+        migrated_app,
+        "recent-material-change",
+        observed_at=viewed_at - timedelta(days=30),
+        publication_route="deterministic_change",
+    )
+    old_change_id = _add_shared_event(
+        migrated_app,
+        "old-material-change",
+        observed_at=viewed_at - timedelta(days=120),
+        publication_route="deterministic_change",
+    )
+    baseline_event_id = _add_shared_event(
+        migrated_app,
+        "recent-baseline",
+        observed_at=viewed_at - timedelta(days=10),
+    )
+
+    response = client.post(
+        f"/api/v1/me/companies/{SHARED_COMPANY_ID}/view",
+        headers=PERSONAL_HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["first_view"] is True
+    assert payload["previous_viewed_at"] is None
+    assert datetime.fromisoformat(payload["window_start_at"]) == viewed_at - timedelta(days=90)
+    assert [item["id"] for item in payload["new_events"]] == [str(recent_change_id)]
+
+    with migrated_app.state.session_factory() as session:
+        receipts = set(
+            session.scalars(
+                select(PersonalEventViewReceipt.event_id).where(
+                    PersonalEventViewReceipt.owner_user_id == NO_ACCESS_USER_ID
+                )
+            )
+        )
+        assert {recent_change_id, old_change_id, baseline_event_id} <= receipts
 
 
 def test_fixed_report_is_idempotent_private_and_server_limited(

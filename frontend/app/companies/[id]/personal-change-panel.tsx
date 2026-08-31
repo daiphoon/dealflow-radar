@@ -1,27 +1,209 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { loadPersonalCompanyChanges } from "@/app/personal-actions";
-import type { PersonalCompanyView } from "@/lib/api";
+import type { Event, PersonalCompanyView } from "@/lib/api";
+
+const FIRST_VIEW_LOOKBACK_DAYS = 90;
+const PRIMARY_CHANGE_LIMIT = 3;
 
 const riskLabels: Record<string, string> = {
-  none: "无显著风险",
+  none: "暂无显著风险",
   low: "低风险",
-  moderate: "中等风险",
+  moderate: "需要留意",
   high: "高风险",
   critical: "严重风险",
 };
 
 function formatDate(value: string | null): string {
-  if (!value) return "未知";
+  if (!value) return "日期未知";
   return new Intl.DateTimeFormat("zh-CN", {
     dateStyle: "medium",
     timeZone: "Asia/Shanghai",
   }).format(new Date(value));
 }
 
-export function PersonalChangePanel({ companyId }: { companyId: string }) {
+function eventDate(event: Event): string {
+  return event.occurred_at ?? event.published_at ?? event.published_on ?? event.observed_at;
+}
+
+function isMaterialChange(event: Event): boolean {
+  return event.publication_route === "deterministic_change";
+}
+
+function withinDays(event: Event, reference: string, days: number): boolean {
+  const eventTime = new Date(eventDate(event)).getTime();
+  const referenceTime = new Date(reference).getTime();
+  return Number.isFinite(eventTime) && eventTime >= referenceTime - days * 24 * 60 * 60 * 1000;
+}
+
+function importanceLabel(score: number): string {
+  if (score >= 75) return "非常重要";
+  if (score >= 60) return "重要";
+  return "值得留意";
+}
+
+function confidenceLabel(score: string): string {
+  const value = Number(score);
+  if (value >= 0.9) return "证据可信度较高";
+  if (value >= 0.75) return "证据可信度中等";
+  return "仍需结合证据判断";
+}
+
+function sortChanges(events: Event[]): Event[] {
+  return [...events].sort((left, right) => {
+    const materiality = right.materiality_score - left.materiality_score;
+    if (materiality !== 0) return materiality;
+    return new Date(eventDate(right)).getTime() - new Date(eventDate(left)).getTime();
+  });
+}
+
+function uniqueChanges(events: Event[]): Event[] {
+  const seen = new Set<string>();
+  return events.filter((event) => {
+    if (seen.has(event.id)) return false;
+    seen.add(event.id);
+    return true;
+  });
+}
+
+function InvestorChangeCard({ event }: { event: Event }) {
+  const changeField = event.facts.find((fact) => fact.name === "变化字段")?.value;
+  const beforeValue = event.facts.find((fact) => fact.name === "变更前")?.value;
+  const afterValue = event.facts.find((fact) => fact.name === "变更后")?.value;
+  const headline = event.analysis?.headline ?? event.title;
+  const investorMeaning = event.analysis?.why_it_matters ?? event.summary;
+
+  return (
+    <article className="investor-change-card" id={`change-${event.id}`}>
+      <div className="investor-change-meta">
+        <span>{importanceLabel(event.materiality_score)}</span>
+        <time>{formatDate(eventDate(event))}</time>
+      </div>
+      <h3>{headline}</h3>
+      <section className="investor-impact-summary">
+        <strong>这对股东可能意味着什么</strong>
+        <p>{investorMeaning}</p>
+      </section>
+      <div className="investor-change-signals" aria-label="变化判断依据">
+        <span>{confidenceLabel(event.confidence_score)}</span>
+        <span>{riskLabels[event.risk_severity] ?? "风险影响待判断"}</span>
+        <span>{event.evidence.length} 条证据</span>
+      </div>
+
+      <details className="investor-change-details">
+        <summary>查看变化详情与证据</summary>
+        <div className="investor-change-detail-body">
+          <div>
+            <strong>发生了什么变化</strong>
+            <p>{event.analysis?.what_changed ?? event.summary}</p>
+          </div>
+          {changeField && beforeValue && afterValue ? (
+            <div className="change-comparison" aria-label={`${changeField}前后变化`}>
+              <span>{changeField}</span>
+              <div>
+                <p>
+                  <small>变更前</small>
+                  <strong>{beforeValue}</strong>
+                </p>
+                <span aria-hidden="true">→</span>
+                <p>
+                  <small>变更后</small>
+                  <strong>{afterValue}</strong>
+                </p>
+              </div>
+            </div>
+          ) : null}
+          {event.analysis?.potential_impacts.length ? (
+            <div>
+              <strong>可能影响</strong>
+              <ul>
+                {event.analysis.potential_impacts.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {event.analysis?.uncertainties.length ? (
+            <div>
+              <strong>目前还不能确定</strong>
+              <ul>
+                {event.analysis.uncertainties.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : event.uncertainties.length ? (
+            <div>
+              <strong>目前还不能确定</strong>
+              <ul>
+                {event.uncertainties.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {event.analysis?.follow_up_items.length ? (
+            <div>
+              <strong>后续值得关注</strong>
+              <ul>
+                {event.analysis.follow_up_items.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <div className="investor-evidence-list">
+            <strong>证据来源</strong>
+            {event.evidence.map((evidence) => {
+              const sourceUrl = evidence.final_url ?? evidence.canonical_url;
+              return (
+                <div className="investor-evidence-item" key={evidence.id}>
+                  <div>
+                    <span>{evidence.source_name}</span>
+                    <small>{evidence.title}</small>
+                  </div>
+                  <div>
+                    {evidence.detail_available ? (
+                      <Link href={`/evidence/${encodeURIComponent(evidence.id)}`}>
+                        查看平台证据详情
+                      </Link>
+                    ) : null}
+                    {evidence.link_display_allowed ? (
+                      <a href={sourceUrl} rel="noreferrer" target="_blank">
+                        查看原始来源 ↗
+                      </a>
+                    ) : (
+                      <span className="muted">原始链接暂不可直接开放</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {event.analysis ? (
+            <p className="analysis-disclaimer">{event.analysis.disclaimer}</p>
+          ) : (
+            <p className="analysis-pending">
+              变化事实已经程序核验；辅助解读尚未生成，不影响查看变化和证据。
+            </p>
+          )}
+        </div>
+      </details>
+    </article>
+  );
+}
+
+export function PersonalChangePanel({
+  companyId,
+  materialChanges,
+}: {
+  companyId: string;
+  materialChanges: Event[];
+}) {
   const requestedCompanyId = useRef<string | null>(null);
   const [view, setView] = useState<PersonalCompanyView | null>(null);
   const [failed, setFailed] = useState(false);
@@ -40,74 +222,103 @@ export function PersonalChangePanel({ companyId }: { companyId: string }) {
       });
   }, [companyId]);
 
+  const presentation = useMemo(() => {
+    const allChanges = sortChanges(materialChanges.filter(isMaterialChange));
+    if (!view) {
+      return {
+        eyebrow: "投资者首先查看",
+        heading: "近期重要变化",
+        context: failed ? "个人查看进度暂不可用" : "正在读取个人查看进度…",
+        intro: failed
+          ? "以下显示最近已核实的重要变化；本次没有更新个人查看水位。"
+          : "正在确定首次查看或自上次查看以来的时间范围。",
+        active: failed ? allChanges : [],
+        additional: failed ? allChanges.slice(PRIMARY_CHANGE_LIMIT) : [],
+        newReferenceCount: 0,
+        loading: !failed,
+      };
+    }
+
+    const newMaterialChanges = sortChanges(view.new_events.filter(isMaterialChange));
+    const recentNinetyDayChanges = allChanges.filter((event) =>
+      withinDays(event, view.viewed_at, FIRST_VIEW_LOOKBACK_DAYS),
+    );
+    const active = view.first_view
+      ? newMaterialChanges
+      : newMaterialChanges.length > 0
+        ? newMaterialChanges
+        : recentNinetyDayChanges;
+    const activeIds = new Set(active.map((event) => event.id));
+    const additional = uniqueChanges([
+      ...active.slice(PRIMARY_CHANGE_LIMIT),
+      ...allChanges.filter((event) => !activeIds.has(event.id)),
+    ]);
+
+    return {
+      eyebrow: "投资者首先查看",
+      heading: view.first_view
+        ? `近 ${FIRST_VIEW_LOOKBACK_DAYS} 天的重要变化`
+        : newMaterialChanges.length > 0
+          ? "自上次查看以来的重要变化"
+          : `近 ${FIRST_VIEW_LOOKBACK_DAYS} 天的重要变化回顾`,
+      context: view.first_view
+        ? "首次查看"
+        : `上次查看 ${formatDate(view.previous_viewed_at)}`,
+      intro:
+        !view.first_view && newMaterialChanges.length === 0
+          ? "自上次查看以来没有新的重要变化；以下保留最近的重要变化，方便回顾。"
+          : "只呈现已经发生变化、并可能影响投资判断的内容。",
+      active,
+      additional,
+      newReferenceCount: view.new_events.filter((event) => !isMaterialChange(event)).length,
+      loading: false,
+    };
+  }, [failed, materialChanges, view]);
+
+  const primaryChanges = presentation.active.slice(0, PRIMARY_CHANGE_LIMIT);
+
   return (
-    <section className="panel">
-      <div className="panel-heading">
+    <section className="panel investor-priority-panel">
+      <div className="panel-heading investor-priority-heading">
         <div>
-          <p className="eyebrow">个人回访层</p>
-          <h2>自上次查看以来的新变化与事实</h2>
+          <p className="eyebrow">{presentation.eyebrow}</p>
+          <h2>{presentation.heading}</h2>
         </div>
-        <span className="muted">
-          {view
-            ? view.first_view
-              ? "首次查看"
-              : `上次查看 ${formatDate(view.previous_viewed_at)}`
-            : "正在记录本次查看…"}
-        </span>
+        <span className="status status-fresh">{presentation.context}</span>
       </div>
-      {failed ? (
-        <div className="empty-state">暂时无法读取个人查看水位；公司共享详情不受影响。</div>
-      ) : !view ? (
-        <div className="empty-state">正在检查新增的已审核共享事件…</div>
-      ) : view.first_view ? (
+      <p className="section-intro">{presentation.intro}</p>
+
+      {presentation.loading ? (
+        <div className="empty-state">正在整理当前账户需要优先查看的重要变化…</div>
+      ) : primaryChanges.length === 0 ? (
         <div className="empty-state">
-          已建立当前账户的查看基线；以后新增并通过审核的平台共享事件会显示在这里。
+          当前时间范围内暂无达到展示门槛的重要变化。首次资料只用于建立比较基线，不代表公司经营没有变化。
         </div>
-      ) : view.new_events.length === 0 ? (
-        <div className="empty-state">自上次查看以来暂无新增的已审核共享事件。</div>
       ) : (
-        <div className="timeline">
-          {view.new_events.map((event) => {
-            const eventDate = event.occurred_at ?? event.published_at ?? event.published_on;
-            return (
-              <article className="event-card" key={event.id}>
-                <div className="event-meta">
-                  <span>{formatDate(eventDate)}</span>
-                  <span className={`risk risk-${event.risk_severity}`}>
-                    {riskLabels[event.risk_severity] ?? event.risk_severity}
-                  </span>
-                </div>
-                <h3>{event.title}</h3>
-                <p>{event.summary}</p>
-                {event.analysis ? (
-                  <div className="personal-change-analysis">
-                    <strong>为什么值得关注</strong>
-                    <p>{event.analysis.why_it_matters}</p>
-                    <small>{event.analysis.disclaimer}</small>
-                  </div>
-                ) : null}
-                {event.evidence.map((evidence) =>
-                  evidence.link_display_allowed ? (
-                    <a
-                      className="source-link"
-                      href={evidence.final_url ?? evidence.canonical_url}
-                      key={evidence.id}
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      {evidence.source_name} ↗
-                    </a>
-                  ) : (
-                    <span className="muted" key={evidence.id}>
-                      {evidence.source_name} · 来源链接不可开放
-                    </span>
-                  ),
-                )}
-              </article>
-            );
-          })}
+        <div className="investor-change-list">
+          {primaryChanges.map((event) => (
+            <InvestorChangeCard event={event} key={event.id} />
+          ))}
         </div>
       )}
+
+      {presentation.additional.length > 0 ? (
+        <details className="older-change-list">
+          <summary>查看其余 {presentation.additional.length} 条较早或次要变化</summary>
+          <div className="investor-change-list">
+            {presentation.additional.map((event) => (
+              <InvestorChangeCard event={event} key={event.id} />
+            ))}
+          </div>
+        </details>
+      ) : null}
+
+      {presentation.newReferenceCount > 0 ? (
+        <p className="secondary-update-note">
+          另有 {presentation.newReferenceCount} 条新基础资料已归入页面下方的“公司资料与历史记录”。
+          <a href="#company-records">前往查看</a>
+        </p>
+      ) : null}
     </section>
   );
 }
