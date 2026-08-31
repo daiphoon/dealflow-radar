@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-31：投资者优先公司详情页
+
+- 任务：将公司详情页调整为“工商身份 → 近期重要变化 → 待核实线索 → 机构私有叠加 → 基础资料”的投资者阅读顺序；首次查看只突出近 90 天重要变化，复访优先显示自上次查看以来的新变化，首屏最多展开 3 条；先展示通俗的股东影响，再按需展开变化细节、不确定性和证据。不新增数据库迁移，不改变既有公私数据权限。
+- 关键文件：`backend/app/personal_features.py`、`backend/app/schemas.py`、`frontend/app/companies/[id]/page.tsx`、`frontend/app/companies/[id]/personal-change-panel.tsx`、`frontend/app/globals.css`、`frontend/lib/api.ts`、`tests/integration/test_personal_changes_reports.py`、`docs/DECISIONS/ADR-0017-investor-material-change-layer.md`、`docs/08-api-design.md`、`docs/09-ui-wireframes.md`、`docs/11-test-strategy.md`。
+- 实际命令：个人变化针对性 Pytest；完整 Ruff、格式和 Pytest；前端依赖审计、TypeScript 和 Next.js 生产构建；隔离 SQLite 虚构数据下的首次查看、复访、4 条变化折叠、基础资料分组、私有字段负向和 390px 窄屏浏览器验收；`git diff --check`。
+- 测试结果：针对性测试 3 项通过；完整 Pytest 290 项通过、16 项按预期跳过，只有既有 Starlette/httpx 上游弃用警告；Ruff、格式、TypeScript、生产构建和依赖审计通过，已知高危依赖为 0。浏览器确认首次显示近 90 天、复访明确提示无新变化、首屏只展开 3 条且其余折叠、证据和前后值可展开、基础资料默认收起、个人页面不显示机构私有字段；390px 无横向溢出，控制台无警告或错误。临时数据库和服务已清理，真实天眼查、付费 API、真实模型 Token、费用和自动发布均为 0。
+- 未解决阻塞：无代码阻塞。页面价值仍取决于已有结构化变化和证据质量；本任务不扩大采集范围、不调整 Agent 评分标准、不部署生产。
+
 ## 2026-08-30：PR #37 生产部署与 M6A 页面价值收口
 
 - 日期：2026-08-30

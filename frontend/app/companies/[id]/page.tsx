@@ -329,6 +329,18 @@ export default async function CompanyDetailPage({
     const baselineEvents = company.events.filter(
       (event) => event.publication_route !== "deterministic_change",
     );
+    const baselineGroups = Object.entries(
+      baselineEvents.reduce<Record<string, Event[]>>((groups, event) => {
+        (groups[event.event_type] ??= []).push(event);
+        return groups;
+      }, {}),
+    ).sort(([leftType], [rightType]) => {
+      const order = Object.keys(eventTypeLabels);
+      const leftIndex = order.indexOf(leftType);
+      const rightIndex = order.indexOf(rightType);
+      return (leftIndex === -1 ? order.length : leftIndex) -
+        (rightIndex === -1 ? order.length : rightIndex);
+    });
     const feedback = result
       ? result === "followed"
         ? "已加入个人关注。关注仅用于整理，不改变公司或私有数据权限。"
@@ -413,6 +425,33 @@ export default async function CompanyDetailPage({
           </div>
         </section>
 
+        {company.is_platform_shared ? (
+          <PersonalChangePanel companyId={company.id} materialChanges={materialChanges} />
+        ) : null}
+
+        {company.platform_unconfirmed_leads.length > 0 ? (
+          <section className="panel attention-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">单独隔离，不与已核实事实混在一起</p>
+                <h2>需要留意的待核实线索</h2>
+              </div>
+              <span className="muted">{company.platform_unconfirmed_leads.length} 条线索</span>
+            </div>
+            <p className="privacy-note">
+              这些条目可能值得留意，但证据尚不足，不代表平台已经确认责任、影响或投资结论。
+            </p>
+            <details className="lead-list">
+              <summary>查看待核实线索</summary>
+              <div className="timeline">
+                {company.platform_unconfirmed_leads.map((event) => (
+                  <EventCard event={event} key={event.id} unconfirmed />
+                ))}
+              </div>
+            </details>
+          </section>
+        ) : null}
+
         {company.investments.length > 0 ? (
           <section className="panel">
             <div className="panel-heading">
@@ -424,70 +463,6 @@ export default async function CompanyDetailPage({
             <div className="investment-grid">
               {company.investments.map((investment) => (
                 <InvestmentCard investment={investment} key={investment.fund_id} />
-              ))}
-            </div>
-          </section>
-        ) : null}
-
-        {company.is_platform_shared ? <PersonalChangePanel companyId={company.id} /> : null}
-
-        <section className="panel material-change-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">投资者变化层</p>
-              <h2>值得关注的重要变化</h2>
-            </div>
-            <span className="muted">{materialChanges.length} 条变化</span>
-          </div>
-          <p className="section-intro">
-            这里只展示相较前一次结构化快照发生、且达到重要性门槛的变化；没有变化的静态资料不会重复占用阅读时间。
-          </p>
-          {materialChanges.length === 0 ? (
-            <div className="empty-state">目前尚未发现达到展示门槛的新变化。</div>
-          ) : (
-            <div className="timeline">
-              {materialChanges.map((event) => (
-                <EventCard event={event} key={event.id} />
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">平台共享基础层</p>
-              <h2>当前资料基线与可见证据</h2>
-            </div>
-            <span className="muted">{baselineEvents.length} 条资料</span>
-          </div>
-
-          {baselineEvents.length === 0 ? (
-            <div className="empty-state">暂无已核实的当前资料。</div>
-          ) : (
-            <div className="timeline">
-              {baselineEvents.map((event) => (
-                <EventCard event={event} key={event.id} />
-              ))}
-            </div>
-          )}
-        </section>
-
-        {company.platform_unconfirmed_leads.length > 0 ? (
-          <section className="panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">平台共享·尚未形成核实结论</p>
-                <h2>待核实线索</h2>
-              </div>
-              <span className="muted">{company.platform_unconfirmed_leads.length} 条线索</span>
-            </div>
-            <p className="privacy-note">
-              这些条目仅表示授权来源返回了相关记录，不代表平台已确认责任、影响或投资结论。
-            </p>
-            <div className="timeline">
-              {company.platform_unconfirmed_leads.map((event) => (
-                <EventCard event={event} key={event.id} unconfirmed />
               ))}
             </div>
           </section>
@@ -511,7 +486,7 @@ export default async function CompanyDetailPage({
         ) : null}
 
         {company.unconfirmed_leads.length > 0 ? (
-          <section className="panel">
+          <section className="panel attention-panel">
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">当前用户或机构私有</p>
@@ -519,13 +494,49 @@ export default async function CompanyDetailPage({
               </div>
               <span className="muted">{company.unconfirmed_leads.length} 条线索</span>
             </div>
-            <div className="timeline">
-              {company.unconfirmed_leads.map((event) => (
-                <EventCard event={event} key={event.id} unconfirmed />
-              ))}
-            </div>
+            <details className="lead-list">
+              <summary>查看私有待核实线索</summary>
+              <div className="timeline">
+                {company.unconfirmed_leads.map((event) => (
+                  <EventCard event={event} key={event.id} unconfirmed />
+                ))}
+              </div>
+            </details>
           </section>
         ) : null}
+
+        <section className="panel company-records" id="company-records">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">页面下方，按需查看</p>
+              <h2>公司资料与历史记录</h2>
+            </div>
+            <span className="muted">{baselineEvents.length} 条资料</span>
+          </div>
+          <p className="section-intro">
+            这里保留已经核实的基础资料。默认收起，避免静态记录淹没真正重要的变化。
+          </p>
+
+          {baselineEvents.length === 0 ? (
+            <div className="empty-state">暂无已核实的当前资料。</div>
+          ) : (
+            <div className="record-group-list">
+              {baselineGroups.map(([eventType, events]) => (
+                <details className="record-group" key={eventType}>
+                  <summary>
+                    <span>{eventTypeLabels[eventType] ?? eventType}</span>
+                    <small>{events.length} 条资料</small>
+                  </summary>
+                  <div className="timeline">
+                    {events.map((event) => (
+                      <EventCard event={event} key={event.id} />
+                    ))}
+                  </div>
+                </details>
+              ))}
+            </div>
+          )}
+        </section>
 
         <section className="gap-panel">
           <p className="eyebrow">信息缺口</p>

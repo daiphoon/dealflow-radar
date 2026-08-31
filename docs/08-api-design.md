@@ -33,7 +33,7 @@
 | `GET/POST /me/quota-increase-requests` | 查看或申请临时增加研究额度 | 每名用户仅一个待处理申请；前端不能自行提额 |
 | `GET/PATCH /platform/quota-increase-requests/{id}` | 平台管理员处理临时额度 | 明确批准的日/月增加量、到期时间和理由；其他角色禁止 |
 | `GET /me/usage` | 当前测试权益用量 | 查询、关注、报告、当日研究申请和当月研究申请分别返回已用、上限和剩余 |
-| `POST /me/companies/{company_id}/view` | 记录实际查看并返回新共享事实 | 首次只建基线；之后只返回本人未看过的 `published + platform_shared` 事件，并追加事件回执 |
+| `POST /me/companies/{company_id}/view` | 记录实际查看并返回新共享事实 | 首次返回近 90 天未看过的 `published + platform_shared + deterministic_change`，同时为当前可见事件建立回执基线；之后返回本人查看水位之后的未看事件；响应显式返回 `window_start_at` |
 | `POST /me/companies/{company_id}/reports` | 生成个人公司报告 | 只读共享公司、共享快照和已发布共享事件；V2 模板保存中文分类、方向、风险、可信度和数据状态；每月 10 次测试上限；幂等生成；不调用 LLM 或外部 Provider |
 | `GET /me/reports` 与 `GET /me/reports/{report_id}` | 查看本人报告 | 其他用户统一按不存在处理；报告是不可变时点快照 |
 | `GET/PATCH /platform/company-requests` | 平台处理旧版人工申请 | 仅 `platform_admin`；自动按需研究状态不能从该旧端点越过流程直接关闭 |

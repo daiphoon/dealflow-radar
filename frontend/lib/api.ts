@@ -322,6 +322,7 @@ export type PersonalCompanyView = {
   company_id: string;
   first_view: boolean;
   previous_viewed_at: string | null;
+  window_start_at: string;
   viewed_at: string;
   new_events: Event[];
 };

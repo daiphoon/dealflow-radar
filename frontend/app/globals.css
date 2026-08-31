@@ -1137,15 +1137,187 @@ dd {
   line-height: 1.75;
 }
 
-.material-change-panel {
-  border-color: #a9c7ba;
-  background: linear-gradient(180deg, #f8fcfa 0%, var(--surface) 34%);
-}
-
 .section-intro {
   margin: 0 0 20px;
   color: var(--muted);
   line-height: 1.7;
+}
+
+.investor-priority-panel {
+  border-top: 5px solid var(--accent);
+  background: linear-gradient(180deg, #f7fcf9 0%, var(--surface) 32%);
+  box-shadow: 0 16px 40px rgb(30 73 57 / 8%);
+}
+
+.investor-priority-heading {
+  margin-bottom: 4px;
+}
+
+.investor-change-list {
+  display: grid;
+  gap: 20px;
+}
+
+.investor-change-card {
+  padding: 24px;
+  border: 1px solid #c8dcd3;
+  border-radius: 18px;
+  background: #fff;
+}
+
+.investor-change-card h3 {
+  margin: 10px 0 16px;
+  font-size: clamp(20px, 2.2vw, 26px);
+  line-height: 1.45;
+}
+
+.investor-change-meta,
+.investor-change-signals,
+.investor-evidence-item,
+.investor-evidence-item > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.investor-change-meta {
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.investor-change-meta > span {
+  color: #7d4b11;
+  font-weight: 700;
+}
+
+.investor-impact-summary {
+  padding: 18px 20px;
+  border-left: 4px solid var(--accent);
+  border-radius: 6px 14px 14px 6px;
+  background: var(--accent-soft);
+}
+
+.investor-impact-summary p {
+  margin: 8px 0 0;
+  color: #263b33;
+  font-size: 17px;
+  line-height: 1.8;
+}
+
+.investor-change-signals {
+  flex-wrap: wrap;
+  margin-top: 16px;
+  color: #4d5c56;
+  font-size: 14px;
+}
+
+.investor-change-signals span:not(:last-child)::after {
+  margin-left: 12px;
+  color: var(--line-strong);
+  content: "·";
+}
+
+.investor-change-details,
+.older-change-list,
+.lead-list,
+.record-group {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.investor-change-details > summary,
+.older-change-list > summary,
+.lead-list > summary,
+.record-group > summary {
+  padding: 16px 0;
+  color: var(--accent);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.investor-change-detail-body {
+  display: grid;
+  gap: 18px;
+  padding-top: 4px;
+}
+
+.investor-change-detail-body p,
+.investor-change-detail-body ul {
+  margin: 8px 0 0;
+  color: #42504b;
+  line-height: 1.75;
+}
+
+.investor-change-detail-body ul {
+  padding-left: 22px;
+}
+
+.investor-evidence-list {
+  display: grid;
+  gap: 12px;
+}
+
+.investor-evidence-item {
+  justify-content: space-between;
+  padding: 14px;
+  border-radius: 12px;
+  background: #f7f9f8;
+}
+
+.investor-evidence-item > div {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.investor-evidence-item > div:last-child {
+  align-items: flex-end;
+}
+
+.investor-evidence-item small {
+  color: var(--muted);
+}
+
+.older-change-list > .investor-change-list,
+.lead-list > .timeline,
+.record-group > .timeline {
+  padding-top: 8px;
+}
+
+.secondary-update-note {
+  margin: 18px 0 0;
+  color: var(--muted);
+}
+
+.secondary-update-note a {
+  margin-left: 8px;
+}
+
+.attention-panel {
+  border-left: 5px solid #d18c2f;
+}
+
+.record-group-list {
+  display: grid;
+}
+
+.record-group {
+  margin-top: 0;
+}
+
+.record-group > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  color: var(--accent);
+  list-style-position: inside;
+}
+
+.record-group > summary small {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .change-comparison {
@@ -1870,5 +2042,28 @@ dd {
 
   .analysis-heading {
     flex-direction: column;
+  }
+
+  .investor-change-card {
+    padding: 18px;
+  }
+
+  .investor-impact-summary {
+    padding: 16px;
+  }
+
+  .investor-evidence-item {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .investor-evidence-item > div:last-child {
+    align-items: flex-start;
+  }
+
+  .record-group > summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
   }
 }
