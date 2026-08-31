@@ -290,11 +290,11 @@ export ON_DEMAND_WORKER_USER_ID='replace_with_platform_admin_user_uuid'
 APP_MODE=demo uv run python -m scripts.run_on_demand_research_worker --dry-run
 ```
 
-正式 Worker 只允许单实例运行，并要求 `ON_DEMAND_RESEARCH_ENABLED=true`、`EXTERNAL_CALLS_ENABLED=true` 和 `TIANYANCHA_IDENTITY_CALLS_ENABLED=true`。`TIANYANCHA_RESEARCH_CALLS_ENABLED` 单独决定是否在身份确认后执行五个默认模块；首次部署和身份链路验证时保持 false，只有准备执行受控新公司验收时才临时改为 true。`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED`、可信来源调用和来源调度必须保持 false。默认供应商合同参数为 1000 次/日、10000 次/月，自动任务保留 10% 后实际闸门为 900/日、9000/月；每家公司研究阶段最多 8 次供应商调用，首版每模块最多一次请求和一次失败重试预算。平台用量按全部天眼查 Provider 调用汇总。
+正式 Worker 只允许单实例运行，并要求 `ON_DEMAND_RESEARCH_ENABLED=true`、`EXTERNAL_CALLS_ENABLED=true` 和 `TIANYANCHA_IDENTITY_CALLS_ENABLED=true`。`TIANYANCHA_RESEARCH_CALLS_ENABLED` 单独决定是否在身份确认后执行五个默认模块；首次部署和身份链路验证时保持 false，只有准备执行受控新公司验收时才临时改为 true。`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED`、可信来源调用和来源调度必须保持 false。源代码和示例配置按正式 VIP 1000 次/日、10000 次/月设计；当前免费测试期的香港运行配置为 100 次/日、1000 次/月。两种配置都保留 10%，对应有效闸门分别为 900/日、9000/月和 90/日、900/月。每家公司研究阶段最多 8 次供应商调用，首版每模块最多一次请求和一次失败重试预算。平台用量按全部天眼查 Provider 调用汇总。
 
 Worker 默认按工商与股东基础、司法与合规风险、知识产权、经营与公示、历史变更五个供应商模块逐项运行；不能说明任职变化或投资风险的人员数量概览已退出默认研究。每次循环最多处理一个身份或一个研究模块。每个模块先查权限受限缓存，缓存未命中才检查公司、日和月预算；相同来源记录与内容哈希不重复生成文档或事件。结构化资料分为“已核实事实”和“授权来源记录·影响待判断”；仅返回数量的风险概览属于后者，可展示来源记录，但不能据此生成责任或风险结论。真正的身份、来源或可信度冲突才进入“待核实线索”。页面证据都是独立最小展示快照，完整供应商响应仍只在私有缓存。无记录显示“暂无可靠公开数据”。该 Worker 不调用模型、不自动生成报告，且 `AUTO_PUBLISH_ENABLED=false` 不得因结构化事实展示而改变。同一进程复用 Provider 以保持跨任务限速；引入原子预算预留前不得启动第二个 Worker 或多实例部署。
 
-当前未开通正式 VIP，PR 2 合并部署并准备最终一家具名新公司受控实测之前不得执行真实命令，也不得把 Key 写入命令历史、env 示例、Git 或日志。受控窗口结束后必须把 `TIANYANCHA_RESEARCH_CALLS_ENABLED`、`TIANYANCHA_IDENTITY_CALLS_ENABLED`、`EXTERNAL_CALLS_ENABLED` 和 `ON_DEMAND_RESEARCH_ENABLED` 恢复为 false。
+正式 VIP 当前仍未开通；苏州涌现的一次具名新公司受控实测已经完成。后续不得为了消耗免费额度或扩充样本而主动查询，只有真实测试用户提交准确主体并满足预算、冷却和去重闸门时才可另开受控窗口；免费额度不足且用户验证确有需要时再提醒项目负责人开通 VIP。不得把 Key 写入命令历史、env 示例、Git 或日志。每次受控窗口结束后必须把 `TIANYANCHA_RESEARCH_CALLS_ENABLED`、`TIANYANCHA_IDENTITY_CALLS_ENABLED`、`EXTERNAL_CALLS_ENABLED` 和 `ON_DEMAND_RESEARCH_ENABLED` 恢复为 false。
 
 香港单机环境必须通过 `research` profile 的一次性 `on-demand-research-worker` 运行，不得再用未挂载缓存的临时 API 容器代替。先由主机管理员创建固定目录：
 
@@ -303,7 +303,7 @@ sudo install -d -o 10001 -g 10001 -m 0700 \
   /opt/dealflow-radar/private/provider_cache
 ```
 
-`deploy/single-host.env` 只长期保存 `PROVIDER_CACHE_DIRECTORY=/opt/dealflow-radar/private/provider_cache`、Worker 用户和租户 ID；四个 `ON_DEMAND_WORKER_*_ENABLED` 必须长期为 false。真实受控运行时，在不记录 Secret 的维护 shell 中读入权限受限的天眼查 Secret，只对该次容器临时开启 Worker 专用开关：
+`deploy/single-host.env` 长期保存 `PROVIDER_CACHE_DIRECTORY=/opt/dealflow-radar/private/provider_cache`、Worker 用户和租户 ID，以及与当前账户一致的日/月调用上限；四个 `ON_DEMAND_WORKER_*_ENABLED` 必须长期为 false。真实受控运行时，在不记录 Secret 的维护 shell 中读入权限受限的天眼查 Secret，只对该次容器临时开启 Worker 专用开关：
 
 ```bash
 export ON_DEMAND_WORKER_ENABLED=true
