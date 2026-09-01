@@ -19,6 +19,7 @@ def test_single_host_research_worker_uses_private_persistent_cache_mount() -> No
         "HOME": os.environ.get("HOME", ""),
         "PATH": os.environ["PATH"],
         "TIANYANCHA_AUTHORIZATION": "",
+        "TIANYANCHA_AUTHORIZATION_PATH": "/dev/null",
     }
     result = subprocess.run(
         [
@@ -51,8 +52,8 @@ def test_single_host_research_worker_uses_private_persistent_cache_mount() -> No
         "python",
         "-m",
         "scripts.run_on_demand_research_worker",
-        "--once",
     ]
+    assert worker["restart"] == "unless-stopped"
     assert worker["read_only"] is True
     assert worker["cap_drop"] == ["ALL"]
     assert worker["environment"]["EXTERNAL_CALLS_ENABLED"] == "false"
@@ -63,11 +64,29 @@ def test_single_host_research_worker_uses_private_persistent_cache_mount() -> No
     assert worker["environment"]["AUTO_REFRESH_ENABLED"] == "false"
     assert worker["environment"]["AUTO_PUBLISH_ENABLED"] == "false"
     assert worker["environment"]["TIANYANCHA_AUTHORIZATION"] == ""
-    assert len(worker["volumes"]) == 1
-    cache_mount = worker["volumes"][0]
+    assert (
+        worker["environment"]["TIANYANCHA_AUTHORIZATION_FILE"]
+        == "/run/secrets/tianyancha-authorization"
+    )
+    assert worker["environment"]["ON_DEMAND_WORKER_POLL_SECONDS"] == "5"
+    assert worker["healthcheck"]["test"][-1] == "--healthcheck"
+    assert len(worker["volumes"]) == 2
+    cache_mount = next(
+        mount
+        for mount in worker["volumes"]
+        if mount["target"] == "/app/data/private/provider_cache"
+    )
     assert cache_mount["type"] == "bind"
     assert cache_mount["source"] == "/opt/dealflow-radar/private/provider_cache"
     assert cache_mount["target"] == "/app/data/private/provider_cache"
+    secret_mount = next(
+        mount
+        for mount in worker["volumes"]
+        if mount["target"] == "/run/secrets/tianyancha-authorization"
+    )
+    assert secret_mount["type"] == "bind"
+    assert secret_mount["source"] == "/dev/null"
+    assert secret_mount["read_only"] is True
 
     # Older Compose releases omit an explicit default false from rendered JSON.
     # Keep the source-level assertion here; CI also proves fail-closed behavior

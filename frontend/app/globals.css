@@ -757,6 +757,57 @@ a {
   font-size: 13px;
 }
 
+.request-progress {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.request-progress li {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.request-progress li > span {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 999px;
+  background: #dfe7e3;
+  font-weight: 800;
+}
+
+.request-progress-done,
+.request-progress-current {
+  color: var(--ink) !important;
+  border-color: #a8c6b9 !important;
+  background: #f2f8f5 !important;
+}
+
+.request-progress-current > span,
+.request-progress-done > span {
+  color: #fff;
+  background: var(--accent) !important;
+}
+
+.request-progress-stopped {
+  color: var(--danger) !important;
+  border-color: #e3b8b2 !important;
+  background: #fff7f5 !important;
+}
+
 .research-module-list {
   grid-column: 1 / -1;
   display: grid;
@@ -1983,6 +2034,10 @@ dd {
   .request-identity-card dl,
   .quota-request-form,
   .quota-decision-form {
+    grid-template-columns: 1fr;
+  }
+
+  .request-progress {
     grid-template-columns: 1fr;
   }
 

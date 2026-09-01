@@ -97,8 +97,8 @@ _ACTIVE_REQUEST_STATUSES = {
 }
 _CANCELLABLE_REQUEST_STATUSES = _ACTIVE_REQUEST_STATUSES | {"needs_input"}
 _REQUEST_STATUS_MESSAGES = {
-    "pending": "等待平台处理旧版申请",
-    "in_review": "平台正在处理旧版申请",
+    "pending": "申请已保存，等待平台安全转入工商身份核验队列",
+    "in_review": "申请需要平台进一步核验，处理结果会在本页更新",
     "identity_queued": "已进入工商身份核验队列",
     "identity_checking": "正在核验工商主体，本次外部查询完成后可安全停止",
     "awaiting_confirmation": "请确认这是你要研究的公司",
@@ -1061,6 +1061,49 @@ def decide_platform_company_request(
     request.reviewed_by_id = user.id
     request.reviewed_at = utc_now()
     request.decision_reason = reason.strip()
+    output = _request_out(session, request, include_internal_details=True)
+    session.commit()
+    return output
+
+
+def activate_platform_company_request(
+    session: Session,
+    user: User,
+    request_id: UUID,
+    *,
+    reason: str,
+) -> PersonalCompanyRequestOut:
+    """Move one legacy pending request into the existing on-demand queue."""
+    if not user_has_role(session, user.id, "platform_admin"):
+        raise PersonalFeatureAccessError("platform admin required")
+    normalized_reason = reason.strip()
+    if len(normalized_reason) < 3:
+        raise PersonalRequestTransitionError("activation reason is required")
+    request = session.scalar(
+        select(PersonalCompanyRequest)
+        .where(PersonalCompanyRequest.id == request_id)
+        .with_for_update()
+    )
+    if request is None:
+        raise PersonalFeatureNotFoundError("request not found")
+    target_status = "identity_queued" if request.request_type == "inclusion" else "research_queued"
+    if request.status == target_status:
+        return _request_out(
+            session,
+            request,
+            reused=True,
+            include_internal_details=True,
+        )
+    if request.status != "pending":
+        raise PersonalRequestTransitionError("only legacy pending requests can be activated")
+
+    request.status = target_status
+    request.leased_until = None
+    request.heartbeat_at = None
+    request.last_error_code = None
+    request.reviewed_by_id = user.id
+    request.reviewed_at = utc_now()
+    request.decision_reason = f"activated_for_on_demand_research: {normalized_reason}"
     output = _request_out(session, request, include_internal_details=True)
     session.commit()
     return output

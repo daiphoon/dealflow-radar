@@ -62,10 +62,19 @@ services:
     depends_on:
       database:
         condition: service_healthy
+    environment:
+      TIANYANCHA_AUTHORIZATION: ""
+      TIANYANCHA_AUTHORIZATION_FILE: /run/secrets/tianyancha-authorization
     volumes:
       - type: bind
         source: ${PROVIDER_CACHE_DIRECTORY:?PROVIDER_CACHE_DIRECTORY is required}
         target: /app/data/private/provider_cache
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${TIANYANCHA_AUTHORIZATION_PATH:?TIANYANCHA_AUTHORIZATION_PATH is required}
+        target: /run/secrets/tianyancha-authorization
+        read_only: true
         bind:
           create_host_path: false
 

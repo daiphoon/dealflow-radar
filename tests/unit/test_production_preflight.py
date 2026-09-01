@@ -61,6 +61,7 @@ def test_production_preflight_accepts_safe_initial_configuration(
         "backup_protection": "operator_managed",
         "site_scheme": "https",
         "initial_safety_switches": "closed",
+        "on_demand_queue_enabled": False,
     }
     assert "admin-secret" not in output
     assert "app-secret" not in output
@@ -112,7 +113,6 @@ def test_production_preflight_rejects_public_origin_port_mismatch(
     [
         ("AUTO_PUBLISH_ENABLED", "true", "AUTO_PUBLISH_ENABLED"),
         ("EXTERNAL_CALLS_ENABLED", "1", "EXTERNAL_CALLS_ENABLED"),
-        ("ON_DEMAND_RESEARCH_ENABLED", "true", "ON_DEMAND_RESEARCH_ENABLED"),
         ("INVESTOR_ANALYSIS_ENABLED", "true", "INVESTOR_ANALYSIS_ENABLED"),
         ("SITE_ADDRESS", "http://app.dealflow.test", "HTTPS"),
         ("CLOUDBASE_ENV_ID", "replace-with-env", "placeholder"),
@@ -126,6 +126,18 @@ def test_production_preflight_fails_closed(
 
     with pytest.raises((RuntimeError, ValueError), match=message):
         check_production_config()
+
+
+def test_production_preflight_allows_database_only_on_demand_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_valid_environment(monkeypatch)
+    monkeypatch.setenv("ON_DEMAND_RESEARCH_ENABLED", "true")
+
+    result = check_production_config()
+
+    assert result["on_demand_queue_enabled"] is True
+    assert result["initial_safety_switches"] == "closed"
 
 
 def test_production_preflight_separates_database_credentials(

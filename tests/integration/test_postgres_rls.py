@@ -2732,14 +2732,21 @@ def test_personal_request_api_keeps_rls_response_after_commit() -> None:
         assert created.status_code == 200, created.text
         assert created.json()["status"] == "pending"
 
-        reviewed = client.patch(
-            f"/api/v1/platform/company-requests/{created.json()['id']}",
+        reviewed = client.post(
+            f"/api/v1/platform/company-requests/{created.json()['id']}/activation",
             headers={"X-Demo-User-Id": str(ALPHA_USER_ID)},
-            json={"status": "completed", "reason": "验证提交后仍可安全返回响应"},
+            json={"reason": "验证跨租户管理员转队列后仍可安全返回响应"},
         )
         assert reviewed.status_code == 200, reviewed.text
-        assert reviewed.json()["status"] == "completed"
+        assert reviewed.json()["status"] == "identity_queued"
         assert reviewed.json()["reviewed_by_id"] == str(ALPHA_USER_ID)
+
+        owner_request = client.get(
+            "/api/v1/me/company-requests",
+            headers=owner_headers,
+        )
+        assert owner_request.status_code == 200
+        assert owner_request.json()[0]["status"] == "identity_queued"
     engine.dispose()
 
 

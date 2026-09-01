@@ -26,8 +26,8 @@ const freshnessLabels: Record<string, string> = {
 };
 
 const requestStatusLabels: Record<string, string> = {
-  pending: "待人工处理",
-  in_review: "人工处理中",
+  pending: "等待转入队列",
+  in_review: "需要平台核验",
   identity_queued: "身份核验排队中",
   identity_checking: "正在核验身份",
   awaiting_confirmation: "等待你确认公司",
@@ -43,15 +43,50 @@ const requestStatusLabels: Record<string, string> = {
   failed: "处理失败",
 };
 
-const activeRequestStatuses = new Set([
+const fastRefreshRequestStatuses = new Set([
   "identity_queued",
   "identity_checking",
   "research_queued",
   "researching",
   "partial",
-  "budget_deferred",
   "cancel_requested",
 ]);
+
+const slowRefreshRequestStatuses = new Set(["pending", "in_review", "budget_deferred"]);
+
+const requestProgressSteps = [
+  "申请已提交",
+  "核验工商主体",
+  "确认正确公司",
+  "分模块研究",
+  "结果可查看",
+];
+
+function requestProgressIndex(status: string, cancellationStage?: string | null): number {
+  if (status === "cancelled" && cancellationStage) {
+    return requestProgressIndex(cancellationStage);
+  }
+  if (["rejected", "failed", "cancelled"].includes(status)) return 1;
+  if (status === "pending") return 0;
+  if (["in_review", "identity_queued", "identity_checking", "needs_input"].includes(status)) {
+    return 1;
+  }
+  if (status === "awaiting_confirmation") return 2;
+  if (
+    ["research_queued", "researching", "partial", "budget_deferred", "cancel_requested"].includes(
+      status,
+    )
+  ) {
+    return 3;
+  }
+  return 4;
+}
+
+function requestRefreshInterval(requests: Array<{ status: string }>): number | null {
+  if (requests.some((request) => fastRefreshRequestStatuses.has(request.status))) return 8_000;
+  if (requests.some((request) => slowRefreshRequestStatuses.has(request.status))) return 30_000;
+  return null;
+}
 
 const researchModuleLabels: Record<string, string> = {
   company_base: "工商与股东基础",
@@ -92,11 +127,11 @@ export default async function WatchlistPage({
       getPersonalUsage(),
       getPersonalQuotaIncreaseRequests(),
     ]);
-    const hasActiveRequest = requests.some((request) => activeRequestStatuses.has(request.status));
+    const refreshInterval = requestRefreshInterval(requests);
     const hasPendingQuotaRequest = quotaRequests.some((request) => request.status === "pending");
     return (
       <main className="shell page-stack">
-        <RequestStatusRefresher active={hasActiveRequest} />
+        <RequestStatusRefresher intervalMs={refreshInterval} />
         <section className="hero">
           <p className="eyebrow">个人留存闭环</p>
           <h1>我的关注与查询</h1>
@@ -211,7 +246,7 @@ export default async function WatchlistPage({
               <p className="eyebrow">明确提交给平台处理</p>
               <h2>我的公司研究申请</h2>
             </div>
-            <span className="muted">共 {requests.length} 条</span>
+            <span className="muted">关闭页面不会中断；重新登录后仍可查看最新状态</span>
           </div>
           {requests.length === 0 ? (
             <div className="empty-state">尚未提交申请。</div>
@@ -235,6 +270,29 @@ export default async function WatchlistPage({
                     <span className="muted">提交于 {formatDate(request.created_at)}</span>
                   </div>
                   <p>{request.status_message}</p>
+                  <ol className="request-progress" aria-label="查询处理进度">
+                    {requestProgressSteps.map((step, index) => {
+                      const currentIndex = requestProgressIndex(
+                        request.status,
+                        request.cancellation_stage,
+                      );
+                      const terminal = ["cancelled", "rejected", "failed"].includes(request.status);
+                      const state =
+                        index < currentIndex
+                          ? "done"
+                          : index === currentIndex
+                            ? terminal
+                              ? "stopped"
+                              : "current"
+                            : "upcoming";
+                      return (
+                        <li className={`request-progress-${state}`} key={step}>
+                          <span aria-hidden="true">{index + 1}</span>
+                          <strong>{step}</strong>
+                        </li>
+                      );
+                    })}
+                  </ol>
                   {Object.keys(request.research_modules).length > 0 ? (
                     <ul className="research-module-list" aria-label="研究模块进度">
                       {Object.entries(request.research_modules).map(([module, status]) => (

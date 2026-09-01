@@ -32,11 +32,12 @@
 | `POST /me/company-requests/{id}/cancel` | 取消查询 | 只修改本人申请；Worker 确认全局任务没有其他活跃请求后才取消；日次数不退，零外调用时退月额度，合格缓存保留 |
 | `GET/POST /me/quota-increase-requests` | 查看或申请临时增加研究额度 | 每名用户仅一个待处理申请；前端不能自行提额 |
 | `GET/PATCH /platform/quota-increase-requests/{id}` | 平台管理员处理临时额度 | 明确批准的日/月增加量、到期时间和理由；其他角色禁止 |
+| `POST /platform/company-requests/{id}/activation` | 将旧版 `pending` 申请转入现有按需队列 | 仅平台管理员；原申请、owner 和额度记录不变；重复激活幂等；私有档案冲突和其他人工状态不得借此绕过 |
 | `GET /me/usage` | 当前测试权益用量 | 查询、关注、报告、当日研究申请和当月研究申请分别返回已用、上限和剩余 |
 | `POST /me/companies/{company_id}/view` | 记录实际查看并返回新共享事实 | 首次返回近 90 天未看过的 `published + platform_shared + deterministic_change`，同时为当前可见事件建立回执基线；之后返回本人查看水位之后的未看事件；响应显式返回 `window_start_at` |
 | `POST /me/companies/{company_id}/reports` | 生成个人公司报告 | 只读共享公司、共享快照和已发布共享事件；V2 模板保存中文分类、方向、风险、可信度和数据状态；每月 10 次测试上限；幂等生成；不调用 LLM 或外部 Provider |
 | `GET /me/reports` 与 `GET /me/reports/{report_id}` | 查看本人报告 | 其他用户统一按不存在处理；报告是不可变时点快照 |
-| `GET/PATCH /platform/company-requests` | 平台处理旧版人工申请 | 仅 `platform_admin`；自动按需研究状态不能从该旧端点越过流程直接关闭 |
+| `GET/PATCH /platform/company-requests` | 平台查看或关闭旧版人工申请 | 仅 `platform_admin`；自动按需研究状态不能从该旧端点越过流程直接关闭；转入队列使用独立 activation 端点 |
 | `GET /companies/{id}` | 公司详情 | 已实现共享基础层独立读取，并按基金/owner 授权叠加私有层；重要变化可带已完成的 `analysis`，不返回待处理队列、Provider、Token 或费用字段 |
 | `GET /companies/{id}/events` | 事件时间线 | 按有效权益和记录作用域返回事件；业务状态不代替授权 |
 | `GET /events/{id}/evidence` | 证据 | 对证据引用和原始文档分别授权，只返回许可允许的最小内容 |

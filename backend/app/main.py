@@ -35,6 +35,7 @@ from backend.app.personal_features import (
     PersonalFeatureNotFoundError,
     PersonalRequestConflictError,
     PersonalRequestTransitionError,
+    activate_platform_company_request,
     add_personal_watchlist_item,
     cancel_personal_company_request,
     confirm_personal_company_request,
@@ -82,6 +83,7 @@ from backend.app.schemas import (
     IngestResult,
     PersonalCompanyReportOut,
     PersonalCompanyReportSummaryOut,
+    PersonalCompanyRequestActivationIn,
     PersonalCompanyRequestCancelIn,
     PersonalCompanyRequestDecisionIn,
     PersonalCompanyRequestOut,
@@ -775,6 +777,30 @@ def create_app(
                 user,
                 request_id,
                 status=payload.status,
+                reason=payload.reason,
+            )
+        except PersonalFeatureAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except PersonalFeatureNotFoundError as error:
+            raise HTTPException(status_code=404, detail="request not found") from error
+        except PersonalRequestTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/api/v1/platform/company-requests/{request_id}/activation",
+        response_model=PersonalCompanyRequestOut,
+    )
+    def platform_company_request_activation(
+        request_id: UUID,
+        payload: PersonalCompanyRequestActivationIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalCompanyRequestOut:
+        try:
+            return activate_platform_company_request(
+                session,
+                user,
+                request_id,
                 reason=payload.reason,
             )
         except PersonalFeatureAccessError as error:

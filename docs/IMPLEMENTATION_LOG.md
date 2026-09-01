@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-09-01：M6B-P1 新公司研究队列生产化
+
+- 任务：修复首名外部测试者的新公司申请停在旧版 `pending` 且没有进度的问题；将数据库排队开关与真实外部调用开关分离，部署单实例常驻按需研究 Worker、可恢复的五阶段进度、Worker 健康告警和有审计的旧申请原地转队列。原申请、owner、配额和私有冲突边界保持不变；不新增迁移、不自动处理生产申请。
+- 关键文件：`backend/app/personal_features.py`、`backend/app/main.py`、`scripts/run_on_demand_research_worker.py`、`scripts/activate_legacy_company_request.py`、`compose.production.yml`、`deploy/compose.single-host.yml`、`deploy/health-check.sh`、`frontend/app/watchlist/`、生产运行手册及相关权限、部署和健康检查测试。
+- 实际命令：管理员激活、按需 Worker、生产预检、部署契约和健康检查针对性 Pytest；完整 Ruff、格式和 Pytest；SQLite `base → 0021 → base` 与 Alembic 漂移检查；前端依赖审计、TypeScript 和 Next.js 生产构建；生产 Compose 解析；Codex Security 工作区差异扫描；`git diff --check` 和定点 Secret 扫描。
+- 测试结果：针对性测试 53 项通过；完整 Pytest 300 项通过、16 项按预期跳过，仅有既有 Starlette/httpx 上游弃用警告；Ruff、格式、SQLite 迁移往返、Schema 漂移、前端类型检查、生产构建、依赖审计和 Compose 解析通过。安全差异扫描覆盖 12/12 个变更源文件，未发现可报告漏洞；TAC 连接器未登录只影响附加状态核验。本轮真实天眼查、付费 API、业务模型 Token、费用、生产数据写入和自动发布均为 0。
+- 未解决阻塞：本机 Docker 未运行，因此真实 PostgreSQL RLS 动态套件和浏览器视觉复测交由 GitHub CI 及合并部署后的原外部申请验收。代码 PR 合并前不改变香港环境；合并后必须先备份、安装只读 Secret、启用常驻 Worker 和健康脚本，再用原申请验证身份确认、分模块进度、取消及断线恢复。完整 Pi ADR 继续后置。
+
 ## 2026-09-01：M6B 首轮反馈与 P1 修复检查点
 
 - 任务：记录 U00 创始人回归通过及首名外部测试者的新公司研究阻塞；将 M6B 状态收敛为 `修复后复测`，固定 P1 先于后置模型架构工作的顺序，并保存已确认的三个 Pi 借鉴边界。本轮不修改业务代码、数据库、生产配置或既有申请。

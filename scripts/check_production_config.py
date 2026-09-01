@@ -18,7 +18,6 @@ INITIAL_DISABLED_SWITCHES = (
     "SOURCE_MONITOR_SCHEDULER_ENABLED",
     "TIANYANCHA_IDENTITY_CALLS_ENABLED",
     "TIANYANCHA_RESEARCH_CALLS_ENABLED",
-    "ON_DEMAND_RESEARCH_ENABLED",
     "INVESTOR_ANALYSIS_ENABLED",
     "REVIEW_WORKBENCH_ENABLED",
 )
@@ -177,6 +176,7 @@ def check_production_config() -> dict[str, object]:
         "backup_protection": backup_protection,
         "site_scheme": site_scheme,
         "initial_safety_switches": "closed",
+        "on_demand_queue_enabled": settings.on_demand_research_enabled,
     }
 
 

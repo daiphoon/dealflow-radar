@@ -157,15 +157,29 @@ services:
       TIANYANCHA_RESEARCH_CALLS_ENABLED: ${ON_DEMAND_WORKER_RESEARCH_CALLS_ENABLED:-false}
       ON_DEMAND_RESEARCH_ENABLED: ${ON_DEMAND_WORKER_ENABLED:-false}
       TIANYANCHA_AUTHORIZATION: ${TIANYANCHA_AUTHORIZATION:-}
+      TIANYANCHA_AUTHORIZATION_FILE: ${TIANYANCHA_AUTHORIZATION_FILE:-}
       ON_DEMAND_WORKER_USER_ID: ${ON_DEMAND_WORKER_USER_ID:-}
+      ON_DEMAND_WORKER_LOCK_FILE: ${ON_DEMAND_WORKER_LOCK_FILE:-/app/data/private/provider_cache/.on-demand-worker.lock}
+      ON_DEMAND_WORKER_POLL_SECONDS: ${ON_DEMAND_WORKER_POLL_SECONDS:-5}
       WORKER_TENANT_ID: ${WORKER_TENANT_ID:-}
-    command: ["python", "-m", "scripts.run_on_demand_research_worker", "--once"]
-    restart: "no"
+    command: ["python", "-m", "scripts.run_on_demand_research_worker"]
+    restart: unless-stopped
     read_only: true
     tmpfs:
       - /tmp
     volumes:
       - provider_cache:/app/data/private/provider_cache
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -m
+        - scripts.run_on_demand_research_worker
+        - --healthcheck
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
     security_opt:
       - no-new-privileges:true
     cap_drop:

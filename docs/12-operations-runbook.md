@@ -294,29 +294,68 @@ APP_MODE=demo uv run python -m scripts.run_on_demand_research_worker --dry-run
 
 Worker 默认按工商与股东基础、司法与合规风险、知识产权、经营与公示、历史变更五个供应商模块逐项运行；不能说明任职变化或投资风险的人员数量概览已退出默认研究。每次循环最多处理一个身份或一个研究模块。每个模块先查权限受限缓存，缓存未命中才检查公司、日和月预算；相同来源记录与内容哈希不重复生成文档或事件。结构化资料分为“已核实事实”和“授权来源记录·影响待判断”；仅返回数量的风险概览属于后者，可展示来源记录，但不能据此生成责任或风险结论。真正的身份、来源或可信度冲突才进入“待核实线索”。页面证据都是独立最小展示快照，完整供应商响应仍只在私有缓存。无记录显示“暂无可靠公开数据”。该 Worker 不调用模型、不自动生成报告，且 `AUTO_PUBLISH_ENABLED=false` 不得因结构化事实展示而改变。同一进程复用 Provider 以保持跨任务限速；引入原子预算预留前不得启动第二个 Worker 或多实例部署。
 
-正式 VIP 当前仍未开通；苏州涌现的一次具名新公司受控实测已经完成。后续不得为了消耗免费额度或扩充样本而主动查询，只有真实测试用户提交准确主体并满足预算、冷却和去重闸门时才可另开受控窗口；免费额度不足且用户验证确有需要时再提醒项目负责人开通 VIP。不得把 Key 写入命令历史、env 示例、Git 或日志。每次受控窗口结束后必须把 `TIANYANCHA_RESEARCH_CALLS_ENABLED`、`TIANYANCHA_IDENTITY_CALLS_ENABLED`、`EXTERNAL_CALLS_ENABLED` 和 `ON_DEMAND_RESEARCH_ENABLED` 恢复为 false。
+正式 VIP 当前仍未开通；苏州涌现的一次具名新公司受控实测已经完成。后续不得为了消耗免费额度或扩充样本而主动查询，只有真实测试用户提交准确主体并满足预算、冷却和去重闸门时才可处理；免费额度不足且用户验证确有需要时再提醒项目负责人开通 VIP。不得把 Key 写入命令历史、env 示例、Git 或日志。生产 API 可以保持 `ON_DEMAND_RESEARCH_ENABLED=true` 以接收数据库队列，但 API 自身的 `EXTERNAL_CALLS_ENABLED`、两个天眼查调用开关、`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED` 和 `AUTO_PUBLISH_ENABLED` 必须保持 false。外部能力只存在于 `research` profile 的专用 Worker。
 
-香港单机环境必须通过 `research` profile 的一次性 `on-demand-research-worker` 运行，不得再用未挂载缓存的临时 API 容器代替。先由主机管理员创建固定目录：
+香港单机环境必须通过 `research` profile 的单实例常驻 `on-demand-research-worker` 运行，不得再用未挂载缓存的临时 API 容器代替。先由主机管理员创建固定缓存目录和独立 Secret 文件；Secret 文件完整内容不得进入聊天、命令参数、环境文件、`docker inspect`、Git 或日志：
 
 ```bash
 sudo install -d -o 10001 -g 10001 -m 0700 \
   /opt/dealflow-radar/private/provider_cache
+sudo install -d -o 10001 -g 10001 -m 0700 \
+  /opt/dealflow-radar/shared/secrets
+sudo install -o 10001 -g 10001 -m 0400 /dev/null \
+  /opt/dealflow-radar/shared/secrets/tianyancha-authorization
+sudoedit /opt/dealflow-radar/shared/secrets/tianyancha-authorization
 ```
 
-`deploy/single-host.env` 长期保存 `PROVIDER_CACHE_DIRECTORY=/opt/dealflow-radar/private/provider_cache`、Worker 用户和租户 ID，以及与当前账户一致的日/月调用上限；四个 `ON_DEMAND_WORKER_*_ENABLED` 必须长期为 false。真实受控运行时，在不记录 Secret 的维护 shell 中读入权限受限的天眼查 Secret，只对该次容器临时开启 Worker 专用开关：
+`deploy/single-host.env` 保存缓存/Secret 路径、Worker 用户和租户 ID，以及与当前账户一致的日/月调用上限。当前免费账户必须设置 `100/1000`，不可因代码支持未来 VIP 就提前写成 `1000/10000`。生产接线值如下；API 外部开关仍由共享环境保持 false，只有 Worker 专用覆盖为 true：
+
+```env
+ON_DEMAND_RESEARCH_ENABLED=true
+EXTERNAL_CALLS_ENABLED=false
+TIANYANCHA_IDENTITY_CALLS_ENABLED=false
+TIANYANCHA_RESEARCH_CALLS_ENABLED=false
+PAID_API_CALLS_ENABLED=false
+AUTO_REFRESH_ENABLED=false
+AUTO_PUBLISH_ENABLED=false
+ON_DEMAND_PROVIDER_DAILY_CALL_LIMIT=100
+ON_DEMAND_PROVIDER_MONTHLY_CALL_LIMIT=1000
+ON_DEMAND_WORKER_ENABLED=true
+ON_DEMAND_WORKER_EXTERNAL_CALLS_ENABLED=true
+ON_DEMAND_WORKER_IDENTITY_CALLS_ENABLED=true
+ON_DEMAND_WORKER_RESEARCH_CALLS_ENABLED=true
+TIANYANCHA_AUTHORIZATION_PATH=/opt/dealflow-radar/shared/secrets/tianyancha-authorization
+```
+
+先执行不读取 Secret、不创建 Provider 的 dry-run，再启动常驻 Worker。文件锁位于持久缓存目录，第二实例会失败关闭；不得通过复制 Compose 项目名或删除锁文件来绕过。Worker 的根文件系统只读，只有缓存目录可写，API 不挂载缓存或 Secret：
 
 ```bash
-export ON_DEMAND_WORKER_ENABLED=true
-export ON_DEMAND_WORKER_EXTERNAL_CALLS_ENABLED=true
-export ON_DEMAND_WORKER_IDENTITY_CALLS_ENABLED=true
-export ON_DEMAND_WORKER_RESEARCH_CALLS_ENABLED=true
-prod --profile research run --rm on-demand-research-worker
-unset ON_DEMAND_WORKER_ENABLED ON_DEMAND_WORKER_EXTERNAL_CALLS_ENABLED \
-  ON_DEMAND_WORKER_IDENTITY_CALLS_ENABLED ON_DEMAND_WORKER_RESEARCH_CALLS_ENABLED \
-  TIANYANCHA_AUTHORIZATION
+prod --profile research run --rm on-demand-research-worker \
+  python -m scripts.run_on_demand_research_worker --dry-run
+prod up -d api frontend proxy
+prod --profile research up -d on-demand-research-worker
+prod --profile research ps
 ```
 
-上述窗口中不得执行会展开容器环境的 `docker compose config`，也不得使用 shell 追踪模式。Worker 的根文件系统只读，只有 `/app/data/private/provider_cache` 映射到固定主机目录后可写；常驻 API 不挂载也不读取该缓存。容器退出后再次运行必须复用同一目录，相同且未过期的供应商请求应记为缓存命中，新增外部调用为 0。`create_host_path=false` 会在目录缺失时直接失败，防止 Docker 静默创建 root 所有且无法安全复用的目录。
+将本仓库健康检查安装到现有 systemd 服务调用路径后，队列开关为 true 时会额外要求 Worker 正在运行且容器健康；失败继续走已经验收的飞书 `OnFailure` 告警，不包含业务数据：
+
+```bash
+sudo install -o root -g root -m 0555 deploy/health-check.sh \
+  /usr/local/sbin/dealflow-radar-health-check
+sudo systemctl start dealflow-radar-health-check.service
+sudo systemctl status dealflow-radar-health-check.service --no-pager
+```
+
+生产中已经存在的旧版 `pending` 申请不得让用户重新提交，也不得手工改 SQL。核对申请 ID 后，由平台 Worker 身份执行一次有理由的原地转队列；命令只输出申请 ID、状态和零调用/零 Token，不输出公司或用户资料：
+
+```bash
+prod --profile research exec -T on-demand-research-worker \
+  python -m scripts.activate_legacy_company_request \
+  --request-id '替换为已核对的申请UUID' \
+  --reason 'M6B-P1 修复后继续原外部测试申请'
+```
+
+紧急停止时先把 `ON_DEMAND_RESEARCH_ENABLED=false` 并重启 API，再执行 `prod --profile research stop on-demand-research-worker`。已排队状态保留在 PostgreSQL，恢复前重新 dry-run；不得删除申请、清空队列或执行数据库 downgrade。`create_host_path=false` 会在缓存或 Secret 文件缺失时直接失败，防止 Docker 静默创建错误权限的路径。
 
 取消排队请求立即停止；个人接口只取消本人申请，平台 Worker 确认已无其他活跃请求后才取消全局任务。身份或模块查询正在传输时只记录取消，完成当前调用并保存通过校验的结果后不再开始下一模块。零外部调用只退当月额度，日提交次数不退，同主体仍保持 24 小时冷却。个人页面不显示精确外部调用、缓存命中或私有档案冲突原因；平台管理页保留诊断信息。服务重启、退出登录或断线不能删除任务；恢复后先查看申请、五个默认模块状态、租约、调用台账和全局活动任务唯一约束，不得手工重复建任务。若已存在同信用代码的租户私有公司，任务应停在管理员处理状态，不能为通过测试直接改成共享公司。Worker 每次提交或回滚事务后必须重新设置 RLS 上下文。
 ### 投资者重要变化解读 Agent V1（默认关闭）

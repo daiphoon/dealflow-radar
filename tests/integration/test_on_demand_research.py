@@ -421,6 +421,99 @@ def _prepare_new_company_research(
     return created.json()["id"], prepared.company_id, prepared.research_job_id
 
 
+def test_platform_admin_can_activate_legacy_request_without_recreating_it(
+    client: TestClient,
+    migrated_app: FastAPI,
+) -> None:
+    created = client.post(
+        "/api/v1/me/company-requests/inclusion",
+        headers=PERSONAL_HEADERS,
+        json={"company_name": NEW_COMPANY_NAME, "credit_code": NEW_COMPANY_CODE},
+    )
+    assert created.status_code == 200
+    assert created.json()["status"] == "pending"
+    request_id = created.json()["id"]
+
+    forbidden = client.post(
+        f"/api/v1/platform/company-requests/{request_id}/activation",
+        headers=BETA_HEADERS,
+        json={"reason": "普通用户不得转入平台队列"},
+    )
+    assert forbidden.status_code == 403
+
+    _grant_platform_admin(migrated_app)
+    activated = client.post(
+        f"/api/v1/platform/company-requests/{request_id}/activation",
+        headers=ALPHA_HEADERS,
+        json={"reason": "修复生产接线后继续原申请"},
+    )
+    repeated = client.post(
+        f"/api/v1/platform/company-requests/{request_id}/activation",
+        headers=ALPHA_HEADERS,
+        json={"reason": "网络重试不得重复创建申请"},
+    )
+
+    assert activated.status_code == repeated.status_code == 200
+    assert activated.json()["id"] == request_id
+    assert activated.json()["status"] == "identity_queued"
+    assert activated.json()["queue_position"] == 1
+    assert activated.json()["external_calls"] == 0
+    assert activated.json()["cache_hits"] == 0
+    assert activated.json()["reviewed_by_id"] == str(ALPHA_USER_ID)
+    assert "activated_for_on_demand_research" in activated.json()["decision_reason"]
+    assert repeated.json()["reused"] is True
+
+    personal = client.get(
+        "/api/v1/me/company-requests",
+        headers=PERSONAL_HEADERS,
+    ).json()
+    assert personal[0]["id"] == request_id
+    assert personal[0]["status"] == "identity_queued"
+    assert personal[0]["external_calls"] == 0
+
+    with migrated_app.state.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(PersonalCompanyRequest)) == 1
+        assert session.scalar(select(func.count()).select_from(CompanyResearchJob)) == 0
+        usage = session.scalar(
+            select(func.count())
+            .select_from(PersonalUsageRecord)
+            .where(PersonalUsageRecord.resource_id == UUID(request_id))
+        )
+        assert usage == 1
+
+    worker_result = _run_worker(migrated_app, _IdentityProvider())
+    assert worker_result.outcome == "verified_candidate"
+    assert worker_result.external_calls == 1
+
+
+def test_platform_admin_activates_legacy_refresh_into_research_queue(
+    client: TestClient,
+    migrated_app: FastAPI,
+) -> None:
+    with migrated_app.state.session_factory() as session:
+        company_id = session.scalar(
+            select(Company.id).where(Company.legal_name == "示例星河科技一号有限公司")
+        )
+    assert company_id is not None
+    created = client.post(
+        f"/api/v1/me/company-requests/refresh/{company_id}",
+        headers=PERSONAL_HEADERS,
+    )
+    assert created.status_code == 200
+    assert created.json()["status"] == "pending"
+    _grant_platform_admin(migrated_app)
+
+    activated = client.post(
+        f"/api/v1/platform/company-requests/{created.json()['id']}/activation",
+        headers=ALPHA_HEADERS,
+        json={"reason": "恢复旧版刷新申请"},
+    )
+
+    assert activated.status_code == 200
+    assert activated.json()["status"] == "research_queued"
+    assert activated.json()["research_job_id"] is None
+
+
 def test_identity_confirmation_creates_one_shared_company_and_reuses_one_job(
     client: TestClient,
     migrated_app: FastAPI,
@@ -916,6 +1009,12 @@ def test_existing_private_company_is_not_silently_promoted(
         json={"status": "completed", "reason": "不得用旧入口伪造目录合并"},
     )
     assert legacy_decision.status_code == 409
+    activation = client.post(
+        f"/api/v1/platform/company-requests/{created.json()['id']}/activation",
+        headers=ALPHA_HEADERS,
+        json={"reason": "受限档案冲突不得自动转队列"},
+    )
+    assert activation.status_code == 409
     with migrated_app.state.session_factory() as session:
         company = session.get(Company, private_company_id)
         assert company is not None

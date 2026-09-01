@@ -27,6 +27,7 @@ def test_dry_run_does_not_read_provider_secret_or_create_provider(
     monkeypatch.setenv("ON_DEMAND_WORKER_USER_ID", str(worker_user_id))
     monkeypatch.setenv("WORKER_TENANT_ID", str(worker_tenant_id))
     monkeypatch.delenv("TIANYANCHA_AUTHORIZATION", raising=False)
+    monkeypatch.delenv("TIANYANCHA_AUTHORIZATION_FILE", raising=False)
     monkeypatch.setattr(sys, "argv", ["run_on_demand_research_worker", "--dry-run"])
     monkeypatch.setattr(worker_cli.Settings, "from_env", lambda: settings)
     monkeypatch.setattr(
@@ -55,6 +56,101 @@ def test_dry_run_does_not_read_provider_secret_or_create_provider(
         "output_tokens": 0,
         "estimated_cost": "0",
     }
+
+
+def test_healthcheck_does_not_read_provider_secret_or_create_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    worker_user_id = uuid4()
+    worker_tenant_id = uuid4()
+    settings = Settings(
+        database_url="sqlite:///unused.db",
+        app_mode="demo",
+        external_calls_enabled=False,
+        paid_api_calls_enabled=False,
+        auto_refresh_enabled=False,
+    )
+    monkeypatch.setenv("ON_DEMAND_WORKER_USER_ID", str(worker_user_id))
+    monkeypatch.setenv("WORKER_TENANT_ID", str(worker_tenant_id))
+    monkeypatch.setenv("TIANYANCHA_AUTHORIZATION_FILE", "/missing/secret")
+    monkeypatch.setattr(sys, "argv", ["run_on_demand_research_worker", "--healthcheck"])
+    monkeypatch.setattr(worker_cli.Settings, "from_env", lambda: settings)
+    monkeypatch.setattr(
+        worker_cli,
+        "_healthcheck",
+        lambda *_args, **_kwargs: {"status": "healthy", "external_calls": 0},
+    )
+    monkeypatch.setattr(
+        worker_cli,
+        "TianyanchaIdentityProvider",
+        lambda *_args, **_kwargs: pytest.fail("healthcheck must not create the provider"),
+    )
+
+    worker_cli.main()
+
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "healthy",
+        "external_calls": 0,
+    }
+
+
+def test_provider_authorization_can_be_read_from_private_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    secret_file = tmp_path / "authorization"
+    secret_file.write_text("test-authorization\n", encoding="utf-8")
+    secret_file.chmod(0o400)
+    monkeypatch.delenv("TIANYANCHA_AUTHORIZATION", raising=False)
+    monkeypatch.setenv("TIANYANCHA_AUTHORIZATION_FILE", str(secret_file))
+
+    assert worker_cli._provider_authorization() == "test-authorization"
+
+
+def test_provider_authorization_rejects_ambiguous_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    secret_file = tmp_path / "authorization"
+    secret_file.write_text("file-value", encoding="utf-8")
+    monkeypatch.setenv("TIANYANCHA_AUTHORIZATION", "environment-value")
+    monkeypatch.setenv("TIANYANCHA_AUTHORIZATION_FILE", str(secret_file))
+
+    with pytest.raises(RuntimeError, match="only one"):
+        worker_cli._provider_authorization()
+
+
+def test_provider_authorization_rejects_group_readable_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    secret_file = tmp_path / "authorization"
+    secret_file.write_text("file-value", encoding="utf-8")
+    secret_file.chmod(0o440)
+    monkeypatch.delenv("TIANYANCHA_AUTHORIZATION", raising=False)
+    monkeypatch.setenv("TIANYANCHA_AUTHORIZATION_FILE", str(secret_file))
+
+    with pytest.raises(RuntimeError, match="owner-only"):
+        worker_cli._provider_authorization()
+
+
+def test_worker_lock_rejects_a_second_process_slot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    lock_file = tmp_path / "worker.lock"
+    monkeypatch.setenv("ON_DEMAND_WORKER_LOCK_FILE", str(lock_file))
+
+    with worker_cli._exclusive_worker_lock():
+        with pytest.raises(RuntimeError, match="already holds the lock"):
+            with worker_cli._exclusive_worker_lock():
+                pytest.fail("a second worker must not acquire the lock")
+        with pytest.raises(RuntimeError, match="already holds the lock"):
+            with worker_cli._exclusive_worker_lock():
+                pytest.fail("a failed lock attempt must not release the first worker")
+
+    assert lock_file.stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.parametrize(
