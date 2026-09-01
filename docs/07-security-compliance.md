@@ -12,7 +12,7 @@ Worker 遵守 robots.txt，使用明确 User-Agent，不登录、不提交表单
 
 ## 历史授权商业工商数据边界（待退役）
 
-ADR-0018 已决定退出天眼查 API 路线。现存身份和按需研究开关必须保持关闭，不得再创建真实调用窗口；相关活动代码、Secret、缓存、专用 RLS 和文案由独立安全退役里程碑处理。历史记录继续保留 `licensed_business_data` 标识，不得显示为“政府官方来源”或静默改成“公开网络来源”。
+ADR-0018 已决定退出旧商业数据 API 路线。R1 已移除身份和按需研究调用入口、专用配置、缓存挂载及部署 Worker，并通过 `0022` 删除专用 RLS 例外；生产 Secret 与缓存只在合并部署、备份和回归通过后清理。历史记录继续保留 `licensed_business_data` 标识，不得显示为“政府官方来源”或静默改成“公开网络来源”。
 
 完整供应商响应可能包含本里程碑不需要的联系方式，只能存入 Git 忽略、目录 `700`、文件 `600` 的私有缓存。业务库只保留工商全称、信用代码、地区、登记状态、登记机关、数据时间、来源 ID 和响应哈希。API Key 只由环境或 Secret 注入，不进入数据库、Git、响应和日志。身份核验不能替代事件证据，也不能降低严重负面事实的审核和多来源要求。
 
@@ -76,7 +76,7 @@ M5B 依据 ADR-0014 使用腾讯云中国香港服务器，不以个人 ICP 备�
 
 共享快照构建器只读平台共享事件和指标；基金投资概览及个人/机构私有数据在响应层按授权单独拼装，不能缓存为全局公司快照。没有基金授权但具有有效共享档案权益的用户仍可读取共享基础层。
 
-当前 29 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`、两张共享决定审计表、`trusted_sources`、`source_check_runs`、`candidate_documents`、认证审计表，个人留存相关表，以及新增的 `personal_quota_increase_requests` 和 `company_research_jobs`。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权。`system_restricted` 默认不向普通应用用户或平台管理员开放。历史天眼查最小身份记录和供应商用量存在专用服务身份例外，这些例外只等待向前迁移安全移除，不得扩展到其他 Provider、客户正文或私有研究材料。个人关注、用量、查看状态、事件回执、报告、研究申请和临时额度申请仅本人读取；平台管理员只能跨租户处理用户明确提交的研究和提额运营记录。共享研究任务只对关联请求者和平台管理员可见，不暴露其他请求者身份。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
+当前 29 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`、两张共享决定审计表、`trusted_sources`、`source_check_runs`、`candidate_documents`、认证审计表，个人留存相关表，以及新增的 `personal_quota_increase_requests` 和 `company_research_jobs`。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权。`system_restricted` 默认不向普通应用用户或平台管理员开放。R1 的 `0022` 迁移删除了旧供应商最小身份、用量和原始记录的专用服务身份例外；后续 Provider 不得沿用这些例外。个人关注、用量、查看状态、事件回执、报告、研究申请和临时额度申请仅本人读取；平台管理员只能跨租户处理用户明确提交的研究和提额运营记录。共享研究任务只对关联请求者和平台管理员可见，不暴露其他请求者身份。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
 
 当前 CloudBase 认证只替换身份凭证，个人订阅与机构赞助权益尚未实现；M3 完成真实收码和四角色验收前仍只适合本地或受控邀请验证。迁移账户仍可作为表所有者绕过策略，必须继续与日常 `NOBYPASSRLS` 应用账户分离。
 

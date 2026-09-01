@@ -86,10 +86,9 @@ function formatOwnership(value: string | null): string {
 }
 
 function identityLabel(status: string, basis: string | null): string {
-  if (status !== "verified") return "待核验";
+  if (status !== "verified" || basis !== "official_government") return "待核验";
   if (basis === "official_government") return "已核验（政府官方来源）";
-  if (basis === "licensed_business_data") return "已核验（授权工商数据）";
-  return "已核验（历史依据未记录）";
+  return "待核验";
 }
 
 function InvestmentCard({ investment }: { investment: Investment }) {

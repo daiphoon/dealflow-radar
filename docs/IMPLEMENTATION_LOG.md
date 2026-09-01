@@ -392,3 +392,12 @@
 - 实际命令：`gh pr ready 42 --undo`；文档本地链接检查；敏感信息差异检查；`git diff --check`；完整 Ruff 与格式检查；SQLite `base → 0021` 和 `alembic check`；完整 Pytest；前端依赖审计、TypeScript 和 Next.js 生产构建。
 - 测试结果：本地链接和敏感信息检查通过；Ruff 与格式检查通过；一次性 SQLite 升级和 Schema 漂移检查通过；Pytest 291 项通过、16 项按环境条件跳过，仅有既有 FastAPI TestClient 上游弃用警告；前端依赖审计为 0 个已知漏洞，类型检查和生产构建通过。业务外部调用、模型 Token、项目/生产数据库写入和生产部署均为 0。
 - 未解决阻塞：搜索 Provider 尚未通过中文真实公司覆盖、许可、稳定性和成本准入；天眼查活动代码、Secret、缓存、专用 RLS 和用户可见事实尚未退役，必须由下一个独立代码里程碑处理。PR #42 保持 Draft，不能按原方案合并。
+
+## 2026-09-02｜R1 旧商业数据供应商安全退役
+
+- 日期：2026-09-02
+- 任务：依据 ADR-0018 删除旧商业数据供应商的活动适配器、身份 CLI、按需研究 Worker、配置、缓存挂载、CI 契约和用户入口；保留通用个人申请、取消与断线恢复状态。新增 `0022` 保守向前迁移：没有独立官方核验的旧来源身份恢复待核验，没有独立证据的事实撤回，旧供应商证据引用停止展示，历史来源、原始文档、核验、用量、任务和血缘继续保存；历史商业候选不能从审核工作台重新激活。
+- 关键文件：`migrations/versions/0022_retire_legacy_business_data_provider.py`、`backend/app/config.py`、`backend/app/providers.py`、`backend/app/personal_features.py`、`backend/app/services.py`、`compose.production.yml`、个人申请前端、生产示例配置、退役迁移/RLS/个人申请测试和受影响文档；旧供应商适配器、CLI、Worker、样例清单及专用测试已删除。
+- 实际命令：Ruff 与格式检查；SQLite `base → 0022 → base` 和 Schema 漂移；一次性 PostgreSQL 16 的带数据 `0021 → 0022 → 0021 → 0022`、专用 RLS 策略检查和完整应用/RLS 测试；前端依赖审计、TypeScript 和 Next.js 生产构建；生产 Compose 解析、配置预检及 API/前端/备份镜像构建；活动入口与敏感信息检索；生产数据库只读影响统计；Codex Security 差异审查；`git diff --check`。
+- 测试结果：Ruff、格式、SQLite/PostgreSQL 迁移、Schema 漂移和生产配置通过；PostgreSQL 带数据验证确认旧来源独占事实撤回、旧身份降级、旧证据停止展示、历史记录保留且 downgrade 不会重新发布；完整 PostgreSQL 测试 246 项通过，仅有既有 FastAPI TestClient 上游弃用警告。前端依赖审计为 0 个已知漏洞，类型检查、生产构建和三类生产镜像构建通过。本机没有旧供应商 CLI 或 skill，用户级凭据文件已删除；仓库活动运行目录不再包含旧 Provider、Worker、CLI、开关或缓存挂载。业务外部调用、模型 Token、费用、自动刷新和自动发布均为 0。
+- 未解决阻塞：PR #44 尚未合并，生产仍在 `0021`。只读核查确认预计处置 12 个旧依据身份、21 条旧来源独占非撤回事件和 4 个关联已完成申请；4 份个人报告均不含旧供应商名称且未引用这些事件。生产 Secret、13 个私有缓存文件和旧部署环境变量必须等合并后完成升级前备份、`0022` 部署、真实账号/RLS 回归及升级后备份，再无输出地删除；必要审计和最近可回滚 release 不提前清理。搜索源准入与 R3 研究 Agent 继续后置。

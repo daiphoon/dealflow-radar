@@ -582,10 +582,6 @@ export function createPersonalRefreshRequest(companyId: string): Promise<Persona
   return postJson(`/api/v1/me/company-requests/refresh/${encodeURIComponent(companyId)}`, {});
 }
 
-export function confirmPersonalCompanyRequest(requestId: string): Promise<PersonalCompanyRequest> {
-  return postJson(`/api/v1/me/company-requests/${encodeURIComponent(requestId)}/confirm`, {});
-}
-
 export function cancelPersonalCompanyRequest(
   requestId: string,
   reason: string | null,

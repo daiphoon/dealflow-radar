@@ -185,7 +185,6 @@ function publicationRouteLabel(route: string): string {
 
 function identityBasisLabel(basis: string): string {
   if (basis === "official_government") return "政府官方来源";
-  if (basis === "licensed_business_data") return "授权工商数据";
   return "未知核验依据";
 }
 

@@ -19,7 +19,7 @@ M5A 和 M5B 前置已经验证可迁移的生产镜像、Caddy 单一入口、�
 3. 客户通过 `https://app.dealflowradar.cn` 访问，不使用 Tailscale。服务器管理优先使用 Tailscale SSH；云安全组不向全网开放 SSH、数据库、`3000` 或 `8000`。未备案域名不接入中国大陆 CDN。
 4. CloudBase 继续只负责身份认证。现有环境、邮箱账户和稳定 subject 可以复用；PostgreSQL、tenant、基金、角色、RLS 和业务数据不迁入 CloudBase。域名切换后允许用户重新登录一次，不为迁移复制浏览器 Cookie。
 5. MVP 保持邀请制，不提供匿名注册、支付、公开营销或生产级 SLA。初始数据只使用许可明确的平台共享公开信息、虚构投资数据和必要的测试账户资料；未经明确授权，不上传真实基金敏感文件、投资金额、持股、内部估值或未公开材料。
-6. 部署时以下能力必须保持关闭：`EXTERNAL_CALLS_ENABLED`、`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED`、`TRUSTED_SOURCE_CALLS_ENABLED`、`SOURCE_MONITOR_SCHEDULER_ENABLED`、`TIANYANCHA_IDENTITY_CALLS_ENABLED` 和 `REVIEW_WORKBENCH_ENABLED`。后续单项开放仍需独立许可、预算和验收，不因服务器上线自动开启。
+6. 部署时以下能力必须保持关闭：`EXTERNAL_CALLS_ENABLED`、`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED`、`TRUSTED_SOURCE_CALLS_ENABLED`、`SOURCE_MONITOR_SCHEDULER_ENABLED` 和 `REVIEW_WORKBENCH_ENABLED`。旧商业数据身份专用开关已由 R1 删除。后续单项开放仍需独立许可、预算和验收，不因服务器上线自动开启。
 7. PostgreSQL 备份继续先使用离线保管私钥对应的 `age` 公钥完成客户端加密，再上传到独立的私有 COS 存储桶。生产主机不保存解密私钥；保留 14 个每日和 8 个每周恢复点，必须完成从 COS 下载到隔离数据库的真实恢复。
 8. 香港环境属于跨境部署。邀请前必须提供最小隐私与测试说明，明确服务地区、收集字段、用途、保存期限、退出和纠错方式；坚持数据最小化，不把“测试用户较少”当作免除安全或隐私责任的理由。
 9. 家庭服务器 `ruitian100` 不承载本项目。其 OpenClaw 和其他工作负载的维护与本产品部署分开，不共享端口、数据、Secret、备份或运维变更。
