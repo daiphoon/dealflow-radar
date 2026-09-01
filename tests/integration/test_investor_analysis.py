@@ -194,7 +194,7 @@ def _create_change_event(
             display_source_name="授权工商数据源",
             display_source_quality="A",
             display_title="股东信息比较记录",
-            display_canonical_url="https://www.tianyancha.com/",
+            display_canonical_url="https://licensed.example.test/records/123",
             display_observed_at=datetime(2026, 8, 28, tzinfo=UTC),
             display_url_health_status="unchecked",
             display_license_status="licensed",

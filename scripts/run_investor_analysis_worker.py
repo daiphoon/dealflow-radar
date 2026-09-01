@@ -53,8 +53,6 @@ def _validate_worker_safety(settings: Settings) -> None:
         raise RuntimeError("AUTO_REFRESH_ENABLED must remain false")
     if settings.publication_policy.enabled:
         raise RuntimeError("AUTO_PUBLISH_ENABLED must remain false")
-    if settings.tianyancha_identity_calls_enabled or settings.tianyancha_research_calls_enabled:
-        raise RuntimeError("Tianyancha calls must remain disabled in the analysis worker")
     if settings.trusted_source_calls_enabled or settings.source_monitor_scheduler_enabled:
         raise RuntimeError("trusted source calls must remain disabled in the analysis worker")
     policy = settings.investor_analysis_policy

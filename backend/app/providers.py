@@ -94,14 +94,6 @@ def _validate_identity_https_url(value: str) -> str:
     return value
 
 
-def _validate_tianyancha_identity_url(value: str) -> str:
-    _validate_identity_https_url(value)
-    host = (urlsplit(value).hostname or "").lower().rstrip(".")
-    if host != "www.tianyancha.com":
-        raise ValueError("licensed identity URL must use the approved Tianyancha domain")
-    return value
-
-
 def validate_unified_credit_code(value: str) -> str:
     if len(value) != 18 or any(character not in UNIFIED_CREDIT_CODE_CHARSET for character in value):
         raise ValueError("credit_code must use the unified social credit code character set")
@@ -383,10 +375,8 @@ class OfficialIdentityImportBatch(BaseModel):
     source: OfficialIdentitySource
     original_query: str = Field(min_length=1, max_length=1000)
     target_company_hint: str = Field(min_length=1, max_length=240)
-    verification_basis: Literal["official_government", "licensed_business_data"] = (
-        "official_government"
-    )
-    license_status: Literal["public", "permission_confirmed"]
+    verification_basis: Literal["official_government"] = "official_government"
+    license_status: Literal["public"]
     records: list[OfficialIdentityRecord] = Field(min_length=1, max_length=500)
 
     @field_validator("queried_at")
@@ -398,23 +388,9 @@ class OfficialIdentityImportBatch(BaseModel):
 
     @model_validator(mode="after")
     def validate_basis_source_and_license(self) -> OfficialIdentityImportBatch:
-        if self.verification_basis == "official_government":
-            if self.license_status != "public":
-                raise ValueError("official government identity requires a public license status")
-            _validate_official_identity_url(self.source.base_url)
-            for record in self.records:
-                _validate_official_identity_url(record.canonical_url)
-            return self
-
-        if self.license_status != "permission_confirmed":
-            raise ValueError(
-                "licensed business identity requires a permission_confirmed license status"
-            )
-        if self.source.code != "tianyancha_licensed_business_data":
-            raise ValueError("licensed business identity must use the approved Tianyancha source")
-        _validate_tianyancha_identity_url(self.source.base_url)
+        _validate_official_identity_url(self.source.base_url)
         for record in self.records:
-            _validate_tianyancha_identity_url(record.canonical_url)
+            _validate_official_identity_url(record.canonical_url)
         return self
 
 

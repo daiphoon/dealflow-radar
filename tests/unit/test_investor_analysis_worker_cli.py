@@ -79,8 +79,6 @@ def test_dry_run_does_not_read_secret_or_create_provider(
         ({"paid_api_calls_enabled": False}, "PAID_API_CALLS_ENABLED"),
         ({"auto_refresh_enabled": True}, "AUTO_REFRESH_ENABLED"),
         ({"publication_policy": PublicationPolicy(enabled=True)}, "AUTO_PUBLISH_ENABLED"),
-        ({"tianyancha_identity_calls_enabled": True}, "Tianyancha"),
-        ({"tianyancha_research_calls_enabled": True}, "Tianyancha"),
         ({"trusted_source_calls_enabled": True}, "trusted source"),
         ({"source_monitor_scheduler_enabled": True}, "trusted source"),
         (

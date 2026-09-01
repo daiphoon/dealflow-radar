@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -255,3 +255,56 @@ def test_inclusion_and_refresh_requests_are_queued_deduplicated_and_admin_review
     assert settings.paid_api_calls_enabled is False
     assert settings.auto_refresh_enabled is False
     assert settings.publication_policy.enabled is False
+
+
+def test_pending_request_can_be_cancelled_and_restored_without_provider_call(
+    client: TestClient,
+    migrated_app: FastAPI,
+) -> None:
+    created = client.post(
+        "/api/v1/me/company-requests/inclusion",
+        headers=PERSONAL_HEADERS,
+        json={
+            "company_name": "待取消的示例主体有限公司",
+            "credit_code": "913100001234567896",
+        },
+    )
+    assert created.status_code == 200
+    request_id = created.json()["id"]
+    assert created.json()["status"] == "pending"
+    assert "新研究数据源准入" in created.json()["status_message"]
+
+    removed_confirmation = client.post(
+        f"/api/v1/me/company-requests/{request_id}/confirm",
+        headers=PERSONAL_HEADERS,
+    )
+    assert removed_confirmation.status_code == 404
+
+    cross_user = client.post(
+        f"/api/v1/me/company-requests/{request_id}/cancel",
+        headers=BETA_HEADERS,
+        json={"reason": "跨用户取消必须失败"},
+    )
+    assert cross_user.status_code == 404
+
+    cancelled = client.post(
+        f"/api/v1/me/company-requests/{request_id}/cancel",
+        headers=PERSONAL_HEADERS,
+        json={"reason": "用户发现主体输入错误"},
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["can_cancel"] is False
+    assert cancelled.json()["external_calls"] == 0
+
+    restored = client.get("/api/v1/me/company-requests", headers=PERSONAL_HEADERS)
+    assert restored.status_code == 200
+    assert restored.json()[0]["id"] == request_id
+    assert restored.json()[0]["status"] == "cancelled"
+
+    with migrated_app.state.session_factory() as session:
+        request = session.get(PersonalCompanyRequest, UUID(request_id))
+        assert request is not None
+        assert request.status == "cancelled"
+        assert request.cancelled_at is not None
+        assert request.external_calls == 0

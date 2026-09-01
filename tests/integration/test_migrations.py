@@ -326,3 +326,6 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "investor_change_analyses_platform_admin_read" in ddl
     assert "investor_change_analyses_insert" in ddl
     assert "investor_change_analyses_update" in ddl
+    assert "DROP POLICY IF EXISTS usage_ledger_tianyancha_platform_admin_read" in ddl
+    assert "DROP POLICY IF EXISTS raw_documents_tianyancha_admin_read" in ddl
+    assert "DROP POLICY IF EXISTS official_identity_verifications_platform_admin_read" in ddl

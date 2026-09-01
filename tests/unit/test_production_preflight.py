@@ -34,9 +34,6 @@ def _set_valid_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "AUTO_PUBLISH_ENABLED",
         "TRUSTED_SOURCE_CALLS_ENABLED",
         "SOURCE_MONITOR_SCHEDULER_ENABLED",
-        "TIANYANCHA_IDENTITY_CALLS_ENABLED",
-        "TIANYANCHA_RESEARCH_CALLS_ENABLED",
-        "ON_DEMAND_RESEARCH_ENABLED",
         "INVESTOR_ANALYSIS_ENABLED",
         "REVIEW_WORKBENCH_ENABLED",
     ):
@@ -112,7 +109,6 @@ def test_production_preflight_rejects_public_origin_port_mismatch(
     [
         ("AUTO_PUBLISH_ENABLED", "true", "AUTO_PUBLISH_ENABLED"),
         ("EXTERNAL_CALLS_ENABLED", "1", "EXTERNAL_CALLS_ENABLED"),
-        ("ON_DEMAND_RESEARCH_ENABLED", "true", "ON_DEMAND_RESEARCH_ENABLED"),
         ("INVESTOR_ANALYSIS_ENABLED", "true", "INVESTOR_ANALYSIS_ENABLED"),
         ("SITE_ADDRESS", "http://app.dealflow.test", "HTTPS"),
         ("CLOUDBASE_ENV_ID", "replace-with-env", "placeholder"),

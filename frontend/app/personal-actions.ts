@@ -7,7 +7,6 @@ import {
   ApiError,
   addPersonalWatchlistCompany,
   cancelPersonalCompanyRequest,
-  confirmPersonalCompanyRequest,
   createPersonalCompanyReport,
   createPersonalInclusionRequest,
   createPersonalQuotaIncreaseRequest,
@@ -97,19 +96,6 @@ export async function requestCompanyRefresh(formData: FormData): Promise<void> {
   }
   revalidatePath("/watchlist");
   redirect(`/companies/${companyId}?result=${result}`);
-}
-
-export async function confirmCompanyRequest(formData: FormData): Promise<void> {
-  const requestId = String(formData.get("request_id") ?? "");
-  if (!uuidPattern.test(requestId)) redirect("/watchlist?error=invalid_input");
-  try {
-    await confirmPersonalCompanyRequest(requestId);
-  } catch (error) {
-    redirect(`/watchlist?error=${actionError(error)}`);
-  }
-  revalidatePath("/watchlist");
-  revalidatePath("/");
-  redirect("/watchlist?result=identity_confirmed");
 }
 
 export async function cancelCompanyRequest(formData: FormData): Promise<void> {

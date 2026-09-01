@@ -535,17 +535,14 @@ def _official_identity_source(
     loaded: LoadedOfficialIdentityImport,
 ) -> Source:
     source_payload = loaded.batch.source
-    verification_basis = loaded.batch.verification_basis
-    expected_quality = "A" if verification_basis == "official_government" else "B"
-    expected_license = loaded.batch.license_status
     base_url = source_payload.base_url.rstrip("/")
     source = session.scalar(select(Source).where(Source.code == source_payload.code))
     if source is None:
         source = Source(
             code=source_payload.code,
             name=source_payload.name,
-            source_quality=expected_quality,
-            license_status=expected_license,
+            source_quality="A",
+            license_status="public",
             base_url=base_url,
         )
         session.add(source)
@@ -553,8 +550,8 @@ def _official_identity_source(
         return source
     if (
         source.name != source_payload.name
-        or source.source_quality != expected_quality
-        or source.license_status != expected_license
+        or source.source_quality != "A"
+        or source.license_status != "public"
         or (source.base_url or "").rstrip("/") != base_url
     ):
         raise ImportConflictError(f"source_code conflict: {source_payload.code}")
@@ -565,11 +562,8 @@ def _resolve_official_identity_company(
     session: Session,
     tenant_id: UUID,
     record: OfficialIdentityRecord,
-    verification_basis: str,
 ) -> tuple[Company | None, str, str]:
-    match_prefix = (
-        "official" if verification_basis == "official_government" else "licensed_business"
-    )
+    match_prefix = "official"
     visible_company = or_(Company.tenant_id.is_(None), Company.tenant_id == tenant_id)
     company = session.scalar(
         select(Company).where(visible_company, Company.credit_code == record.credit_code)
@@ -580,11 +574,7 @@ def _resolve_official_identity_company(
         region_matches = _regions_compatible(company.registered_region, record.registered_region)
         if name_matches:
             company.identity_status = "verified"
-            if (
-                company.identity_verification_basis is None
-                or verification_basis == "official_government"
-            ):
-                company.identity_verification_basis = verification_basis
+            company.identity_verification_basis = "official_government"
             if company.registered_region is None:
                 company.registered_region = record.registered_region
             match_rule = f"{match_prefix}_credit_code_exact"
@@ -611,8 +601,7 @@ def _resolve_official_identity_company(
         return company, f"{match_prefix}_legal_name_registered_region_conflict", "conflict"
     company.credit_code = record.credit_code
     company.identity_status = "verified"
-    if company.identity_verification_basis is None or verification_basis == "official_government":
-        company.identity_verification_basis = verification_basis
+    company.identity_verification_basis = "official_government"
     if company.registered_region is None:
         company.registered_region = record.registered_region
     return company, f"{match_prefix}_legal_name_exact_credit_code_enriched", "verified"
@@ -720,7 +709,6 @@ def import_official_identities(
                 session,
                 user.tenant_id,
                 record,
-                batch.verification_basis,
             )
             if verification_status == "verified":
                 verified_count += 1
@@ -1660,8 +1648,6 @@ def _scope_owner_matches(
 
 def _link_can_be_displayed(url: str, health_status: str, license_status: str | None) -> bool:
     parsed = urlsplit(url)
-    if parsed.hostname in {"tianyancha.com", "www.tianyancha.com"} and not parsed.path.rstrip("/"):
-        return False
     return (
         license_status in {"public", "permission_confirmed"}
         and parsed.scheme in {"http", "https"}
@@ -1979,6 +1965,11 @@ def get_evidence_detail(
     )
     if not isinstance(record_values, list):
         raise NotFoundError("evidence detail not found")
+    provider_url = evidence.display_final_url or evidence.display_canonical_url
+    try:
+        provider_hostname = (urlsplit(provider_url).hostname or "").lower()
+    except ValueError:
+        provider_hostname = ""
     for item in record_values:
         if not isinstance(item, dict):
             continue
@@ -1994,8 +1985,7 @@ def get_evidence_detail(
                 source_port = -1
             source_hostname = (parsed_source.hostname or "").lower()
             source_host_allowed = (
-                source_hostname == "tianyancha.com"
-                or source_hostname.endswith(".tianyancha.com")
+                (bool(provider_hostname) and source_hostname == provider_hostname)
                 or source_hostname == "gov.cn"
                 or source_hostname.endswith(".gov.cn")
             )
@@ -2037,7 +2027,6 @@ def get_evidence_detail(
             )
         except ValueError as exc:
             raise NotFoundError("evidence detail not found") from exc
-    provider_url = evidence.display_final_url or evidence.display_canonical_url
     health_status = evidence.display_url_health_status or "unchecked"
     provider_link_available = _link_can_be_displayed(
         provider_url,
@@ -2111,6 +2100,7 @@ def _identity_candidates_for_mention(
         .where(
             OfficialIdentityVerification.tenant_id == tenant_id,
             OfficialIdentityVerification.company_id.is_not(None),
+            OfficialIdentityVerification.verification_basis == "official_government",
             OfficialIdentityVerification.verification_status.in_(["verified", "conflict"]),
         )
         .order_by(OfficialIdentityVerification.checked_at.desc())

@@ -2,7 +2,6 @@ import Link from "next/link";
 
 import {
   cancelCompanyRequest,
-  confirmCompanyRequest,
   requestTemporaryQuotaIncrease,
   unfollowCompany,
 } from "@/app/personal-actions";
@@ -109,10 +108,8 @@ export default async function WatchlistPage({
           <p className="feedback feedback-success">
             {result === "unfollowed"
               ? "已取消关注。"
-              : result === "identity_confirmed"
-                ? "已确认工商主体，后台研究将继续进行；关闭页面不会中断。"
-                : result === "request_cancelled"
-                  ? "已提交取消；若外部调用正在进行，系统会在本次调用结束后停止下一步。"
+              : result === "request_cancelled"
+                  ? "已取消申请，平台不会开始新的处理步骤。"
                   : result === "quota_requested"
                     ? "临时额度申请已提交，等待平台管理员处理。"
                     : result === "inclusion_requested"
@@ -269,15 +266,6 @@ export default async function WatchlistPage({
                           <dd>{request.resolved_registration_status ?? "未返回"}</dd>
                         </div>
                       </dl>
-                      {request.can_confirm ? (
-                        <form action={confirmCompanyRequest} className="request-action-form">
-                          <input name="request_id" type="hidden" value={request.id} />
-                          <p>请核对无误后再继续；确认前不会创建共享公司档案。</p>
-                          <button className="button button-approve" type="submit">
-                            确认是这家公司并继续
-                          </button>
-                        </form>
-                      ) : null}
                     </section>
                   ) : null}
                   <div className="request-card-footer">

@@ -38,7 +38,7 @@
 | `KimiAgentImportProvider` | 预留 | 用户人工导出、许可明确，不调用未公开接口 |
 | `KimiScheduledResearchImportProvider` | 预留 | Kimi Work/Claw 等官方导出能力、授权和稳定格式已确认 |
 | `KimiOpenPlatformProvider` | 预留 | 正式 API 文档、账号授权、价格和数据条款确认 |
-| `LicensedBusinessDataProvider` | 天眼查旧实现待安全退役，禁止启用或扩展 | 仅保留至独立退役里程碑；历史审计不改写，新能力不得依赖其 SDK、字段或配额 |
+| `LicensedBusinessDataProvider` | 当前无活动实现 | 历史审计不改写；新能力不得依赖已退役供应商的 SDK、字段、配额或缓存 |
 | `OfficialIdentityProvider` | 已实现政府 JSON 与历史授权商业数据双依据 | 政府来源和历史授权商业来源使用不同 `verification_basis`，不得混称官方 |
 | `OfficialPublicDataProvider` | 预留 | 非工商身份的官方接口或合法下载路径、频率和保留边界确认 |
 | `DeepSeekLLMProvider` | 已实现证据约束变化解读，默认关闭 | 只处理新且相关的最小证据片段；严格 Schema、证据和预算校验 |
@@ -67,7 +67,7 @@ Kimi 消费端会员/Agent、Kimi Work 或 Kimi Claw、Kimi Code、开放平台 
 - Agent/Work/Claw 的结果只能通过官方导出或人工导入进入候选层，保存和再分发取决于来源许可。
 - Kimi Code 是开发辅助能力，不自动赋予生产数据访问、模型 API 或商业数据库权利。
 - 开放平台只有在正式文档、密钥、价格、速率和条款确认后才能作为 Provider。
-- 历史天眼查授权不再构成未来技术路线；现存集成按 ADR-0018 安全退役。Kimi 结果不能替代工商、司法或监管原始来源。
+- 历史商业数据授权不再构成未来技术路线；活动集成已按 ADR-0018 和 R1 退役。Kimi 结果不能替代工商、司法或监管原始来源。
 
 系统在完全没有 Kimi 时仍须通过 Mock 和人工导入完成闭环。
 
@@ -90,7 +90,7 @@ V1 不复制保存原始文件字节，只保存受 RLS 保护的批次元数据
 
 工商身份导入另使用 `data/private/identity_imports/`。政府/GSXT JSON 使用 `verification_basis=official_government`、`license_status=public`；历史授权商业记录使用 `verification_basis=licensed_business_data`、`license_status=permission_confirmed`，且不得改称政府或公开网络证据。记录要求 HTTPS 白名单域名、带时区核验时间和通过校验位的统一社会信用代码。同一代码的全称变化记为 `conflict`；同一代码且全称相同时，地区格式差异保留审计但不覆盖主档。无现有公司记为 `unmatched`，不得自动创建公司。
 
-天眼查 V1 的名称候选、信用代码精确查询和私有缓存属于历史实现。专用开关必须保持关闭，不得再发起真实调用；具体代码、Secret、缓存和用户可见内容由独立安全退役里程碑处理。历史决策见 ADR-0010，当前有效方向见 ADR-0018。
+旧 V1 的名称候选、信用代码精确查询和私有缓存属于历史实现。R1 已移除其活动代码、专用开关、CLI 和部署挂载，不再存在可发起真实调用的产品入口；生产 Secret 和缓存只按运维手册在合并部署、备份及验证后清理。历史决策见 ADR-0010，当前有效方向见 ADR-0018。
 
 ```mermaid
 sequenceDiagram

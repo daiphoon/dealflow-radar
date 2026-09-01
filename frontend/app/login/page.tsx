@@ -145,7 +145,7 @@ export default async function LoginPage({
           </form>
         )}
         <p className="auth-note">
-          登录不会迁移或复制现有业务数据，也不会调用天眼查。登录前请阅读
+          登录不会迁移或复制现有业务数据，也不会触发外部公司研究。登录前请阅读
           <Link href="/trial-notice">《邀请测试说明与隐私告知》</Link>。
         </p>
       </section>

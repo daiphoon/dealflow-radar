@@ -253,76 +253,26 @@ uv run python -m scripts.import_official_identity_json
 
 V1 只接收不超过 1 MiB、最多 500 条且许可为 `public` 的 JSON。不得放入内部财务、投资协议、投委会材料、API Key、Cookie 或商业数据库受限内容；原始文件由操作者在私有目录管理，不进入 Git，也不会被系统复制到存储。当前没有网页/API 上传入口。
 
-### 历史天眼查授权工商身份查询 V1（已停用，禁止执行）
+### 旧商业数据供应商 R1 退役部署
 
-> ADR-0018 已决定退出天眼查 API 路线。下方内容仅暂留给下一里程碑核对待删除的命令、配置和缓存，不再是操作手册；不得执行、不得注入 Token、不得开启任何 `TIANYANCHA_*` 开关。
+R1 合并前不得删除生产 Secret、缓存或历史数据库记录。正确顺序是：
 
-查询清单必须放在 `data/private/identity_imports/`，每批最多 10 家，每家公司必须同时给出工商全称和通过校验位验证的统一社会信用代码。可复制 `data/sample/tianyancha_identity_manifest.json` 后只在私有目录替换查询项。先执行不读取 Token、不连接数据库、不访问网络的 dry-run：
+1. 确认代码 PR 的迁移、RLS、后端、前端和 CI 全部通过；
+2. 对生产 PostgreSQL 创建加密、可读且可恢复的升级前备份；
+3. 部署新镜像并用 Alembic 从 `0021` 升级到 `0022`；
+4. 核对只有旧商业来源支撑的身份已恢复为待核验、只有旧来源支撑的展示事实已撤回，同时独立政府核验、独立证据事实、基金关系和个人数据未受影响；
+5. 完成真实账号搜索、详情、关注、基金叠加、审核工作台和权限负向回归；
+6. 再创建升级后备份，最后删除主机 Secret、私有供应商缓存和部署环境中的旧专用变量。
 
-```bash
-export TIANYANCHA_IDENTITY_MANIFEST='licensed-identity-request.json'
-TIANYANCHA_IDENTITY_DRY_RUN=true uv run python -m scripts.import_tianyancha_identities
-```
+`0022` 是保守的向前迁移：它保留历史来源、原始文档、身份核验、用量、任务和审计血缘，不把旧来源改称政府或公开网络来源。旧供应商证据引用统一停止展示；同时存在独立证据的事件仍可保留并只展示独立证据。降级只恢复旧 Schema/RLS 兼容性，不会自动重新核验身份、重新发布已撤回事实或重新开放证据引用；存在真实数据的环境不得把数据库 downgrade 当作首选回滚，优先回退应用版本并保留向前兼容的数据库结构。
 
-核对公司数和预计请求数后，只在一次性本机窗口中运行。Token 使用环境或 Secret 注入，不写入项目 `.env`、命令参数、日志或 Git；如果已由官方 CLI 安全保存，可在不打印内容的情况下读入当前 shell：
+生产清理只允许在新版本健康且备份可恢复后进行。清理时不得打印 Secret 内容，不得使用 shell 追踪模式；只删除已确认属于旧供应商的权限受限凭据文件、专用缓存目录和部署环境变量。旧 release 目录可按既有发布保留策略轮换，不能为了消除字符串而破坏仍承担回滚作用的最近版本。数据库中的必要历史审计不得物理删除。
 
-```bash
-export TIANYANCHA_AUTHORIZATION="$(uv run python -c 'import json,pathlib; print(json.loads((pathlib.Path.home()/".tyc/config.json").read_text())["headers"]["Authorization"])')"
-export IMPORT_USER_ID='replace_with_local_institution_admin_uuid'
-APP_MODE=demo \
-EXTERNAL_CALLS_ENABLED=true \
-TIANYANCHA_IDENTITY_CALLS_ENABLED=true \
-PAID_API_CALLS_ENABLED=false \
-AUTO_REFRESH_ENABLED=false \
-AUTO_PUBLISH_ENABLED=false \
-TRUSTED_SOURCE_CALLS_ENABLED=false \
-uv run python -m scripts.import_tianyancha_identities
-unset TIANYANCHA_AUTHORIZATION
-```
+个人研究申请、取消、临时额度和断线恢复状态继续由 PostgreSQL 保存，但 R1 后不会创建旧供应商研究任务。用户会看到申请已保存、等待新的研究来源完成准入；同步搜索和详情保持零外部调用。R2、R3 完成前不得用手工 SQL 把申请伪造成已完成，也不得恢复旧 Worker。
 
-适配器只调用固定 Core 端点的名称候选和工商登记两个工具；不跟随重定向，每次请求受超时、响应大小、低频间隔、总请求数和一次重试限制。完整响应只写入 `data/private/provider_cache/tianyancha/` 的权限受限缓存，数据库不保存联系方式。运行后核对 `official_identity_verifications.verification_basis=licensed_business_data`、`usage_ledger` 的调用/缓存/零 Token/零费用，以及 `conflict` 未改写公司主档。相同清单在缓存期内重复运行应为零外部调用并返回 `duplicate`。随后立即恢复两个外部调用开关为 false。
+本机曾由供应商 CLI 保存的用户级凭据，只在确认 R1 分支测试完成且不再需要回退旧工具后删除；不要读取、复制或记录其值。任何浏览器扩展、独立 CLI 或技能目录如仍存在，也必须按产品清单单独卸载或删除，但不得误删与本项目无关的通用工具。
 
-### 历史新公司按需研究（已停用，禁止执行）
 
-> 该 Worker 当前绑定待退役供应商。以下命令和配置只用于退役清单审计，不得运行；新的受限公开网络研究必须在搜索源准入和独立代码里程碑完成后另写运行手册。
-
-队列、身份确认和五个默认研究模块均由独立单实例 Worker 处理；同步 API 始终只写队列或读数据库。升级到 `0018` 后可用下列命令做零网络 dry-run；它只读队列和配置，不加载天眼查 Provider：
-
-```bash
-export WORKER_TENANT_ID='replace_with_platform_operator_tenant_uuid'
-export ON_DEMAND_WORKER_USER_ID='replace_with_platform_admin_user_uuid'
-APP_MODE=demo uv run python -m scripts.run_on_demand_research_worker --dry-run
-```
-
-正式 Worker 只允许单实例运行，并要求 `ON_DEMAND_RESEARCH_ENABLED=true`、`EXTERNAL_CALLS_ENABLED=true` 和 `TIANYANCHA_IDENTITY_CALLS_ENABLED=true`。`TIANYANCHA_RESEARCH_CALLS_ENABLED` 单独决定是否在身份确认后执行五个默认模块；首次部署和身份链路验证时保持 false，只有准备执行受控新公司验收时才临时改为 true。`PAID_API_CALLS_ENABLED`、`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED`、可信来源调用和来源调度必须保持 false。源代码和示例配置按正式 VIP 1000 次/日、10000 次/月设计；当前免费测试期的香港运行配置为 100 次/日、1000 次/月。两种配置都保留 10%，对应有效闸门分别为 900/日、9000/月和 90/日、900/月。每家公司研究阶段最多 8 次供应商调用，首版每模块最多一次请求和一次失败重试预算。平台用量按全部天眼查 Provider 调用汇总。
-
-Worker 默认按工商与股东基础、司法与合规风险、知识产权、经营与公示、历史变更五个供应商模块逐项运行；不能说明任职变化或投资风险的人员数量概览已退出默认研究。每次循环最多处理一个身份或一个研究模块。每个模块先查权限受限缓存，缓存未命中才检查公司、日和月预算；相同来源记录与内容哈希不重复生成文档或事件。结构化资料分为“已核实事实”和“授权来源记录·影响待判断”；仅返回数量的风险概览属于后者，可展示来源记录，但不能据此生成责任或风险结论。真正的身份、来源或可信度冲突才进入“待核实线索”。页面证据都是独立最小展示快照，完整供应商响应仍只在私有缓存。无记录显示“暂无可靠公开数据”。该 Worker 不调用模型、不自动生成报告，且 `AUTO_PUBLISH_ENABLED=false` 不得因结构化事实展示而改变。同一进程复用 Provider 以保持跨任务限速；引入原子预算预留前不得启动第二个 Worker 或多实例部署。
-
-正式 VIP 当前仍未开通；苏州涌现的一次具名新公司受控实测已经完成。后续不得为了消耗免费额度或扩充样本而主动查询，只有真实测试用户提交准确主体并满足预算、冷却和去重闸门时才可另开受控窗口；免费额度不足且用户验证确有需要时再提醒项目负责人开通 VIP。不得把 Key 写入命令历史、env 示例、Git 或日志。每次受控窗口结束后必须把 `TIANYANCHA_RESEARCH_CALLS_ENABLED`、`TIANYANCHA_IDENTITY_CALLS_ENABLED`、`EXTERNAL_CALLS_ENABLED` 和 `ON_DEMAND_RESEARCH_ENABLED` 恢复为 false。
-
-香港单机环境必须通过 `research` profile 的一次性 `on-demand-research-worker` 运行，不得再用未挂载缓存的临时 API 容器代替。先由主机管理员创建固定目录：
-
-```bash
-sudo install -d -o 10001 -g 10001 -m 0700 \
-  /opt/dealflow-radar/private/provider_cache
-```
-
-`deploy/single-host.env` 长期保存 `PROVIDER_CACHE_DIRECTORY=/opt/dealflow-radar/private/provider_cache`、Worker 用户和租户 ID，以及与当前账户一致的日/月调用上限；四个 `ON_DEMAND_WORKER_*_ENABLED` 必须长期为 false。真实受控运行时，在不记录 Secret 的维护 shell 中读入权限受限的天眼查 Secret，只对该次容器临时开启 Worker 专用开关：
-
-```bash
-export ON_DEMAND_WORKER_ENABLED=true
-export ON_DEMAND_WORKER_EXTERNAL_CALLS_ENABLED=true
-export ON_DEMAND_WORKER_IDENTITY_CALLS_ENABLED=true
-export ON_DEMAND_WORKER_RESEARCH_CALLS_ENABLED=true
-prod --profile research run --rm on-demand-research-worker
-unset ON_DEMAND_WORKER_ENABLED ON_DEMAND_WORKER_EXTERNAL_CALLS_ENABLED \
-  ON_DEMAND_WORKER_IDENTITY_CALLS_ENABLED ON_DEMAND_WORKER_RESEARCH_CALLS_ENABLED \
-  TIANYANCHA_AUTHORIZATION
-```
-
-上述窗口中不得执行会展开容器环境的 `docker compose config`，也不得使用 shell 追踪模式。Worker 的根文件系统只读，只有 `/app/data/private/provider_cache` 映射到固定主机目录后可写；常驻 API 不挂载也不读取该缓存。容器退出后再次运行必须复用同一目录，相同且未过期的供应商请求应记为缓存命中，新增外部调用为 0。`create_host_path=false` 会在目录缺失时直接失败，防止 Docker 静默创建 root 所有且无法安全复用的目录。
-
-取消排队请求立即停止；个人接口只取消本人申请，平台 Worker 确认已无其他活跃请求后才取消全局任务。身份或模块查询正在传输时只记录取消，完成当前调用并保存通过校验的结果后不再开始下一模块。零外部调用只退当月额度，日提交次数不退，同主体仍保持 24 小时冷却。个人页面不显示精确外部调用、缓存命中或私有档案冲突原因；平台管理页保留诊断信息。服务重启、退出登录或断线不能删除任务；恢复后先查看申请、五个默认模块状态、租约、调用台账和全局活动任务唯一约束，不得手工重复建任务。若已存在同信用代码的租户私有公司，任务应停在管理员处理状态，不能为通过测试直接改成共享公司。Worker 每次提交或回滚事务后必须重新设置 RLS 上下文。
 ### 投资者重要变化解读 Agent V1（默认关闭）
 
 数据库升级到 `0021` 后，可先用平台管理员身份执行零网络 dry-run。dry-run 只统计达到重要性门槛的已发布共享变化，不建队列、不读密钥、不调用模型：
@@ -333,7 +283,7 @@ export ANALYSIS_WORKER_USER_ID='replace_with_platform_admin_user_uuid'
 APP_MODE=demo uv run python -m scripts.run_investor_analysis_worker --dry-run
 ```
 
-真实运行只使用独立 Worker，不在 API 或公司页面同步调用。运行前必须将 DeepSeek Key 写入 Git 忽略且权限受限的部署 env，按供应商当期书面价格填写输入/输出 Token 单价；不得把 Key 放入命令、聊天、Git 或日志。只在受控窗口临时开启 `INVESTOR_ANALYSIS_ENABLED` 以及 Worker 专用的外部/可能计费开关；`AUTO_REFRESH_ENABLED` 和 `AUTO_PUBLISH_ENABLED` 必须保持 false，旧天眼查开关与可信来源开关也必须关闭。单机部署可用 analysis profile 排空当前队列：
+真实运行只使用独立 Worker，不在 API 或公司页面同步调用。运行前必须将 DeepSeek Key 写入 Git 忽略且权限受限的部署 env，按供应商当期书面价格填写输入/输出 Token 单价；不得把 Key 放入命令、聊天、Git 或日志。只在受控窗口临时开启 `INVESTOR_ANALYSIS_ENABLED` 以及 Worker 专用的外部/可能计费开关；`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED` 和可信来源开关必须保持 false。旧商业数据调用开关已由 R1 删除。单机部署可用 analysis profile 排空当前队列：
 
 ```bash
 docker compose -f compose.production.yml -f deploy/compose.single-host.yml \
@@ -345,7 +295,7 @@ Worker 只为 `published + platform_shared + deterministic_change` 且重要性�
 
 ### 身份例外与历史审核工作台 V1（仅本机受控环境）
 
-确认 API 只绑定 `127.0.0.1` 并设置 `REVIEW_WORKBENCH_ENABLED=true`；前端 `DEMO_USER_ID` 必须是当前租户内同时具有 `reviewer` 和 `institution_admin` 角色的本地用户，才能修改身份主数据。访问 `/reviews` 后，新导入通常只出现身份歧义；只能从 30 天内、与该提及相关且明确标注政府官方或授权商业依据的候选中选择。提交后核对审核状态、公司信用代码/全称、实体提及、事件证据和发布路由；原 URL 未检查时应为 `unconfirmed_lead` 且不进入快照。工作台读取和身份决定都不调用外部 Provider。
+确认 API 只绑定 `127.0.0.1` 并设置 `REVIEW_WORKBENCH_ENABLED=true`；前端 `DEMO_USER_ID` 必须是当前租户内同时具有 `reviewer` 和 `institution_admin` 角色的本地用户，才能修改身份主数据。访问 `/reviews` 后，新导入通常只出现身份歧义；只能从 30 天内、与该提及相关且明确标注政府官方依据的候选中选择。历史商业身份核验只作审计，不再进入可选候选。提交后核对审核状态、公司信用代码/全称、实体提及、事件证据和发布路由；原 URL 未检查时应为 `unconfirmed_lead` 且不进入快照。工作台读取和身份决定都不调用外部 Provider。
 
 完成私有验收后关闭前后端并取消该开关。当前 Header 身份可被伪造，禁止将工作台暴露到公网、局域网共享地址或多人环境；生产部署必须先实现正式认证和会话保护。
 

@@ -28,7 +28,6 @@ from backend.app.models import (
     Event,
     EventEvidence,
     OfficialIdentityVerification,
-    RawDocument,
     ResearchImport,
     ReviewQueue,
     UsageLedger,
@@ -91,40 +90,6 @@ def _official_payload(
     }
 
 
-def _licensed_payload(
-    *,
-    query_text: str,
-    legal_name: str,
-    checked_at: datetime | None = None,
-) -> dict[str, object]:
-    payload = _official_payload(
-        query_text=query_text,
-        legal_name=legal_name,
-        checked_at=checked_at,
-    )
-    payload["batch_id"] = "licensed-identity-batch-001"
-    payload["verification_basis"] = "licensed_business_data"
-    payload["license_status"] = "permission_confirmed"
-    payload["source"] = {
-        "code": "tianyancha_licensed_business_data",
-        "name": "天眼查授权工商数据",
-        "base_url": "https://www.tianyancha.com/",
-    }
-    records = payload["records"]
-    assert isinstance(records, list)
-    records[0]["external_record_id"] = "tianyancha-record-123456"
-    records[0]["canonical_url"] = "https://www.tianyancha.com/company/123456"
-    records[0]["registration_authority"] = "示例市场监督管理局"
-    records[0]["data_updated_at"] = "2026-07-17T13:12:53+08:00"
-    records[0]["provider_metadata"] = {
-        "candidate_count": 1,
-        "provider_company_id": "123456",
-        "search_response_hash": "1" * 64,
-        "registration_response_hash": "2" * 64,
-    }
-    return payload
-
-
 def test_official_identity_import_is_idempotent_and_enriches_exact_company(
     tmp_path: Path,
     migrated_app: FastAPI,
@@ -171,128 +136,6 @@ def test_official_identity_import_is_idempotent_and_enriches_exact_company(
         assert verification.match_rule == "official_legal_name_exact_credit_code_enriched"
         assert ledger is not None and ledger.external_calls == 0
         assert session.scalar(select(func.count()).select_from(ResearchImport)) == 1
-
-
-def test_licensed_identity_import_is_auditable_private_and_does_not_publish(
-    tmp_path: Path,
-    migrated_app: FastAPI,
-) -> None:
-    legal_name = "示例星河科技一号有限公司"
-    provider = _write_provider(
-        tmp_path,
-        "licensed-identity.json",
-        _licensed_payload(query_text=legal_name, legal_name=legal_name),
-        ManualOfficialIdentityImportProvider,
-    )
-    assert isinstance(provider, ManualOfficialIdentityImportProvider)
-
-    with migrated_app.state.session_factory() as session:
-        user = session.get(User, ALPHA_USER_ID)
-        company = session.scalar(select(Company).where(Company.legal_name == legal_name))
-        assert user is not None and company is not None
-        company.credit_code = None
-        session.commit()
-
-        result = import_official_identities(session, user, provider)
-
-        verification = session.scalar(select(OfficialIdentityVerification))
-        document = session.scalar(select(RawDocument))
-        ledger = session.scalar(
-            select(UsageLedger).where(UsageLedger.operation == "official_identity_import")
-        )
-        assert result.status == "completed"
-        assert company.identity_status == "verified"
-        assert company.identity_verification_basis == "licensed_business_data"
-        assert verification is not None
-        assert verification.verification_basis == "licensed_business_data"
-        assert verification.match_rule == "licensed_business_legal_name_exact_credit_code_enriched"
-        assert document is not None
-        assert document.visibility_scope == "organization_private"
-        assert document.owner_tenant_id == user.tenant_id
-        assert document.license_status == "permission_confirmed"
-        assert document.payload["provider_metadata"]["candidate_count"] == 1
-        assert ledger is not None
-        assert ledger.provider == "manual_official_identity_import"
-        assert ledger.metrics["verification_basis"] == "licensed_business_data"
-        assert session.scalar(select(func.count()).select_from(Event)) == 0
-        company_id = company.id
-
-    with TestClient(migrated_app) as client:
-        response = client.get(
-            f"/api/v1/companies/{company_id}",
-            headers={"X-Demo-User-Id": str(ALPHA_USER_ID)},
-        )
-        assert response.status_code == 200
-        assert response.json()["identity_verification_basis"] == "licensed_business_data"
-
-
-def test_licensed_identity_name_change_is_conflict_until_human_resolution(
-    tmp_path: Path,
-    migrated_app: FastAPI,
-) -> None:
-    current_name = "示例星河科技一号有限公司"
-    licensed_name = "示例星河科技一号股份有限公司"
-    provider = _write_provider(
-        tmp_path,
-        "licensed-name-conflict.json",
-        _licensed_payload(query_text=current_name, legal_name=licensed_name),
-        ManualOfficialIdentityImportProvider,
-    )
-    assert isinstance(provider, ManualOfficialIdentityImportProvider)
-
-    with migrated_app.state.session_factory() as session:
-        user = session.get(User, ALPHA_USER_ID)
-        company = session.scalar(select(Company).where(Company.legal_name == current_name))
-        assert user is not None and company is not None
-        company.credit_code = "91310000MA1K000006"
-        company.identity_verification_basis = "official_government"
-        session.commit()
-
-        result = import_official_identities(session, user, provider)
-
-        verification = session.scalar(select(OfficialIdentityVerification))
-        assert result.conflict_records == 1
-        assert company.legal_name == current_name
-        assert company.identity_verification_basis == "official_government"
-        assert verification is not None
-        assert verification.verification_basis == "licensed_business_data"
-        assert verification.verification_status == "conflict"
-        assert verification.match_rule == "licensed_business_credit_code_legal_name_conflict"
-
-
-def test_exact_credit_code_and_name_accept_region_format_variation_without_overwrite(
-    tmp_path: Path,
-    migrated_app: FastAPI,
-) -> None:
-    legal_name = "示例星河科技一号有限公司"
-    payload = _licensed_payload(query_text=legal_name, legal_name=legal_name)
-    records = payload["records"]
-    assert isinstance(records, list)
-    records[0]["registered_region"] = "甲市/开发区"
-    provider = _write_provider(
-        tmp_path,
-        "licensed-region-variation.json",
-        payload,
-        ManualOfficialIdentityImportProvider,
-    )
-    assert isinstance(provider, ManualOfficialIdentityImportProvider)
-
-    with migrated_app.state.session_factory() as session:
-        user = session.get(User, ALPHA_USER_ID)
-        company = session.scalar(select(Company).where(Company.legal_name == legal_name))
-        assert user is not None and company is not None
-        company.credit_code = "91310000MA1K000006"
-        original_region = company.registered_region
-        session.commit()
-
-        result = import_official_identities(session, user, provider)
-
-        verification = session.scalar(select(OfficialIdentityVerification))
-        assert result.verified_records == 1
-        assert result.conflict_records == 0
-        assert company.registered_region == original_region
-        assert verification is not None
-        assert verification.match_rule.endswith("registered_region_variation")
 
 
 def test_official_identity_conflict_is_recorded_without_silent_master_data_change(
@@ -513,6 +356,68 @@ def test_tenant_owned_company_former_name_remains_organization_private(
         assert alias.visibility_scope == ORGANIZATION_PRIVATE_SCOPE
         assert alias.owner_user_id is None
         assert alias.owner_tenant_id == ALPHA_TENANT_ID
+
+
+def test_identity_selection_excludes_retired_commercial_verification(
+    tmp_path: Path,
+    manual_import_payload: dict[str, object],
+    migrated_app: FastAPI,
+) -> None:
+    query_text = "历史商业身份候选"
+    legal_name = "示例星河科技一号有限公司"
+    records = manual_import_payload["records"]
+    assert isinstance(records, list)
+    records[0]["company_identity_evidence"]["legal_name"] = query_text
+    manual_provider = _write_provider(
+        tmp_path,
+        "manual-retired-commercial.json",
+        manual_import_payload,
+        ManualResearchImportProvider,
+    )
+    identity_provider = _write_provider(
+        tmp_path,
+        "identity-retired-commercial.json",
+        _official_payload(query_text=query_text, legal_name=legal_name),
+        ManualOfficialIdentityImportProvider,
+    )
+
+    with migrated_app.state.session_factory() as session:
+        user = session.get(User, ALPHA_USER_ID)
+        assert user is not None
+        manual_result = import_manual_research(session, user, manual_provider)
+        identity_result = import_official_identities(session, user, identity_provider)
+        review = session.scalar(select(ReviewQueue))
+        verification = session.scalar(select(OfficialIdentityVerification))
+        assert manual_result.identity_review_records == 1
+        assert identity_result.verified_records == 1
+        assert review is not None and verification is not None
+        verification.verification_basis = "licensed_business_data"
+        session.commit()
+        review_id = review.id
+        verification_id = verification.id
+
+    disabled_settings = migrated_app.state.settings
+    migrated_app.state.settings = replace(disabled_settings, review_workbench_enabled=True)
+    try:
+        with TestClient(migrated_app) as client:
+            workbench = client.get(
+                "/api/v1/reviews/workbench",
+                headers={"X-Demo-User-Id": str(ALPHA_USER_ID)},
+            )
+            assert workbench.status_code == 200
+            assert workbench.json()[0]["identity_candidates"] == []
+
+            resolved = client.post(
+                f"/api/v1/reviews/{review_id}/identity-resolution",
+                headers={"X-Demo-User-Id": str(ALPHA_USER_ID)},
+                json={
+                    "verification_id": str(verification_id),
+                    "reason": "已退役商业依据不能恢复身份",
+                },
+            )
+            assert resolved.status_code == 403
+    finally:
+        migrated_app.state.settings = disabled_settings
 
 
 def test_identity_selection_rejects_stale_official_candidate(
