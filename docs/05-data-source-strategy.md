@@ -38,8 +38,10 @@
 | `KimiAgentImportProvider` | 预留 | 用户人工导出、许可明确，不调用未公开接口 |
 | `KimiScheduledResearchImportProvider` | 预留 | Kimi Work/Claw 等官方导出能力、授权和稳定格式已确认 |
 | `KimiOpenPlatformProvider` | 预留 | 正式 API 文档、账号授权、价格和数据条款确认 |
-| `LicensedBusinessDataProvider` | 天眼查身份与按需六模块研究 V1 已实现、默认关闭 | 只由单实例后台 Worker 调用批准工具；原始响应私有缓存，页面仅展示经过主体、Schema、作用域和分级规则校验的最小事实或线索 |
-| `OfficialIdentityProvider` | 已实现政府 JSON 与授权商业数据双依据 | 政府来源和授权商业来源必须使用不同 `verification_basis`，不得混称官方 |
+| `LicensedBusinessDataProvider` | 天眼查旧实现待安全退役，禁止启用或扩展 | 仅保留至独立退役里程碑；历史审计不改写，新能力不得依赖其 SDK、字段或配额 |
+| `OfficialIdentityProvider` | 已实现政府 JSON 与历史授权商业数据双依据 | 政府来源和历史授权商业来源使用不同 `verification_basis`，不得混称官方 |
+| `OfficialPublicDataProvider` | 预留 | 非工商身份的官方接口或合法下载路径、频率和保留边界确认 |
+| `DeepSeekLLMProvider` | 已实现证据约束变化解读，默认关闭 | 只处理新且相关的最小证据片段；严格 Schema、证据和预算校验 |
 
 ## 受控可信来源监测 V1
 
@@ -50,10 +52,14 @@ V1 不是通用爬虫或搜索引擎。平台管理员先把已核验公司的�
 候选先由管理员标记是否值得研究；只有另行确认谨慎表述、最小证据摘录、事件分类和评分后，才通过既有导入服务生成同 tenant 的私有底稿和候选事件。原候选、来源、导入批次、文档、事件和证据以 `candidate_document_id` 保留血缘，重复交接幂等。监测和交接都不调用 LLM、不自动晋升或发布。
 
 低频调度只根据管理员登记的检查频率选取到期来源；默认 dry-run，每次最多 10 个来源，连续失败按 2/4/8 倍间隔退避。调度器只入队，网络访问仍在独立 Worker 中执行，不进入公司搜索或详情请求。
-| `OfficialPublicDataProvider` | 预留 | 非工商身份的官方接口或合法下载路径、频率和保留边界确认 |
-| `DeepSeekLLMProvider` | 第 3 阶段候选 | API 能力、模型名、Schema 支持、价格和预算确认 |
 
-## 5. Kimi 能力边界
+## 5. 供应商中立受限研究目标
+
+目标架构已经由 ADR-0018 接受，但尚未编码。它使用 `SearchProvider` 发现候选、使用现有 `DocumentFetcher` 安全取得允许内容，并在确定性解析后只把新且相关的最小证据片段交给 `LLMProvider`。搜索摘要不是证据；严重负面、身份冲突和证据不足内容只能进入待核实线索。
+
+正式搜索 Provider 必须经过独立准入：使用同一批真实中国公司验证中文覆盖、来源可审计、许可、本地缓存、成本、限流和失败语义。SearXNG 只能作为开发或备用候选，不能在未经实测时被写成生产主源。V1 继续使用 PostgreSQL 任务状态机，不引入通用自主 Agent 或第二套持久状态。
+
+## 6. Kimi 能力边界
 
 Kimi 消费端会员/Agent、Kimi Work 或 Kimi Claw、Kimi Code、开放平台 API、以及商业数据库授权是彼此独立的授权面：
 
@@ -61,11 +67,11 @@ Kimi 消费端会员/Agent、Kimi Work 或 Kimi Claw、Kimi Code、开放平台 
 - Agent/Work/Claw 的结果只能通过官方导出或人工导入进入候选层，保存和再分发取决于来源许可。
 - Kimi Code 是开发辅助能力，不自动赋予生产数据访问、模型 API 或商业数据库权利。
 - 开放平台只有在正式文档、密钥、价格、速率和条款确认后才能作为 Provider。
-- 天眼查工商身份 API 已由项目负责人确认取得本项目所需授权；其他天眼查产品、iFind 等数据仍须逐项取得授权。Kimi 结果不能替代工商、司法或监管原始来源。
+- 历史天眼查授权不再构成未来技术路线；现存集成按 ADR-0018 安全退役。Kimi 结果不能替代工商、司法或监管原始来源。
 
 系统在完全没有 Kimi 时仍须通过 Mock 和人工导入完成闭环。
 
-## 6. 统一 ResearchImport 格式
+## 7. 统一 ResearchImport 格式
 
 人工研究导入 V1 只接受 `data/private/research_imports/` 下的 JSON。批次输入包含 `schema_version`、`batch_id`、`queried_at`、`research_tool`、`agent_name`、`original_query`、`target_company_hint`、`license_status` 和 `records`；系统另行生成 `file_hash`、`parser_version` 与 `imported_by`。`license_status` 当前只能为 `public`，文件上限 1 MiB，每批最多 500 条。
 
@@ -82,9 +88,9 @@ Kimi 消费端会员/Agent、Kimi Work 或 Kimi Claw、Kimi Code、开放平台 
 
 V1 不复制保存原始文件字节，只保存受 RLS 保护的批次元数据、文件哈希，以及许可允许的公开来源定位、最小证据片段和结构化记录。CSV、Excel、Markdown、网页上传、内部财务和投资协议等敏感材料均未实现，启用前需另行设计格式、恶意内容隔离、正式认证与存储许可。实体提及不能由通用事件审核接口批准；只能在专用流程中选择有效关联的官方候选，由程序重跑解析、事件生成和发布路由。
 
-工商身份导入另使用 `data/private/identity_imports/`，并明确区分两类依据：政府/GSXT JSON 使用 `verification_basis=official_government`、`license_status=public`；天眼查受控查询使用 `verification_basis=licensed_business_data`、`license_status=permission_confirmed`。两类记录都要求 HTTPS 白名单域名、带时区核验时间和通过校验位的统一社会信用代码。同一代码的全称变化记为 `conflict`；同一代码且全称相同时，地区格式差异保留审计但不覆盖主档。无现有公司记为 `unmatched`，不得自动创建公司。
+工商身份导入另使用 `data/private/identity_imports/`。政府/GSXT JSON 使用 `verification_basis=official_government`、`license_status=public`；历史授权商业记录使用 `verification_basis=licensed_business_data`、`license_status=permission_confirmed`，且不得改称政府或公开网络证据。记录要求 HTTPS 白名单域名、带时区核验时间和通过校验位的统一社会信用代码。同一代码的全称变化记为 `conflict`；同一代码且全称相同时，地区格式差异保留审计但不覆盖主档。无现有公司记为 `unmatched`，不得自动创建公司。
 
-天眼查 V1 先按名称取得候选，再按信用代码精确查询；完整响应只写入 Git 忽略且权限受限的本机缓存，数据库只保存必要字段、登记机关、更新时间、供应商记录 ID 和响应哈希，不保存本里程碑不需要的联系方式。真实调用仅允许本机后台脚本，要求总开关与专用开关同时开启，并保持付费、自动刷新、自动发布关闭；同步公司查询和详情永不调用该 Provider。详见 ADR-0010。
+天眼查 V1 的名称候选、信用代码精确查询和私有缓存属于历史实现。专用开关必须保持关闭，不得再发起真实调用；具体代码、Secret、缓存和用户可见内容由独立安全退役里程碑处理。历史决策见 ADR-0010，当前有效方向见 ADR-0018。
 
 ```mermaid
 sequenceDiagram
@@ -113,10 +119,10 @@ sequenceDiagram
 
 URL 验证是受控外部读取：`EXTERNAL_CALLS_ENABLED=false` 时不发请求并将记录降级为未确认；开启后仍受 `SOURCE_URL_MAX_CHECKS_PER_IMPORT` 限制，且拒绝私网、回环和非 HTTP(S) 目标。该步骤不调用模型或付费 API，请求数写入 `usage_ledger`。
 
-## 7. DeepSeek 低成本抽取
+## 8. DeepSeek 低成本抽取
 
 `DeepSeekLLMProvider` 默认关闭。只有文档哈希为新、规则判定相关、主体候选已准备、预算通过时才调用；输入仅含必要身份、标题、证据片段和 Schema，采用低温度、受限输出和非推理/低成本配置（具体能力确认后再定）。响应必须通过[严格事件 Schema](08-api-design.md)，记录 provider、model、prompt/schema 版本、参数、Token、延迟和估算费用。不得补全缺失金额、营收、利润、现金、估值或持股。
 
-## 8. 缓存与变化检测
+## 9. 缓存与变化检测
 
 搜索请求以 Provider、规范查询、身份版本和时间窗为缓存键；文档按外部记录 ID、规范 URL、ETag/Last-Modified 和内容哈希判断变化。缓存未过期或内容哈希未变时直接复用结果，不调用 LLM、不重建报告。缓存命中、无变化运行和有效事件均写入用量台账，支持成本归因。

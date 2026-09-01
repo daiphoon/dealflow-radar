@@ -182,7 +182,7 @@ export AUTO_REFRESH_ENABLED=false
 export AUTO_PUBLISH_ENABLED=false
 ```
 
-启动后统一访问 `http://localhost:3000/login`；同一次本地验收不要混用 `localhost` 和 `127.0.0.1`，否则浏览器会把两者的 Cookie 隔离。邮箱验证码固定使用 CloudBase `target=USER`，因此未在 CloudBase 创建的账户不会自行注册；本地无唯一邀请时登录也会拒绝。首次绑定只能发生在刚完成验证码交换的登录请求中，普通 Bearer 请求和 token 刷新不能首次绑定。access/refresh token 只能存在于 Next.js 的 `HttpOnly` Cookie，不得复制到命令、URL、日志、截图、数据库或 Git。CloudBase 身份调用是登录基础设施调用，不会打开上述四个业务数据开关，也不会调用天眼查。
+启动后统一访问 `http://localhost:3000/login`；同一次本地验收不要混用 `localhost` 和 `127.0.0.1`，否则浏览器会把两者的 Cookie 隔离。邮箱验证码固定使用 CloudBase `target=USER`，因此未在 CloudBase 创建的账户不会自行注册；本地无唯一邀请时登录也会拒绝。首次绑定只能发生在刚完成验证码交换的登录请求中，普通 Bearer 请求和 token 刷新不能首次绑定。access/refresh token 只能存在于 Next.js 的 `HttpOnly` Cookie，不得复制到命令、URL、日志、截图、数据库或 Git。CloudBase 身份调用是登录基础设施调用，不会打开上述四个业务数据开关，也不会调用任何公司信息 Provider。
 
 至少验证：伪造 Demo Header 无效、四类用户权限符合本地角色和基金授权、无基金用户仍可查共享公司、其他 tenant 看不到私有数据、会话过期可刷新、退出后需要重新登录、`authentication_audit_logs` 有绑定/登录/刷新/退出记录。若出现 `authentication_challenge_required`，说明 CloudBase 要求图片验证码；V1 必须停止，不得绕过，另行评估官方安全挑战接入。
 
@@ -253,7 +253,9 @@ uv run python -m scripts.import_official_identity_json
 
 V1 只接收不超过 1 MiB、最多 500 条且许可为 `public` 的 JSON。不得放入内部财务、投资协议、投委会材料、API Key、Cookie 或商业数据库受限内容；原始文件由操作者在私有目录管理，不进入 Git，也不会被系统复制到存储。当前没有网页/API 上传入口。
 
-### 天眼查授权工商身份查询 V1（本机受控）
+### 历史天眼查授权工商身份查询 V1（已停用，禁止执行）
+
+> ADR-0018 已决定退出天眼查 API 路线。下方内容仅暂留给下一里程碑核对待删除的命令、配置和缓存，不再是操作手册；不得执行、不得注入 Token、不得开启任何 `TIANYANCHA_*` 开关。
 
 查询清单必须放在 `data/private/identity_imports/`，每批最多 10 家，每家公司必须同时给出工商全称和通过校验位验证的统一社会信用代码。可复制 `data/sample/tianyancha_identity_manifest.json` 后只在私有目录替换查询项。先执行不读取 Token、不连接数据库、不访问网络的 dry-run：
 
@@ -280,7 +282,9 @@ unset TIANYANCHA_AUTHORIZATION
 
 适配器只调用固定 Core 端点的名称候选和工商登记两个工具；不跟随重定向，每次请求受超时、响应大小、低频间隔、总请求数和一次重试限制。完整响应只写入 `data/private/provider_cache/tianyancha/` 的权限受限缓存，数据库不保存联系方式。运行后核对 `official_identity_verifications.verification_basis=licensed_business_data`、`usage_ledger` 的调用/缓存/零 Token/零费用，以及 `conflict` 未改写公司主档。相同清单在缓存期内重复运行应为零外部调用并返回 `duplicate`。随后立即恢复两个外部调用开关为 false。
 
-### 新公司按需研究（默认关闭）
+### 历史新公司按需研究（已停用，禁止执行）
+
+> 该 Worker 当前绑定待退役供应商。以下命令和配置只用于退役清单审计，不得运行；新的受限公开网络研究必须在搜索源准入和独立代码里程碑完成后另写运行手册。
 
 队列、身份确认和五个默认研究模块均由独立单实例 Worker 处理；同步 API 始终只写队列或读数据库。升级到 `0018` 后可用下列命令做零网络 dry-run；它只读队列和配置，不加载天眼查 Provider：
 
@@ -329,7 +333,7 @@ export ANALYSIS_WORKER_USER_ID='replace_with_platform_admin_user_uuid'
 APP_MODE=demo uv run python -m scripts.run_investor_analysis_worker --dry-run
 ```
 
-真实运行只使用独立 Worker，不在 API 或公司页面同步调用。运行前必须将 DeepSeek Key 写入 Git 忽略且权限受限的部署 env，按供应商当期书面价格填写输入/输出 Token 单价；不得把 Key 放入命令、聊天、Git 或日志。只在受控窗口临时开启 `INVESTOR_ANALYSIS_ENABLED` 以及 Worker 专用的外部/可能计费开关；`AUTO_REFRESH_ENABLED` 和 `AUTO_PUBLISH_ENABLED` 必须保持 false，天眼查与可信来源开关也必须关闭。单机部署可用 analysis profile 排空当前队列：
+真实运行只使用独立 Worker，不在 API 或公司页面同步调用。运行前必须将 DeepSeek Key 写入 Git 忽略且权限受限的部署 env，按供应商当期书面价格填写输入/输出 Token 单价；不得把 Key 放入命令、聊天、Git 或日志。只在受控窗口临时开启 `INVESTOR_ANALYSIS_ENABLED` 以及 Worker 专用的外部/可能计费开关；`AUTO_REFRESH_ENABLED` 和 `AUTO_PUBLISH_ENABLED` 必须保持 false，旧天眼查开关与可信来源开关也必须关闭。单机部署可用 analysis profile 排空当前队列：
 
 ```bash
 docker compose -f compose.production.yml -f deploy/compose.single-host.yml \
