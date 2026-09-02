@@ -185,6 +185,11 @@ class PersonalCompanyRequestDecisionIn(BaseModel):
     reason: str = Field(min_length=3, max_length=1000)
 
 
+class PersonalCompanyRequestResearchApprovalIn(BaseModel):
+    company_id: UUID | None = None
+    reason: str = Field(min_length=3, max_length=1000)
+
+
 class PersonalCompanyRequestCancelIn(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
 

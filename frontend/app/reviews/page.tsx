@@ -2,16 +2,19 @@ import Link from "next/link";
 
 import {
   ApiError,
+  getPlatformCompanyRequests,
   getPlatformQuotaIncreaseRequests,
   getReviewWorkbench,
   getSharingCandidates,
   type PersonalQuotaIncreaseRequest,
+  type PersonalCompanyRequest,
   type ReviewWorkbenchItem,
   type SharingCandidate,
 } from "@/lib/api";
 import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
 
 import {
+  submitCompanyResearchApproval,
   submitIdentityResolution,
   submitReviewDecision,
   submitQuotaIncreaseDecision,
@@ -66,6 +69,7 @@ const resultMessages: Record<string, string> = {
   sharing_retracted: "已撤回平台共享事实，个人路径不再展示。",
   quota_approved: "已批准临时研究额度；额度只在设定有效期内生效。",
   quota_rejected: "已拒绝临时研究额度申请，理由已保存。",
+  research_approved: "工商主体已与共享目录精确匹配，申请已进入公开网络研究队列。",
 };
 
 const errorMessages: Record<string, string> = {
@@ -79,6 +83,10 @@ const errorMessages: Record<string, string> = {
   sharing_failed: "共享事实决定提交失败，原私有数据未变更。",
   invalid_quota_decision: "请检查批准额度、有效天数和决定理由。",
   quota_decision_failed: "临时额度决定提交失败，原申请没有变更。",
+  invalid_research_approval: "请填写 3—1000 字的身份核对理由。",
+  research_identity_not_ready:
+    "共享目录中尚无唯一匹配的已核验工商主体，请先完成身份核验，不能直接开始研究。",
+  research_approval_failed: "研究准入提交失败，原申请没有变更。",
 };
 
 const quotaStatusLabels: Record<PersonalQuotaIncreaseRequest["status"], string> = {
@@ -147,6 +155,45 @@ function QuotaRequestCard({ request }: { request: PersonalQuotaIncreaseRequest }
           </div>
         </form>
       ) : null}
+    </article>
+  );
+}
+
+function CompanyResearchRequestCard({ request }: { request: PersonalCompanyRequest }) {
+  return (
+    <article className="request-card">
+      <div>
+        <span className="eyebrow">新公司研究准入</span>
+        <strong>{request.requested_name ?? "未填写公司全称"}</strong>
+        <span className="muted">
+          统一社会信用代码：{request.requested_credit_code ?? "未填写"}
+        </span>
+      </div>
+      <div>
+        <span className={`review-status review-status-${request.status}`}>
+          {request.status === "in_review" ? "核验中" : "等待工商核验"}
+        </span>
+        <span className="muted">提交于 {formatDateTime(request.created_at)}</span>
+      </div>
+      <p>
+        只有共享目录中已存在且身份已核验的同一工商主体才能进入研究；本操作不会自动创建或模糊绑定公司。
+      </p>
+      <form action={submitCompanyResearchApproval} className="review-form">
+        <input name="request_id" type="hidden" value={request.id} />
+        <label htmlFor={`research-reason-${request.id}`}>工商主体核对理由</label>
+        <textarea
+          id={`research-reason-${request.id}`}
+          maxLength={1000}
+          minLength={3}
+          name="reason"
+          placeholder="例如：已核对工商全称、信用代码与平台共享公司档案一致"
+          required
+          rows={3}
+        />
+        <button className="button button-approve" type="submit">
+          确认身份并进入研究队列
+        </button>
+      </form>
     </article>
   );
 }
@@ -660,6 +707,7 @@ export default async function ReviewsPage({
     const reviews = await getReviewWorkbench();
     let sharingCandidates: SharingCandidate[] = [];
     let quotaRequests: PersonalQuotaIncreaseRequest[] = [];
+    let companyRequests: PersonalCompanyRequest[] = [];
     try {
       sharingCandidates = await getSharingCandidates();
     } catch (error) {
@@ -667,6 +715,15 @@ export default async function ReviewsPage({
     }
     try {
       quotaRequests = await getPlatformQuotaIncreaseRequests();
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 403)) throw error;
+    }
+    try {
+      companyRequests = (await getPlatformCompanyRequests()).filter(
+        (request) =>
+          request.request_type === "inclusion" &&
+          (request.status === "pending" || request.status === "in_review"),
+      );
     } catch (error) {
       if (!(error instanceof ApiError && error.status === 403)) throw error;
     }
@@ -695,6 +752,23 @@ export default async function ReviewsPage({
         ) : null}
         {query.error && errorMessages[query.error] ? (
           <div className="feedback feedback-error">{errorMessages[query.error]}</div>
+        ) : null}
+
+        {companyRequests.length ? (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">平台管理员专用</p>
+                <h2>新公司工商主体准入</h2>
+              </div>
+              <span className="muted">{companyRequests.length} 条等待核验</span>
+            </div>
+            <div className="request-list">
+              {companyRequests.map((request) => (
+                <CompanyResearchRequestCard key={request.id} request={request} />
+              ))}
+            </div>
+          </section>
         ) : null}
 
         {quotaRequests.length ? (

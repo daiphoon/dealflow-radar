@@ -36,6 +36,7 @@ from backend.app.personal_features import (
     PersonalRequestConflictError,
     PersonalRequestTransitionError,
     add_personal_watchlist_item,
+    approve_platform_company_request_for_research,
     cancel_personal_company_request,
     create_inclusion_request,
     create_personal_company_report,
@@ -84,6 +85,7 @@ from backend.app.schemas import (
     PersonalCompanyRequestCancelIn,
     PersonalCompanyRequestDecisionIn,
     PersonalCompanyRequestOut,
+    PersonalCompanyRequestResearchApprovalIn,
     PersonalCompanyViewOut,
     PersonalInclusionRequestIn,
     PersonalQuotaIncreaseDecisionIn,
@@ -751,6 +753,31 @@ def create_app(
                 user,
                 request_id,
                 status=payload.status,
+                reason=payload.reason,
+            )
+        except PersonalFeatureAccessError as error:
+            raise HTTPException(status_code=403, detail="forbidden_scope") from error
+        except PersonalFeatureNotFoundError as error:
+            raise HTTPException(status_code=404, detail="request not found") from error
+        except PersonalRequestTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/api/v1/platform/company-requests/{request_id}/approve-research",
+        response_model=PersonalCompanyRequestOut,
+    )
+    def platform_company_request_research_approval(
+        request_id: UUID,
+        payload: PersonalCompanyRequestResearchApprovalIn,
+        user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> PersonalCompanyRequestOut:
+        try:
+            return approve_platform_company_request_for_research(
+                session,
+                user,
+                request_id,
+                company_id=payload.company_id,
                 reason=payload.reason,
             )
         except PersonalFeatureAccessError as error:

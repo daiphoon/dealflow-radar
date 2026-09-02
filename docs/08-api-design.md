@@ -27,7 +27,8 @@
 | `POST /me/company-requests/inclusion` | 共享目录无结果时提交准确主体 | 只入库排队；开关关闭时兼容旧人工申请，开启时进入身份核验；同步请求不调用 Provider，不根据简称建公司 |
 | `POST /me/company-requests/refresh/{company_id}` | 请求后台更新共享公司 | 默认 10 家/天、30 家/月；同目标 24 小时冷却；不同用户同公司后续复用全局研究任务 |
 | `GET /me/company-requests` | 查看本人申请、身份候选和队列状态 | 其他个人和机构不可见；断线后从 PostgreSQL 恢复；个人响应隐藏精确外部调用、缓存命中和私有档案冲突原因 |
-| `POST /me/company-requests/{id}/confirm` | 确认授权数据返回的工商主体 | 仅 owner；候选未过期且必要字段完整；确认后才可创建/复用全局公司和研究任务 |
+| `POST /me/company-requests/{id}/confirm` | 确认历史候选返回的工商主体 | 仅 owner；保留旧申请兼容，不是 R3 搜索摘要的确认入口 |
+| `POST /platform/company-requests/{id}/approve-research` | 平台管理员批准准确主体进入 R3 | 只接受待收录申请；按信用代码或精确工商全称唯一解析到既有的已核验共享公司，不自动建公司；可显式给出同一合格公司 ID |
 | `GET /evidence/{id}` | 读取平台共享授权数据的结构化证据详情 | 要求登录；仅允许无 owner 的 `platform_shared` 证据；不读私有原始响应或联系方式 |
 | `POST /me/company-requests/{id}/cancel` | 取消查询 | 只修改本人申请；Worker 确认全局任务没有其他活跃请求后才取消；日次数不退，零外调用时退月额度，合格缓存保留 |
 | `GET/POST /me/quota-increase-requests` | 查看或申请临时增加研究额度 | 每名用户仅一个待处理申请；前端不能自行提额 |
@@ -62,6 +63,8 @@
 链接展示按 `link_display_allowed` 和检查状态决定：健康链接显示检查时间；合法但未检查的 URL 可点击并明确警告；失效链接只保留历史来源信息；不安全或许可受限链接不返回为可点击链接。链接可点击不表示证据内容已完成实质核验。
 
 `POST /refresh` 的响应明确区分 `fresh_noop`、`queued`、`merged`、`cooldown_deferred`、`budget_deferred`、`external_disabled`。`dry_run=true` 时只返回计划 Provider、搜索数、Token 上界和预计费用，不产生外部调用。
+
+R3 的个人申请状态通过既有 `GET /me/company-requests` 返回。`research_queued`、`researching`、`partial`、`budget_deferred`、`completed`、`failed` 和 `cancelled` 均保存在 PostgreSQL；前端只显示对用户有意义的九类覆盖、当前阶段和结果，不暴露 Provider 原始响应、调用次数、缓存命中或其他用户。活动状态页面每 8 秒刷新，并在浏览器重新联网或重新可见时立即读取，因此退出、断线或换设备不会中断后台任务。取消只终止当前用户的申请；同一全局任务仍有其他活跃请求时继续运行。
 
 ## 受控来源运营 API
 

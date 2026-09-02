@@ -97,17 +97,17 @@ _ACTIVE_REQUEST_STATUSES = {
 }
 _CANCELLABLE_REQUEST_STATUSES = _ACTIVE_REQUEST_STATUSES | {"needs_input"}
 _REQUEST_STATUS_MESSAGES = {
-    "pending": "申请已保存；平台完成新研究数据源准入后会恢复处理。",
-    "in_review": "平台正在人工处理申请。",
-    "identity_queued": "历史自动研究已停止，申请将由平台重新安排。",
-    "identity_checking": "历史自动研究已停止，申请将由平台重新安排。",
-    "awaiting_confirmation": "历史自动研究已停止，申请将由平台重新安排。",
+    "pending": "等待平台核验工商主体；核验后自动进入公开网络研究队列。",
+    "in_review": "平台正在核对工商主体与共享目录归属。",
+    "identity_queued": "工商主体核验排队中。",
+    "identity_checking": "正在核验工商主体。",
+    "awaiting_confirmation": "请确认本次查询对应的工商主体。",
     "needs_input": "名称或信用代码无法唯一一致定位，请核对后重新提交",
-    "research_queued": "历史自动研究已停止，申请将由平台重新安排。",
-    "researching": "历史自动研究已停止，申请将由平台重新安排。",
-    "partial": "历史结果已保留，申请将由平台重新安排。",
-    "budget_deferred": "历史自动研究已停止，申请将由平台重新安排。",
-    "cancel_requested": "已请求取消，平台不会开始新的处理步骤。",
+    "research_queued": "已进入受限公开网络研究队列；页面可关闭，进度会持续保存。",
+    "researching": "正在按固定范围查找并核对公开资料；页面可关闭。",
+    "partial": "已取得部分可复用资料，剩余步骤将在预算允许时继续。",
+    "budget_deferred": "已保存当前进度，等待平台公开搜索预算恢复。",
+    "cancel_requested": "已请求取消；当前网络步骤结束后不会继续新的外部调用。",
     "cancelled": "查询已取消，已经取得的可复用资料会按规则保留",
     "completed": "研究已经完成",
     "rejected": "申请未通过",
@@ -768,7 +768,7 @@ def create_refresh_request(
         requested_name=company.legal_name,
         requested_credit_code=company.credit_code,
         target_key=f"company:{company.id}",
-        initial_status="pending",
+        initial_status="research_queued",
     )
 
 
@@ -828,6 +828,7 @@ def cancel_personal_company_request(
     elif research_job is not None and research_job.status == "running":
         if other_active_request_count == 0:
             request.status = "cancel_requested"
+            research_job.cancel_requested_at = now
         else:
             request.status = "cancelled"
             request.cancelled_at = now
@@ -838,6 +839,13 @@ def cancel_personal_company_request(
         request.cancelled_at = now
         request.leased_until = None
         request.heartbeat_at = None
+        if research_job is not None and other_active_request_count == 0:
+            research_job.cancel_requested_at = now
+            research_job.status = "cancelled"
+            research_job.current_stage = "cancelled"
+            research_job.cancelled_at = now
+            research_job.leased_until = None
+            research_job.heartbeat_at = None
 
     research_external_calls = 0
     if research_job is not None:
@@ -1022,6 +1030,111 @@ def decide_platform_company_request(
     request.reviewed_by_id = user.id
     request.reviewed_at = utc_now()
     request.decision_reason = reason.strip()
+    output = _request_out(session, request, include_internal_details=True)
+    session.commit()
+    return output
+
+
+def approve_platform_company_request_for_research(
+    session: Session,
+    user: User,
+    request_id: UUID,
+    *,
+    company_id: UUID | None,
+    reason: str,
+) -> PersonalCompanyRequestOut:
+    if not user_has_role(session, user.id, "platform_admin"):
+        raise PersonalFeatureAccessError("platform admin required")
+    request = session.get(PersonalCompanyRequest, request_id)
+    if request is None:
+        raise PersonalFeatureNotFoundError("request not found")
+    if request.request_type != "inclusion" or request.status not in {"pending", "in_review"}:
+        raise PersonalRequestTransitionError("only pending inclusion requests can be approved")
+    target_company_id = company_id or request.company_id
+    shared_company_conditions = (
+        Company.tenant_id.is_(None),
+        Company.visibility_scope == "public",
+        Company.identity_status == "verified",
+        Company.credit_code.is_not(None),
+    )
+    company: Company | None = None
+    if target_company_id is not None:
+        company = session.scalar(
+            select(Company).where(Company.id == target_company_id, *shared_company_conditions)
+        )
+    elif request.requested_credit_code:
+        company = session.scalar(
+            select(Company).where(
+                Company.credit_code == request.requested_credit_code,
+                *shared_company_conditions,
+            )
+        )
+    elif request.requested_name:
+        normalized_name = _normalized_identity_text(request.requested_name)
+        candidates = list(
+            session.scalars(
+                select(Company)
+                .outerjoin(CompanyAlias, CompanyAlias.company_id == Company.id)
+                .where(
+                    *shared_company_conditions,
+                    or_(
+                        Company.legal_name == request.requested_name.strip(),
+                        and_(
+                            CompanyAlias.visibility_scope == PLATFORM_SHARED_SCOPE,
+                            CompanyAlias.owner_user_id.is_(None),
+                            CompanyAlias.owner_tenant_id.is_(None),
+                            CompanyAlias.verification_status == "verified",
+                            CompanyAlias.normalized_alias == normalized_name,
+                        ),
+                    ),
+                )
+                .distinct()
+                .limit(2)
+            )
+        )
+        if len(candidates) == 1:
+            company = candidates[0]
+        elif len(candidates) > 1:
+            raise PersonalRequestTransitionError("requested identity matches multiple companies")
+    if company is None:
+        raise PersonalRequestTransitionError(
+            "research requires a verified company in the platform shared catalog"
+        )
+    if request.requested_credit_code and request.requested_credit_code != company.credit_code:
+        raise PersonalRequestTransitionError("requested credit code does not match the company")
+    if request.requested_name:
+        normalized_name = _normalized_identity_text(request.requested_name)
+        name_matches = normalized_name == _normalized_identity_text(company.legal_name)
+        if not name_matches:
+            name_matches = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(CompanyAlias)
+                    .where(
+                        CompanyAlias.company_id == company.id,
+                        CompanyAlias.visibility_scope == PLATFORM_SHARED_SCOPE,
+                        CompanyAlias.owner_user_id.is_(None),
+                        CompanyAlias.owner_tenant_id.is_(None),
+                        CompanyAlias.verification_status == "verified",
+                        CompanyAlias.normalized_alias == normalized_name,
+                    )
+                )
+                or 0
+            ) > 0
+        if not name_matches:
+            raise PersonalRequestTransitionError("requested name does not match the company")
+    now = utc_now()
+    request.company_id = company.id
+    request.resolved_legal_name = company.legal_name
+    request.resolved_credit_code = company.credit_code
+    request.resolved_registered_region = company.registered_region
+    request.identity_checked_at = company.last_identity_checked_at
+    request.confirmed_at = now
+    request.status = "research_queued"
+    request.reviewed_by_id = user.id
+    request.reviewed_at = now
+    request.decision_reason = reason.strip()
+    request.last_error_code = None
     output = _request_out(session, request, include_internal_details=True)
     session.commit()
     return output
