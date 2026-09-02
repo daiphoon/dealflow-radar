@@ -25,8 +25,8 @@ const freshnessLabels: Record<string, string> = {
 };
 
 const requestStatusLabels: Record<string, string> = {
-  pending: "待人工处理",
-  in_review: "人工处理中",
+  pending: "等待工商核验",
+  in_review: "正在核验工商主体",
   identity_queued: "身份核验排队中",
   identity_checking: "正在核验身份",
   awaiting_confirmation: "等待你确认公司",
@@ -43,6 +43,8 @@ const requestStatusLabels: Record<string, string> = {
 };
 
 const activeRequestStatuses = new Set([
+  "pending",
+  "in_review",
   "identity_queued",
   "identity_checking",
   "research_queued",
@@ -53,17 +55,21 @@ const activeRequestStatuses = new Set([
 ]);
 
 const researchModuleLabels: Record<string, string> = {
-  company_base: "工商与股东基础",
-  risk: "司法与合规风险",
-  intellectual_property: "知识产权",
-  operation: "经营与公示",
-  history: "历史变更",
-  executive: "董监高与人员",
+  financial_operation: "财务与经营",
+  financing_cap_table: "融资与股权",
+  contract_commercial: "合同与商业进展",
+  product_technology: "产品与技术",
+  governance_people: "治理与人员",
+  legal_compliance: "司法与合规",
+  capacity_assets: "产能与资产",
+  exit_liquidity: "退出与流动性",
+  information_quality: "信息质量",
 };
 
 const researchModuleStatusLabels: Record<string, string> = {
   pending: "等待检查",
   running: "正在检查",
+  search_completed: "已发现候选，正在核对原网页",
   completed: "已取得资料",
   no_data: "暂无可靠公开数据",
   failed: "本次检查未完成",

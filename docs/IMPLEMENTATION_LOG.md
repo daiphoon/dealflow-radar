@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-09-02：R3 受限公开网络研究 Agent V1
+
+- 任务：在 ADR-0018 和 R2 准入结论下实现后台公开网络研究闭环；百度作为主搜索源，只有主源失败或未返回主体匹配结果时才回退博查。复用 PostgreSQL 任务、可信来源抓取、证据和个人申请，不在同步页面联网，不生成报告或调用模型，不自动发布。
+- 关键文件：`backend/app/web_search.py`、`backend/app/web_research_service.py`、`scripts/run_web_research_worker.py`、`migrations/versions/0023_add_bounded_web_research_cache.py`、`backend/app/personal_features.py`、`frontend/app/reviews/`、`frontend/app/watchlist/page.tsx`、生产 Compose、环境变量示例及 R3 相关测试和文档。
+- 实际命令：R3 Provider、Worker、任务、缓存、取消和权限针对性 Pytest；完整 Ruff、格式和 Pytest；SQLite 迁移往返；全新 PostgreSQL 16 的 `0023 → 0022 → 0023`、Schema 漂移和 RLS 负向测试；前端依赖审计、TypeScript 和 Next.js 生产构建；生产 Compose profile 解析；隔离虚构数据库下的平台管理员准入、九类进度、取消和刷新恢复浏览器冒烟；Codex Security 工作区差异扫描；密钥和退役供应商活动入口扫描；`git diff --check`。
+- 测试结果：R3 针对性测试 46 项通过；完整 PostgreSQL 套件 276 项通过，只有既有 Starlette/httpx 上游弃用警告；Ruff、格式、SQLite/PostgreSQL 迁移、Alembic 漂移、31 张 RLS 表、前端依赖审计（0 个已知漏洞）、类型检查、生产构建和 Compose 解析通过。浏览器确认管理员只能把唯一匹配的已核验共享公司接入队列，个人页显示九类进度、队列位置和取消状态，刷新后状态仍在，控制台无错误。安全扫描覆盖 17/17 个变更源文件，未发现可报告漏洞；真实百度、博查、目标网站、付费 API、业务模型 Token、费用和自动发布均为 0。
+- 未解决阻塞：代码无阻塞，最终 PR 保持未合并。合并后需先备份香港数据库、升级到 `0023` 并保持 Worker 四重开关关闭；随后只用一家具名新公司进行一次受控真实 Provider 兼容性与内容价值验收。V1 不做补充研究轮次、模型抽取、已核实事实自动晋升或完整报告；单 Worker 发生进程级中断时，正在进行的单个外部请求可能无法做到绝对一次语义，扩容或正式运营前再评估原子预算预留。
+
 ## 2026-09-02：R1 旧商业数据供应商生产安全退役
 
 - 任务：合并 PR #44，在香港邀请测试环境完成旧商业数据供应商活动集成的生产退役；保持通用个人申请、取消、额度和断线恢复，保留必要历史审计，不启动 R2/R3。

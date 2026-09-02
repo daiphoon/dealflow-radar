@@ -397,15 +397,15 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
                         'personal_watchlist_items', 'personal_company_requests',
                         'personal_usage_records', 'personal_company_view_states',
                         'personal_event_view_receipts', 'personal_company_reports',
-                        'personal_quota_increase_requests', 'company_research_jobs',
-                        'investor_change_analyses'
+                            'personal_quota_increase_requests', 'company_research_jobs',
+                            'investor_change_analyses', 'web_search_cache_entries'
                     )
                       AND relrowsecurity
                     """
                 )
             )
         assert role == (False, False, False, False, False, True, 0)
-        assert enabled_rls_tables == 30
+        assert enabled_rls_tables == 31
         assert _visible_counts(connection) == (0, 0, 0, 0, 0)
         assert _visible_counts(connection, ALPHA_USER_ID, ALPHA_TENANT_ID) == (10, 1, 10, 1, 0)
         assert _visible_counts(connection, BETA_USER_ID, BETA_TENANT_ID) == (1, 1, 0, 0, 0)
@@ -1344,6 +1344,181 @@ def test_trusted_source_monitoring_rls_is_platform_admin_and_tenant_scoped() -> 
                 "(SELECT count(*) FROM candidate_documents)"
             )
         ).one() == (0, 0, 0)
+    finally:
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
+def test_bounded_web_research_cache_and_raw_evidence_are_platform_admin_only() -> None:
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    engine = create_engine(POSTGRES_RLS_DATABASE_URL, pool_pre_ping=True)
+    connection = engine.connect()
+    transaction = connection.begin()
+    company_id = str(demo_uuid("company-示例星河科技一号有限公司"))
+    cache_id = str(uuid4())
+    document_id = str(uuid4())
+    mention_id = str(uuid4())
+    try:
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO user_role_assignments (
+                    id, user_id, role_id, scope_id, valid_until, created_at, updated_at
+                )
+                SELECT :id, :user_id, roles.id, NULL, NULL,
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM roles WHERE roles.code = 'platform_admin'
+                ON CONFLICT DO NOTHING
+                """
+            ),
+            {"id": str(uuid4()), "user_id": str(ALPHA_USER_ID)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO sources (
+                    id, code, name, source_quality, license_status, base_url,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, 'bounded_public_web', '受限公开网络研究', 'B', 'public', NULL,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                ON CONFLICT (code) DO NOTHING
+                """
+            ),
+            {"id": str(uuid4())},
+        )
+        source_id = connection.scalar(
+            text("SELECT id FROM sources WHERE code = 'bounded_public_web'")
+        )
+        assert source_id is not None
+        connection.execute(
+            text(
+                """
+                INSERT INTO web_search_cache_entries (
+                    id, company_id, provider_code, query_kind, query_text, query_hash,
+                    identity_fingerprint, response_hash, results, fetched_at, expires_at,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, :company_id, 'baidu', 'business_capital', 'RLS bounded query',
+                    :query_hash, :identity_hash, :response_hash, CAST('[]' AS JSON),
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '14 days',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": cache_id,
+                "company_id": company_id,
+                "query_hash": "1" * 64,
+                "identity_hash": "2" * 64,
+                "response_hash": "3" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO raw_documents (
+                    id, source_id, research_import_id, candidate_document_id,
+                    owner_user_id, owner_tenant_id, visibility_scope,
+                    external_record_id, canonical_url, title, published_at, published_on,
+                    observed_at, content_hash, document_dedupe_key, license_status, payload,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, :source_id, NULL, NULL, NULL, NULL, 'system_restricted',
+                    :external_record_id, 'https://example.invalid/bounded',
+                    'RLS bounded evidence', NULL, NULL, CURRENT_TIMESTAMP,
+                    :content_hash, :dedupe_key, 'public', CAST('{}' AS JSON),
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": document_id,
+                "source_id": str(source_id),
+                "external_record_id": "4" * 64,
+                "content_hash": "5" * 64,
+                "dedupe_key": "6" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO entity_mentions (
+                    id, raw_document_id, owner_user_id, owner_tenant_id,
+                    visibility_scope, candidate_company_id, mention_text, match_rule,
+                    match_confidence, resolution_status, created_at, updated_at
+                ) VALUES (
+                    :id, :document_id, NULL, NULL, 'system_restricted', :company_id,
+                    '示例星河科技一号有限公司', 'verified_identity_exact_or_official_domain',
+                    0.950, 'verified', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {"id": mention_id, "document_id": document_id, "company_id": company_id},
+        )
+        assert connection.execute(
+            text(
+                "SELECT (SELECT count(*) FROM web_search_cache_entries WHERE id = :cache_id), "
+                "(SELECT count(*) FROM raw_documents WHERE id = :document_id), "
+                "(SELECT count(*) FROM entity_mentions WHERE id = :mention_id)"
+            ),
+            {"cache_id": cache_id, "document_id": document_id, "mention_id": mention_id},
+        ).one() == (1, 1, 1)
+
+        for user_id, tenant_id in (
+            (NO_ACCESS_USER_ID, ALPHA_TENANT_ID),
+            (BETA_USER_ID, BETA_TENANT_ID),
+        ):
+            connection.execute(
+                text(
+                    "SELECT set_config('app.current_user_id', :user_id, true), "
+                    "set_config('app.current_tenant_id', :tenant_id, true)"
+                ),
+                {"user_id": str(user_id), "tenant_id": str(tenant_id)},
+            )
+            assert connection.execute(
+                text(
+                    "SELECT (SELECT count(*) FROM web_search_cache_entries WHERE id = :cache_id), "
+                    "(SELECT count(*) FROM raw_documents WHERE id = :document_id), "
+                    "(SELECT count(*) FROM entity_mentions WHERE id = :mention_id)"
+                ),
+                {"cache_id": cache_id, "document_id": document_id, "mention_id": mention_id},
+            ).one() == (0, 0, 0)
+            with pytest.raises(DBAPIError):
+                with connection.begin_nested():
+                    connection.execute(
+                        text(
+                            """
+                            INSERT INTO web_search_cache_entries (
+                                id, company_id, provider_code, query_kind, query_text,
+                                query_hash, identity_fingerprint, response_hash, results,
+                                fetched_at, expires_at, created_at, updated_at
+                            ) VALUES (
+                                :id, :company_id, 'bocha', 'forged', 'forged',
+                                :query_hash, :identity_hash, :response_hash,
+                                CAST('[]' AS JSON), CURRENT_TIMESTAMP,
+                                CURRENT_TIMESTAMP + INTERVAL '1 day',
+                                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                            )
+                            """
+                        ),
+                        {
+                            "id": str(uuid4()),
+                            "company_id": company_id,
+                            "query_hash": uuid4().hex.ljust(64, "0"),
+                            "identity_hash": "7" * 64,
+                            "response_hash": "8" * 64,
+                        },
+                    )
     finally:
         transaction.rollback()
         connection.close()

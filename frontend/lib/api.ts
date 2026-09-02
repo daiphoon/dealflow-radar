@@ -571,6 +571,20 @@ export function getPersonalCompanyRequests(): Promise<PersonalCompanyRequest[]> 
   return getJson("/api/v1/me/company-requests");
 }
 
+export function getPlatformCompanyRequests(): Promise<PersonalCompanyRequest[]> {
+  return getJson("/api/v1/platform/company-requests");
+}
+
+export function approvePlatformCompanyRequestResearch(
+  requestId: string,
+  payload: { company_id: string | null; reason: string },
+): Promise<PersonalCompanyRequest> {
+  return postJson(
+    `/api/v1/platform/company-requests/${encodeURIComponent(requestId)}/approve-research`,
+    payload,
+  );
+}
+
 export function createPersonalInclusionRequest(payload: {
   company_name: string | null;
   credit_code: string | null;

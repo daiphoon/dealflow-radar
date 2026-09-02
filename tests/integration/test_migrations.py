@@ -19,7 +19,7 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     command.upgrade(config, "head")
     command.check(config)
     engine = create_engine(database_url)
-    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 35
+    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 36
     user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
     assert {"auth_provider", "auth_subject"} <= user_columns
     assert "uq_users_auth_identity" in {
@@ -221,6 +221,22 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "ix_investor_change_analysis_status_created" in {
         index["name"] for index in inspect(engine).get_indexes("investor_change_analyses")
     }
+    assert "web_search_cache_entries" in inspect(engine).get_table_names()
+    assert {
+        "company_id",
+        "provider_code",
+        "query_kind",
+        "query_hash",
+        "identity_fingerprint",
+        "response_hash",
+        "results",
+        "fetched_at",
+        "expires_at",
+    } <= {column["name"] for column in inspect(engine).get_columns("web_search_cache_entries")}
+    assert "uq_web_search_cache_identity_query" in {
+        constraint["name"]
+        for constraint in inspect(engine).get_unique_constraints("web_search_cache_entries")
+    }
 
     command.downgrade(config, "0007")
     assert "visibility_scope" not in {
@@ -329,3 +345,7 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "DROP POLICY IF EXISTS usage_ledger_tianyancha_platform_admin_read" in ddl
     assert "DROP POLICY IF EXISTS raw_documents_tianyancha_admin_read" in ddl
     assert "DROP POLICY IF EXISTS official_identity_verifications_platform_admin_read" in ddl
+    assert "CREATE TABLE web_search_cache_entries" in ddl
+    assert "web_search_cache_platform_admin_read" in ddl
+    assert "raw_documents_bounded_web_admin_read" in ddl
+    assert "entity_mentions_bounded_web_admin_insert" in ddl

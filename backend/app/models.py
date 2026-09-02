@@ -482,6 +482,35 @@ class CompanyResearchJob(TimestampMixin, Base):
     last_error_code: Mapped[str | None] = mapped_column(String(80))
 
 
+class WebSearchCacheEntry(TimestampMixin, Base):
+    __tablename__ = "web_search_cache_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id",
+            "provider_code",
+            "query_hash",
+            "identity_fingerprint",
+            name="uq_web_search_cache_identity_query",
+        ),
+        Index("ix_web_search_cache_company_expires", "company_id", "expires_at"),
+        Index("ix_web_search_cache_provider_fetched", "provider_code", "fetched_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    company_id: Mapped[UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), index=True
+    )
+    provider_code: Mapped[str] = mapped_column(String(32))
+    query_kind: Mapped[str] = mapped_column(String(64))
+    query_text: Mapped[str] = mapped_column(Text)
+    query_hash: Mapped[str] = mapped_column(String(64))
+    identity_fingerprint: Mapped[str] = mapped_column(String(64))
+    response_hash: Mapped[str] = mapped_column(String(64))
+    results: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class PersonalCompanyViewState(TimestampMixin, Base):
     __tablename__ = "personal_company_view_states"
     __table_args__ = (

@@ -144,6 +144,68 @@ class SourceMonitoringPolicy:
             raise ValueError("SOURCE_MONITOR_USER_AGENT must not be empty")
 
 
+@dataclass(frozen=True)
+class WebResearchPolicy:
+    version: str = "bounded-web-v1"
+    primary_provider: str = "baidu"
+    fallback_provider: str = "bocha"
+    search_cache_ttl_days: int = 14
+    document_cache_ttl_days: int = 14
+    max_search_calls_per_job: int = 4
+    max_results_per_search: int = 10
+    max_candidate_urls: int = 12
+    max_documents_per_job: int = 3
+    max_fetch_requests_per_job: int = 8
+    max_download_bytes_per_job: int = 2_000_000
+    max_response_bytes: int = 500_000
+    max_elapsed_seconds: int = 180
+    daily_search_call_limit: int = 50
+    monthly_search_call_limit: int = 1_500
+    timeout_seconds: int = 15
+    worker_lease_seconds: int = 300
+    fallback_min_subject_results: int = 1
+    user_agent: str = "DealflowRadarWebResearch/1.0 (bounded evidence research)"
+
+    def __post_init__(self) -> None:
+        if not self.version.strip():
+            raise ValueError("WEB_RESEARCH_POLICY_VERSION must not be empty")
+        if self.primary_provider not in {"baidu", "bocha"}:
+            raise ValueError("WEB_RESEARCH_PRIMARY_PROVIDER must be baidu or bocha")
+        if self.fallback_provider not in {"baidu", "bocha"}:
+            raise ValueError("WEB_RESEARCH_FALLBACK_PROVIDER must be baidu or bocha")
+        if self.primary_provider == self.fallback_provider:
+            raise ValueError("web research primary and fallback providers must differ")
+        for name, value in (
+            ("WEB_RESEARCH_SEARCH_CACHE_TTL_DAYS", self.search_cache_ttl_days),
+            ("WEB_RESEARCH_DOCUMENT_CACHE_TTL_DAYS", self.document_cache_ttl_days),
+            ("WEB_RESEARCH_MAX_SEARCH_CALLS_PER_JOB", self.max_search_calls_per_job),
+            ("WEB_RESEARCH_MAX_RESULTS_PER_SEARCH", self.max_results_per_search),
+            ("WEB_RESEARCH_MAX_CANDIDATE_URLS", self.max_candidate_urls),
+            ("WEB_RESEARCH_MAX_DOCUMENTS_PER_JOB", self.max_documents_per_job),
+            ("WEB_RESEARCH_MAX_FETCH_REQUESTS_PER_JOB", self.max_fetch_requests_per_job),
+            ("WEB_RESEARCH_MAX_DOWNLOAD_BYTES_PER_JOB", self.max_download_bytes_per_job),
+            ("WEB_RESEARCH_MAX_RESPONSE_BYTES", self.max_response_bytes),
+            ("WEB_RESEARCH_MAX_ELAPSED_SECONDS", self.max_elapsed_seconds),
+            ("WEB_RESEARCH_DAILY_SEARCH_CALL_LIMIT", self.daily_search_call_limit),
+            ("WEB_RESEARCH_MONTHLY_SEARCH_CALL_LIMIT", self.monthly_search_call_limit),
+            ("WEB_RESEARCH_TIMEOUT_SECONDS", self.timeout_seconds),
+            ("WEB_RESEARCH_WORKER_LEASE_SECONDS", self.worker_lease_seconds),
+            ("WEB_RESEARCH_FALLBACK_MIN_SUBJECT_RESULTS", self.fallback_min_subject_results),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.max_documents_per_job > self.max_candidate_urls:
+            raise ValueError("WEB_RESEARCH_MAX_DOCUMENTS_PER_JOB cannot exceed candidate URLs")
+        if self.max_search_calls_per_job < 2:
+            raise ValueError("WEB_RESEARCH_MAX_SEARCH_CALLS_PER_JOB must allow the fixed plan")
+        if self.max_fetch_requests_per_job < self.max_documents_per_job:
+            raise ValueError("web research fetch request budget is too small")
+        if self.monthly_search_call_limit < self.daily_search_call_limit:
+            raise ValueError("monthly web research search limit must not be below daily limit")
+        if not self.user_agent.strip():
+            raise ValueError("WEB_RESEARCH_USER_AGENT must not be empty")
+
+
 _CLOUDBASE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 
 
@@ -261,6 +323,8 @@ class Settings:
     auto_refresh_enabled: bool
     trusted_source_calls_enabled: bool = False
     source_monitor_scheduler_enabled: bool = False
+    web_research_enabled: bool = False
+    web_research_calls_enabled: bool = False
     investor_analysis_enabled: bool = False
     review_workbench_enabled: bool = False
     auth_provider: str = "demo"
@@ -268,6 +332,7 @@ class Settings:
     publication_policy: PublicationPolicy = field(default_factory=PublicationPolicy)
     identity_policy: IdentityPolicy = field(default_factory=IdentityPolicy)
     source_monitoring_policy: SourceMonitoringPolicy = field(default_factory=SourceMonitoringPolicy)
+    web_research_policy: WebResearchPolicy = field(default_factory=WebResearchPolicy)
     cloudbase_auth_policy: CloudBaseAuthPolicy = field(default_factory=CloudBaseAuthPolicy)
     personal_entitlement_policy: PersonalEntitlementPolicy = field(
         default_factory=PersonalEntitlementPolicy
@@ -304,6 +369,8 @@ class Settings:
             source_monitor_scheduler_enabled=_as_bool(
                 os.getenv("SOURCE_MONITOR_SCHEDULER_ENABLED", "false")
             ),
+            web_research_enabled=_as_bool(os.getenv("WEB_RESEARCH_ENABLED", "false")),
+            web_research_calls_enabled=_as_bool(os.getenv("WEB_RESEARCH_CALLS_ENABLED", "false")),
             investor_analysis_enabled=_as_bool(os.getenv("INVESTOR_ANALYSIS_ENABLED", "false")),
             review_workbench_enabled=_as_bool(os.getenv("REVIEW_WORKBENCH_ENABLED", "false")),
             auth_provider=os.getenv("AUTH_PROVIDER", "demo").strip().lower(),
@@ -349,6 +416,48 @@ class Settings:
                 user_agent=os.getenv(
                     "SOURCE_MONITOR_USER_AGENT",
                     "DealflowRadarSourceMonitor/1.0 (controlled low-frequency monitoring)",
+                ),
+            ),
+            web_research_policy=WebResearchPolicy(
+                version=os.getenv("WEB_RESEARCH_POLICY_VERSION", "bounded-web-v1"),
+                primary_provider=os.getenv("WEB_RESEARCH_PRIMARY_PROVIDER", "baidu")
+                .strip()
+                .lower(),
+                fallback_provider=os.getenv("WEB_RESEARCH_FALLBACK_PROVIDER", "bocha")
+                .strip()
+                .lower(),
+                search_cache_ttl_days=_as_positive_int("WEB_RESEARCH_SEARCH_CACHE_TTL_DAYS", 14),
+                document_cache_ttl_days=_as_positive_int(
+                    "WEB_RESEARCH_DOCUMENT_CACHE_TTL_DAYS", 14
+                ),
+                max_search_calls_per_job=_as_positive_int(
+                    "WEB_RESEARCH_MAX_SEARCH_CALLS_PER_JOB", 4
+                ),
+                max_results_per_search=_as_positive_int("WEB_RESEARCH_MAX_RESULTS_PER_SEARCH", 10),
+                max_candidate_urls=_as_positive_int("WEB_RESEARCH_MAX_CANDIDATE_URLS", 12),
+                max_documents_per_job=_as_positive_int("WEB_RESEARCH_MAX_DOCUMENTS_PER_JOB", 3),
+                max_fetch_requests_per_job=_as_positive_int(
+                    "WEB_RESEARCH_MAX_FETCH_REQUESTS_PER_JOB", 8
+                ),
+                max_download_bytes_per_job=_as_positive_int(
+                    "WEB_RESEARCH_MAX_DOWNLOAD_BYTES_PER_JOB", 2_000_000
+                ),
+                max_response_bytes=_as_positive_int("WEB_RESEARCH_MAX_RESPONSE_BYTES", 500_000),
+                max_elapsed_seconds=_as_positive_int("WEB_RESEARCH_MAX_ELAPSED_SECONDS", 180),
+                daily_search_call_limit=_as_positive_int(
+                    "WEB_RESEARCH_DAILY_SEARCH_CALL_LIMIT", 50
+                ),
+                monthly_search_call_limit=_as_positive_int(
+                    "WEB_RESEARCH_MONTHLY_SEARCH_CALL_LIMIT", 1_500
+                ),
+                timeout_seconds=_as_positive_int("WEB_RESEARCH_TIMEOUT_SECONDS", 15),
+                worker_lease_seconds=_as_positive_int("WEB_RESEARCH_WORKER_LEASE_SECONDS", 300),
+                fallback_min_subject_results=_as_positive_int(
+                    "WEB_RESEARCH_FALLBACK_MIN_SUBJECT_RESULTS", 1
+                ),
+                user_agent=os.getenv(
+                    "WEB_RESEARCH_USER_AGENT",
+                    "DealflowRadarWebResearch/1.0 (bounded evidence research)",
                 ),
             ),
             cloudbase_auth_policy=CloudBaseAuthPolicy(

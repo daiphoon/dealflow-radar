@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 
 import {
   ApiError,
+  approvePlatformCompanyRequestResearch,
   decidePlatformQuotaIncreaseRequest,
   decideReview,
   promoteSharingCandidate,
@@ -14,6 +15,28 @@ import {
 } from "@/lib/api";
 
 const reviewIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export async function submitCompanyResearchApproval(formData: FormData): Promise<void> {
+  const requestId = String(formData.get("request_id") ?? "");
+  const reason = String(formData.get("reason") ?? "").trim();
+  if (!reviewIdPattern.test(requestId) || reason.length < 3 || reason.length > 1000) {
+    redirect("/reviews?error=invalid_research_approval");
+  }
+  try {
+    await approvePlatformCompanyRequestResearch(requestId, {
+      company_id: null,
+      reason,
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      redirect("/reviews?error=research_identity_not_ready");
+    }
+    redirect("/reviews?error=research_approval_failed");
+  }
+  revalidatePath("/reviews");
+  revalidatePath("/watchlist");
+  redirect("/reviews?result=research_approved");
+}
 
 export async function submitReviewDecision(formData: FormData): Promise<void> {
   const reviewId = String(formData.get("review_id") ?? "");

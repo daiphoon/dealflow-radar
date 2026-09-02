@@ -76,7 +76,7 @@ M5B 依据 ADR-0014 使用腾讯云中国香港服务器，不以个人 ICP 备�
 
 共享快照构建器只读平台共享事件和指标；基金投资概览及个人/机构私有数据在响应层按授权单独拼装，不能缓存为全局公司快照。没有基金授权但具有有效共享档案权益的用户仍可读取共享基础层。
 
-当前 29 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`、两张共享决定审计表、`trusted_sources`、`source_check_runs`、`candidate_documents`、认证审计表，个人留存相关表，以及新增的 `personal_quota_increase_requests` 和 `company_research_jobs`。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权。`system_restricted` 默认不向普通应用用户或平台管理员开放。R1 的 `0022` 迁移删除了旧供应商最小身份、用量和原始记录的专用服务身份例外；后续 Provider 不得沿用这些例外。个人关注、用量、查看状态、事件回执、报告、研究申请和临时额度申请仅本人读取；平台管理员只能跨租户处理用户明确提交的研究和提额运营记录。共享研究任务只对关联请求者和平台管理员可见，不暴露其他请求者身份。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
+当前 31 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`、两张共享决定审计表、`trusted_sources`、`source_check_runs`、`candidate_documents`、认证审计表、个人留存相关表、`personal_quota_increase_requests`、`company_research_jobs` 和 `web_search_cache_entries`。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权。`system_restricted` 默认不向普通应用用户或平台管理员开放；R3 只增加一个窄例外：平台管理员可读取来源为 `bounded_public_web` 的系统受限最小网页底稿，以及准确绑定到已核验共享公司的对应提及。普通用户、其他租户和基金授权用户均不能读取这些底稿，搜索缓存也只有平台管理员 Worker 可读写。R1 的 `0022` 迁移删除了旧供应商最小身份、用量和原始记录的专用服务身份例外；R3 没有恢复或沿用这些例外。个人关注、用量、查看状态、事件回执、报告、研究申请和临时额度申请仅本人读取；平台管理员只能跨租户处理用户明确提交的研究和提额运营记录。共享研究任务只对关联请求者和平台管理员可见，不暴露其他请求者身份。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
 
 当前 CloudBase 认证只替换身份凭证，个人订阅与机构赞助权益尚未实现；M3 完成真实收码和四角色验收前仍只适合本地或受控邀请验证。迁移账户仍可作为表所有者绕过策略，必须继续与日常 `NOBYPASSRLS` 应用账户分离。
 

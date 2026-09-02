@@ -224,6 +224,36 @@ def test_trusted_source_monitoring_is_disabled_and_bounded_by_default(
     assert settings.source_monitoring_policy.failure_backoff_max_multiplier == 8
 
 
+def test_web_research_is_disabled_bounded_and_provider_ordered_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("WEB_RESEARCH_ENABLED", raising=False)
+    monkeypatch.delenv("WEB_RESEARCH_CALLS_ENABLED", raising=False)
+
+    settings = Settings.from_env()
+    policy = settings.web_research_policy
+
+    assert settings.web_research_enabled is False
+    assert settings.web_research_calls_enabled is False
+    assert policy.primary_provider == "baidu"
+    assert policy.fallback_provider == "bocha"
+    assert policy.search_cache_ttl_days == 14
+    assert policy.max_search_calls_per_job == 4
+    assert policy.max_documents_per_job == 3
+    assert policy.daily_search_call_limit == 50
+    assert policy.monthly_search_call_limit == 1_500
+
+
+def test_web_research_rejects_the_same_primary_and_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEB_RESEARCH_PRIMARY_PROVIDER", "baidu")
+    monkeypatch.setenv("WEB_RESEARCH_FALLBACK_PROVIDER", "baidu")
+
+    with pytest.raises(ValueError, match="primary and fallback"):
+        Settings.from_env()
+
+
 def test_source_monitor_scheduler_requires_explicit_enable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

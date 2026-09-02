@@ -268,9 +268,35 @@ R1 合并前不得删除生产 Secret、缓存或历史数据库记录。正确�
 
 生产清理只允许在新版本健康且备份可恢复后进行。清理时不得打印 Secret 内容，不得使用 shell 追踪模式；只删除已确认属于旧供应商的权限受限凭据文件、专用缓存目录和部署环境变量。旧 release 目录可按既有发布保留策略轮换，不能为了消除字符串而破坏仍承担回滚作用的最近版本。数据库中的必要历史审计不得物理删除。
 
-个人研究申请、取消、临时额度和断线恢复状态继续由 PostgreSQL 保存，但 R1 后不会创建旧供应商研究任务。用户会看到申请已保存、等待新的研究来源完成准入；同步搜索和详情保持零外部调用。R2、R3 完成前不得用手工 SQL 把申请伪造成已完成，也不得恢复旧 Worker。
+个人研究申请、取消、临时额度和断线恢复状态继续由 PostgreSQL 保存。R3 合并部署前，申请仍只保存而不调用外部服务；不得用手工 SQL 把申请伪造成已完成，也不得恢复旧 Worker。R3 部署后，平台管理员应通过审核工作台把准确主体关联到既有的已核验共享公司，不能根据搜索摘要自动创建或核验公司。
 
 本机曾由供应商 CLI 保存的用户级凭据，只在确认 R1 分支测试完成且不再需要回退旧工具后删除；不要读取、复制或记录其值。任何浏览器扩展、独立 CLI 或技能目录如仍存在，也必须按产品清单单独卸载或删除，但不得误删与本项目无关的通用工具。
+
+### R3 受限公开网络研究 Worker（默认关闭）
+
+R3 只在独立 `web-research-worker` 容器中联网。API 和前端不读取百度或博查密钥，页面搜索、详情、刷新和取消永远只访问 PostgreSQL。部署后先保持所有 R3 开关为 false，升级数据库到 `0023` 并完成 RLS 回归；再以平台管理员身份核对申请对应的是“信用代码和工商全称一致、已核验、允许进入共享目录”的公司。
+
+零网络 dry-run 不要求 Provider 密钥，也不写库：
+
+```bash
+docker compose -f compose.production.yml -f deploy/compose.single-host.yml \
+  --env-file deploy/single-host.env --profile web-research \
+  run --rm web-research-worker \
+  python -m scripts.run_web_research_worker --dry-run
+```
+
+真实运行前，把 `BAIDU_SEARCH_API_KEY` 和 `BOCHA_SEARCH_API_KEY` 只写入权限受限且 Git 忽略的生产环境文件，不得粘贴到命令、聊天、日志或 Git。四个 Worker 专用开关必须同时临时设为 true：`WEB_RESEARCH_WORKER_ENABLED`、`WEB_RESEARCH_EXTERNAL_CALLS_ENABLED`、`WEB_RESEARCH_WORKER_CALLS_ENABLED`、`WEB_RESEARCH_PAID_API_CALLS_ENABLED`。最后一个开关表示“这是受额度或可能计费的调用，需要明确批准”，不表示本次一定收费。`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED`、可信来源调度和投资解读 Agent 必须继续为 false。
+
+首次生产验收只处理一个已批准申请，并用 `--once` 单步观察 `company_research_jobs`、个人申请进度、`usage_ledger`、搜索缓存、原网页主体匹配和候选作用域：
+
+```bash
+docker compose -f compose.production.yml -f deploy/compose.single-host.yml \
+  --env-file deploy/single-host.env --profile web-research \
+  run --rm web-research-worker \
+  python -m scripts.run_web_research_worker --once
+```
+
+确认百度结果足够时博查调用为 0；只有百度失败或准确主体结果不足才允许回退。搜索摘要不能生成事件，必须存在经安全抓取和主体匹配的原网页证据。任务结束或停止验收后，立即把四个 Worker 专用开关恢复为 false，并确认没有常驻 Worker。合格共享缓存可保留 14 天；取消申请不删除已取得缓存，但不得把未完成、跨公司或身份已变化的结果继续复用。生产数据库降级前必须备份并评估真实缓存与 RLS 数据，优先应用版本回退并保留向前兼容 Schema。
 
 
 ### 投资者重要变化解读 Agent V1（默认关闭）
