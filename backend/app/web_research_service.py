@@ -372,6 +372,7 @@ def _lease_job(
     job.status = "running"
     coverage = dict(job.coverage or {})
     coverage.setdefault("started_at", now.isoformat())
+    coverage["step_started_at"] = now.isoformat()
     job.coverage = coverage
     job.leased_until = now + timedelta(seconds=policy.worker_lease_seconds)
     job.heartbeat_at = now
@@ -1361,7 +1362,7 @@ def run_web_research_worker_once(
             error_code=job.last_error_code,
         )
     coverage = dict(job.coverage or {})
-    started_at_value = coverage.get("started_at")
+    started_at_value = coverage.get("step_started_at")
     try:
         started_at = datetime.fromisoformat(str(started_at_value))
     except (TypeError, ValueError):
@@ -1372,6 +1373,8 @@ def run_web_research_worker_once(
         job.coverage = coverage
         job.current_stage = "finalize"
         session.commit()
+        _restore_worker_context(session, user)
+        job = _refresh_job(session, job.id)
         return _finalize(session, job)
     try:
         if job.current_stage.startswith("search:"):

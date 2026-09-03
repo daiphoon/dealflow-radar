@@ -404,6 +404,42 @@ def test_bocha_is_called_only_when_baidu_has_no_subject_match(
         )
 
 
+def test_pause_between_single_steps_does_not_consume_worker_elapsed_budget(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        worker = session.get(User, ALPHA_USER_ID)
+        assert company is not None and owner is not None and worker is not None
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+        prepare_pending_research_requests(session, worker, WebResearchPolicy())
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        coverage = dict(job.coverage)
+        coverage["started_at"] = (utc_now() - timedelta(hours=1)).isoformat()
+        job.coverage = coverage
+        job.status = "partial"
+        session.commit()
+
+    primary = MockSearchProvider("baidu", {_query(SEARCH_GROUPS[0][1]): []})
+    with migrated_app.state.session_factory() as session:
+        worker = session.get(User, ALPHA_USER_ID)
+        assert worker is not None
+        result = run_web_research_worker_once(
+            session,
+            worker,
+            {"baidu": primary, "bocha": MockSearchProvider("bocha")},
+            WebResearchPolicy(),
+            fetcher_factory=RecordingFetcherFactory(),
+        )
+
+    assert result.status == "partial"
+    assert result.stage == f"search:{SEARCH_GROUPS[1][0]}"
+    assert len(primary.calls) == 1
+
+
 def test_admin_links_only_exact_verified_shared_identity(
     migrated_app: FastAPI,
     client: TestClient,
