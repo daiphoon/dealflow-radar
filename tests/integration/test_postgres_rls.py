@@ -1160,6 +1160,48 @@ def test_web_research_worker_rebinds_postgres_rls_context_after_commits() -> Non
                 )
                 == "partial"
             )
+
+        with admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    UPDATE company_research_jobs
+                    SET coverage = jsonb_set(
+                        coverage::jsonb,
+                        '{started_at}',
+                        to_jsonb((CURRENT_TIMESTAMP - INTERVAL '1 hour')::text)
+                    )::json
+                    WHERE company_id = :company_id
+                    """
+                ),
+                {"company_id": str(company_id)},
+            )
+
+        with Session(app_engine, expire_on_commit=False) as session:
+            set_request_context(session, ALPHA_USER_ID, ALPHA_TENANT_ID)
+            worker_user = session.get(User, ALPHA_USER_ID)
+            assert worker_user is not None
+            resumed = run_web_research_worker_once(
+                session,
+                worker_user,
+                {
+                    "baidu": MockSearchProvider("baidu"),
+                    "bocha": MockSearchProvider("bocha"),
+                },
+                WebResearchPolicy(),
+            )
+
+        assert resumed.status == "partial"
+        assert resumed.stage == "fetch"
+        with admin_engine.connect() as connection:
+            resumed_row = connection.execute(
+                text(
+                    "SELECT status, current_stage FROM company_research_jobs "
+                    "WHERE company_id = :company_id"
+                ),
+                {"company_id": str(company_id)},
+            ).one()
+            assert resumed_row == ("partial", "fetch")
     finally:
         with admin_engine.begin() as connection:
             connection.execute(
