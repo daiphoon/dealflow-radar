@@ -102,8 +102,43 @@ def test_single_page_obeys_robots_and_extracts_minimal_content() -> None:
     assert document.title == "可信新闻"
     assert "公开的最小正文" in (document.excerpt or "")
     assert "secret" not in (document.excerpt or "")
+    assert (document.excerpt or "").count("公开的最小正文") == 1
     assert document.etag == '"page-v1"'
     assert document.published_at is not None
+    assert document.metadata["extraction_method"] == "clean_body"
+
+
+def test_single_page_prefers_main_content_and_removes_navigation_and_related_cards() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404, headers={"content-type": "text/plain"})
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=(
+                "<html><head><title>目标公司公告</title></head><body>"
+                "<header>首页 融资 产品 联系我们</header>"
+                "<nav>热门融资榜单</nav>"
+                "<main><h1>目标公司公告</h1><p>目标公司完成产品注册。</p>"
+                '<section class="related news"><p>其他公司完成融资。</p></section>'
+                "</main><footer>版权和推荐阅读</footer></body></html>"
+            ),
+        )
+
+    result = _fetcher(handler).check(
+        source_type="single_page",
+        root_domain="example.com",
+        start_url="https://example.com/news/quality",
+        retention_policy="minimal_excerpt",
+        conditional_state={},
+    )
+
+    document = result.documents[0]
+    assert document.metadata["extraction_method"] == "main_content"
+    assert "目标公司完成产品注册" in (document.excerpt or "")
+    assert "热门融资榜单" not in (document.excerpt or "")
+    assert "其他公司完成融资" not in (document.excerpt or "")
+    assert "版权和推荐阅读" not in (document.excerpt or "")
 
 
 def test_robots_denial_stops_before_page_request() -> None:

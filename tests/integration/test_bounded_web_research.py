@@ -4,6 +4,7 @@ import hashlib
 from datetime import timedelta
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -95,9 +96,12 @@ class RecordingFetcherFactory:
             title = "示例公司完成融资" if request.url.path.endswith("1") else "示例公司中标"
             body = (
                 "<html><head><title>"
-                f"{title}</title></head><body>{SHARED_COMPANY_NAME}"
-                f"（{DEMO_SHARED_COMPANY_CREDIT_CODE}）公告：{title}，相关事项正在推进。"
-                "</body></html>"
+                f'{title}</title><meta property="article:published_time" '
+                'content="2026-09-01T08:00:00Z"></head><body>'
+                "<nav>融资排行 产品导航</nav><main>"
+                f"{SHARED_COMPANY_NAME}（{DEMO_SHARED_COMPANY_CREDIT_CODE}）公告："
+                f"{title}，相关事项正在推进。"
+                "</main><aside>PaperPass 完成 A 轮融资。</aside></body></html>"
             ).encode()
             return httpx.Response(200, content=body, headers={"content-type": "text/html"})
 
@@ -259,12 +263,135 @@ def test_shared_job_cache_replay_and_evidence_are_deduplicated(
     bounded_leads = [
         event
         for event in detail["platform_unconfirmed_leads"]
-        if event["publication_policy_version"] == "bounded-web-v1"
+        if event["publication_policy_version"] == "bounded-web-quality-v1"
     ]
     assert len(bounded_leads) == 2
     assert all(event["evidence"] for event in bounded_leads)
+    evidence_excerpts = [item["excerpt"] for event in bounded_leads for item in event["evidence"]]
+    assert all("PaperPass" not in excerpt for excerpt in evidence_excerpts)
     assert detail["investments"] == []
     assert detail["private_events"] == []
+
+
+@pytest.mark.parametrize(
+    ("page_title", "page_body", "expected_reason"),
+    [
+        (
+            f"{SHARED_COMPANY_NAME}企业资料",
+            '<meta property="article:published_time" content="2026-09-01T08:00:00Z">'
+            f"</head><body><main><h1>{SHARED_COMPANY_NAME}企业资料</h1>"
+            f"<p>{SHARED_COMPANY_NAME}成立于虚构年份，页面展示企业基本资料。</p>"
+            '<section class="related news"><p>PaperPass 完成 A 轮融资。</p></section>'
+            "</main></body></html>",
+            "no_material_change_signal",
+        ),
+        (
+            f"{SHARED_COMPANY_NAME}企业资料",
+            f"</head><body><main><p>{SHARED_COMPANY_NAME}"
+            "完成融资，相关事项已经公告。</p></main></body></html>",
+            "missing_reliable_published_at",
+        ),
+        (
+            f"{SHARED_COMPANY_NAME}企业资料",
+            '<meta property="article:published_time" content="2026-09-01T08:00:00Z">'
+            f"</head><body><main><p>{SHARED_COMPANY_NAME}是一家虚构测试企业。</p>"
+            "<p>PaperPass 完成 A 轮融资。</p></main></body></html>",
+            "subject_not_in_change_passage",
+        ),
+        (
+            f"{SHARED_COMPANY_NAME}完成 A 轮融资",
+            '<meta property="article:published_time" content="2026-09-01T08:00:00Z">'
+            f"</head><body><main><p>{SHARED_COMPANY_NAME}是一家虚构测试企业，"
+            "页面正文未披露新变化。</p></main></body></html>",
+            "no_material_change_signal",
+        ),
+    ],
+)
+def test_low_quality_pages_remain_internal_and_are_not_user_visible(
+    migrated_app: FastAPI,
+    client: TestClient,
+    page_title: str,
+    page_body: str,
+    expected_reason: str,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+
+    url = "https://noise.example.com/company-profile"
+    primary = MockSearchProvider(
+        "baidu",
+        {
+            _query(SEARCH_GROUPS[0][1]): [
+                _result(
+                    url,
+                    f"{SHARED_COMPANY_NAME}企业资料",
+                    f"{SHARED_COMPANY_NAME}公开资料。",
+                )
+            ],
+            _query(SEARCH_GROUPS[1][1]): [],
+        },
+    )
+
+    class LowQualityFetcherFactory(RecordingFetcherFactory):
+        def __call__(self, policy):
+            def handler(request: httpx.Request) -> httpx.Response:
+                self.requests.append(str(request.url))
+                if request.url.path == "/robots.txt":
+                    return httpx.Response(404, headers={"content-type": "text/plain"})
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/html"},
+                    text=(f"<html><head><title>{page_title}</title>{page_body}"),
+                )
+
+            return TrustedSourceFetcher(
+                policy,
+                client=httpx.Client(transport=httpx.MockTransport(handler)),
+                allow_private_test_hosts=True,
+            )
+
+    _drain(
+        migrated_app,
+        {"baidu": primary, "bocha": MockSearchProvider("bocha")},
+        LowQualityFetcherFactory(),
+    )
+
+    with migrated_app.state.session_factory() as session:
+        document = session.scalar(select(RawDocument).where(RawDocument.canonical_url == url))
+        assert document is not None
+        assert document.visibility_scope == "system_restricted"
+        assert document.payload["quality_gate"]["status"] == "internal_only"
+        assert expected_reason in document.payload["quality_gate"]["reasons"]
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(Event)
+                .where(
+                    Event.company_id == SHARED_COMPANY_ID,
+                    Event.fingerprint_version == "web-v1",
+                )
+            )
+            == 0
+        )
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        assert job.coverage["stats"]["internal_candidates"] == 1
+        assert job.coverage["stats"]["quality_gate_passed"] == 0
+
+    for user_id in (NO_ACCESS_USER_ID, BETA_USER_ID):
+        response = client.get(
+            f"/api/v1/companies/{SHARED_COMPANY_ID}",
+            headers={"X-Demo-User-Id": str(user_id)},
+        )
+        assert response.status_code == 200
+        assert not any(
+            item["publication_policy_version"] == "bounded-web-quality-v1"
+            for item in response.json()["platform_unconfirmed_leads"]
+        )
 
 
 def test_cancel_after_primary_stops_fallback_and_persists_status(
@@ -630,7 +757,9 @@ def test_severe_negative_stays_unconfirmed_and_never_publishes(
                 if request.url.path == "/robots.txt":
                     return httpx.Response(404, headers={"content-type": "text/plain"})
                 body = (
-                    f"<html><head><title>{SHARED_COMPANY_NAME}破产线索</title></head>"
+                    f"<html><head><title>{SHARED_COMPANY_NAME}破产线索</title>"
+                    '<meta property="article:published_time" '
+                    'content="2026-09-01T08:00:00Z"></head>'
                     f"<body>{SHARED_COMPANY_NAME}（{DEMO_SHARED_COMPANY_CREDIT_CODE}）"
                     "出现破产清算相关公开线索。</body></html>"
                 ).encode()
