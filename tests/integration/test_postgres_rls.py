@@ -16,6 +16,7 @@ from backend.app.config import (
     CloudBaseAuthPolicy,
     InvestorAnalysisPolicy,
     Settings,
+    WebResearchPolicy,
 )
 from backend.app.database import set_request_context
 from backend.app.demo import (
@@ -37,6 +38,8 @@ from backend.app.investor_analysis_schema import (
 )
 from backend.app.main import create_app
 from backend.app.models import User
+from backend.app.web_research_service import SEARCH_GROUPS, run_web_research_worker_once
+from backend.app.web_search import MockSearchProvider
 
 POSTGRES_RLS_DATABASE_URL = os.getenv("POSTGRES_RLS_DATABASE_URL")
 DATABASE_ADMIN_URL = os.getenv("DATABASE_ADMIN_URL")
@@ -1044,6 +1047,140 @@ def test_investor_analysis_worker_rebinds_postgres_rls_context_after_commits() -
             connection.execute(
                 text("DELETE FROM raw_documents WHERE id = :document_id"),
                 {"document_id": str(document_id)},
+            )
+            connection.execute(
+                text("DELETE FROM user_role_assignments WHERE id = :id"),
+                {"id": str(role_assignment_id)},
+            )
+        app_engine.dispose()
+        admin_engine.dispose()
+
+
+def test_web_research_worker_rebinds_postgres_rls_context_after_commits() -> None:
+    if not DATABASE_ADMIN_URL:
+        pytest.skip("set DATABASE_ADMIN_URL to prepare worker transaction fixtures")
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    role_assignment_id = uuid4()
+    company_id = uuid4()
+    request_id = uuid4()
+    credit_code = f"91310000RLS{uuid4().hex[:7].upper()}"
+    admin_engine = create_engine(DATABASE_ADMIN_URL, pool_pre_ping=True)
+    app_engine = create_engine(POSTGRES_RLS_DATABASE_URL, pool_pre_ping=True)
+    try:
+        with admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO user_role_assignments (
+                        id, user_id, role_id, scope_id, valid_until, created_at, updated_at
+                    )
+                    SELECT :id, :user_id, roles.id, NULL, NULL,
+                           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    FROM roles
+                    WHERE roles.code = 'platform_admin'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM user_role_assignments AS existing
+                          WHERE existing.user_id = :user_id
+                            AND existing.role_id = roles.id
+                      )
+                    """
+                ),
+                {"id": str(role_assignment_id), "user_id": str(ALPHA_USER_ID)},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO companies (
+                        id, tenant_id, credit_code, legal_name, registered_region,
+                        official_website, identity_status, identity_verification_basis,
+                        visibility_scope, created_at, updated_at
+                    ) VALUES (
+                        :id, NULL, :credit_code, 'PostgreSQL Worker RLS 测试有限公司',
+                        '虚构省测试市', NULL, 'verified', 'official_government',
+                        'public', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    )
+                    """
+                ),
+                {"id": str(company_id), "credit_code": credit_code},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO personal_company_requests (
+                        id, owner_user_id, request_type, company_id, requested_name,
+                        requested_credit_code, target_key, status, external_calls,
+                        cache_hits, created_at, updated_at
+                    ) VALUES (
+                        :id, :owner_user_id, 'refresh', :company_id,
+                        'PostgreSQL Worker RLS 测试有限公司', :credit_code,
+                        :target_key, 'research_queued', 0, 0,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    )
+                    """
+                ),
+                {
+                    "id": str(request_id),
+                    "owner_user_id": str(NO_ACCESS_USER_ID),
+                    "company_id": str(company_id),
+                    "credit_code": credit_code,
+                    "target_key": f"postgres-r3-test:{request_id}",
+                },
+            )
+
+        with Session(app_engine, expire_on_commit=False) as session:
+            set_request_context(session, ALPHA_USER_ID, ALPHA_TENANT_ID)
+            worker_user = session.get(User, ALPHA_USER_ID)
+            assert worker_user is not None
+            result = run_web_research_worker_once(
+                session,
+                worker_user,
+                {
+                    "baidu": MockSearchProvider("baidu"),
+                    "bocha": MockSearchProvider("bocha"),
+                },
+                WebResearchPolicy(),
+            )
+
+        assert result.status == "partial"
+        assert result.stage == f"search:{SEARCH_GROUPS[1][0]}"
+        assert result.external_calls == 2
+        with admin_engine.connect() as connection:
+            job_row = connection.execute(
+                text(
+                    "SELECT status, current_stage FROM company_research_jobs "
+                    "WHERE company_id = :company_id"
+                ),
+                {"company_id": str(company_id)},
+            ).one()
+            assert job_row == ("partial", f"search:{SEARCH_GROUPS[1][0]}")
+            assert (
+                connection.scalar(
+                    text("SELECT status FROM personal_company_requests WHERE id = :id"),
+                    {"id": str(request_id)},
+                )
+                == "partial"
+            )
+    finally:
+        with admin_engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM personal_company_requests WHERE id = :id"),
+                {"id": str(request_id)},
+            )
+            connection.execute(
+                text("DELETE FROM usage_ledger WHERE company_id = :company_id"),
+                {"company_id": str(company_id)},
+            )
+            connection.execute(
+                text("DELETE FROM web_search_cache_entries WHERE company_id = :company_id"),
+                {"company_id": str(company_id)},
+            )
+            connection.execute(
+                text("DELETE FROM company_research_jobs WHERE company_id = :company_id"),
+                {"company_id": str(company_id)},
+            )
+            connection.execute(
+                text("DELETE FROM companies WHERE id = :id"),
+                {"id": str(company_id)},
             )
             connection.execute(
                 text("DELETE FROM user_role_assignments WHERE id = :id"),
