@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -11,13 +12,22 @@ import httpx
 BAIDU_WEB_SEARCH_ENDPOINT = "https://qianfan.baidubce.com/v2/ai_search/web_search"
 BOCHA_WEB_SEARCH_ENDPOINT = "https://api.bochaai.com/v1/web-search"
 BAIDU_QUERY_WEIGHT_LIMIT = 72
+BAIDU_RECENCY_FILTER = "year"
 
 
 class SearchProviderError(RuntimeError):
-    def __init__(self, code: str, message: str, *, external_calls: int = 0) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        external_calls: int = 0,
+        http_status: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.external_calls = external_calls
+        self.http_status = http_status
 
 
 @dataclass(frozen=True)
@@ -119,6 +129,53 @@ def _response_hash(provider_code: str, results: list[SearchResult]) -> str:
     return hashlib.sha256(f"{provider_code}:{payload}".encode()).hexdigest()
 
 
+def _provider_error_code(content: bytes | bytearray) -> str | None:
+    try:
+        payload = json.loads(content) if content else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("code") or payload.get("error_code")
+    if isinstance(value, int):
+        return str(value)
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()[:80]
+    if not normalized or not re.fullmatch(r"[A-Za-z0-9_.-]+", normalized):
+        return None
+    return normalized
+
+
+def _http_error_category(status_code: int, provider_code: str | None) -> str:
+    normalized = (provider_code or "").casefold()
+    if "timeout" in normalized or status_code in {408, 504}:
+        return "upstream_timeout"
+    if "unsafe" in normalized:
+        return "request_rejected"
+    if "permission" in normalized or "access_denied" in normalized:
+        return "permission_denied"
+    if status_code == 401 or any(
+        marker in normalized for marker in ("invalid_iam", "invalid_token", "authentication")
+    ):
+        return "authentication_failed"
+    if status_code == 403:
+        return "permission_denied"
+    if "quota" in normalized or "expired" in normalized:
+        return "quota_unavailable"
+    if status_code == 429 or "rate_limit" in normalized:
+        return "rate_limited"
+    if "internal_error" in normalized or "service_unavailable" in normalized:
+        return "provider_unavailable"
+    if status_code in {400, 405, 409, 413, 422} or any(
+        marker in normalized for marker in ("invalid_", "malformed", "too_long")
+    ):
+        return "invalid_request"
+    if status_code >= 500:
+        return "provider_unavailable"
+    return "http_error"
+
+
 def _baidu_query_weight(value: str) -> int:
     return sum(2 if ord(character) > 127 else 1 for character in value)
 
@@ -172,6 +229,9 @@ class _JsonSearchProvider:
     def _request_id(self, payload: dict[str, Any]) -> str | None:
         return _optional_text(payload.get("request_id"), 200)
 
+    def _payload_error_code(self, payload: dict[str, Any]) -> str | None:
+        return None
+
     def search(self, request: SearchRequest) -> SearchResponse:
         owned_client = self._client is None
         client = self._client or httpx.Client(
@@ -217,11 +277,15 @@ class _JsonSearchProvider:
                     external_calls=1,
                 ) from error
             if status_code != 200:
-                error_code = "rate_limited" if status_code == 429 else "http_error"
+                error_code = _http_error_category(
+                    status_code,
+                    _provider_error_code(content),
+                )
                 raise SearchProviderError(
                     error_code,
                     f"{self.code} search returned HTTP {status_code}",
                     external_calls=1,
+                    http_status=status_code,
                 )
             try:
                 payload = json.loads(content) if content else {}
@@ -236,6 +300,14 @@ class _JsonSearchProvider:
                     "invalid_response",
                     f"{self.code} search returned an invalid response",
                     external_calls=1,
+                )
+            payload_error_code = self._payload_error_code(payload)
+            if payload_error_code is not None:
+                raise SearchProviderError(
+                    _http_error_category(200, payload_error_code),
+                    f"{self.code} search returned a provider error",
+                    external_calls=1,
+                    http_status=200,
                 )
             results = self._parse_results(payload, request.max_results)
             return SearchResponse(
@@ -259,7 +331,16 @@ class BaiduSearchProvider(_JsonSearchProvider):
             "messages": [{"role": "user", "content": _bounded_baidu_query(request.query)}],
             "search_source": "baidu_search_v2",
             "resource_type_filter": [{"type": "web", "top_k": request.max_results}],
+            "search_recency_filter": BAIDU_RECENCY_FILTER,
         }
+
+    def _payload_error_code(self, payload: dict[str, Any]) -> str | None:
+        value = payload.get("code")
+        if value in (None, "", 0, "0", "success"):
+            return None
+        if isinstance(value, (str, int)):
+            return str(value)[:80]
+        return "invalid_provider_error"
 
     def _parse_results(self, payload: dict[str, Any], limit: int) -> list[SearchResult]:
         references = payload.get("references")

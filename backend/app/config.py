@@ -146,7 +146,7 @@ class SourceMonitoringPolicy:
 
 @dataclass(frozen=True)
 class WebResearchPolicy:
-    version: str = "bounded-web-v1"
+    version: str = "bounded-web-v2"
     primary_provider: str = "baidu"
     fallback_provider: str = "bocha"
     search_cache_ttl_days: int = 14
@@ -164,6 +164,7 @@ class WebResearchPolicy:
     timeout_seconds: int = 15
     worker_lease_seconds: int = 300
     fallback_min_subject_results: int = 1
+    recent_change_window_days: int = 365
     user_agent: str = "DealflowRadarWebResearch/1.0 (bounded evidence research)"
 
     def __post_init__(self) -> None:
@@ -191,11 +192,16 @@ class WebResearchPolicy:
             ("WEB_RESEARCH_TIMEOUT_SECONDS", self.timeout_seconds),
             ("WEB_RESEARCH_WORKER_LEASE_SECONDS", self.worker_lease_seconds),
             ("WEB_RESEARCH_FALLBACK_MIN_SUBJECT_RESULTS", self.fallback_min_subject_results),
+            ("WEB_RESEARCH_RECENT_CHANGE_WINDOW_DAYS", self.recent_change_window_days),
         ):
             if value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
         if self.max_documents_per_job > self.max_candidate_urls:
             raise ValueError("WEB_RESEARCH_MAX_DOCUMENTS_PER_JOB cannot exceed candidate URLs")
+        if self.max_results_per_search > 10:
+            raise ValueError("WEB_RESEARCH_MAX_RESULTS_PER_SEARCH cannot exceed 10 in V1")
+        if self.recent_change_window_days > 365:
+            raise ValueError("WEB_RESEARCH_RECENT_CHANGE_WINDOW_DAYS cannot exceed 365 in V1")
         if self.max_search_calls_per_job < 2:
             raise ValueError("WEB_RESEARCH_MAX_SEARCH_CALLS_PER_JOB must allow the fixed plan")
         if self.max_fetch_requests_per_job < self.max_documents_per_job:
@@ -419,7 +425,7 @@ class Settings:
                 ),
             ),
             web_research_policy=WebResearchPolicy(
-                version=os.getenv("WEB_RESEARCH_POLICY_VERSION", "bounded-web-v1"),
+                version=os.getenv("WEB_RESEARCH_POLICY_VERSION", "bounded-web-v2"),
                 primary_provider=os.getenv("WEB_RESEARCH_PRIMARY_PROVIDER", "baidu")
                 .strip()
                 .lower(),
@@ -454,6 +460,9 @@ class Settings:
                 worker_lease_seconds=_as_positive_int("WEB_RESEARCH_WORKER_LEASE_SECONDS", 300),
                 fallback_min_subject_results=_as_positive_int(
                     "WEB_RESEARCH_FALLBACK_MIN_SUBJECT_RESULTS", 1
+                ),
+                recent_change_window_days=_as_positive_int(
+                    "WEB_RESEARCH_RECENT_CHANGE_WINDOW_DAYS", 365
                 ),
                 user_agent=os.getenv(
                     "WEB_RESEARCH_USER_AGENT",

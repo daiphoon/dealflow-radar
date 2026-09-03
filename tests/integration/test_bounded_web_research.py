@@ -25,6 +25,7 @@ from backend.app.models import (
     PersonalCompanyRequest,
     RawDocument,
     Role,
+    UsageLedger,
     User,
     UserRoleAssignment,
     WebSearchCacheEntry,
@@ -40,11 +41,13 @@ from backend.app.web_research_service import (
     prepare_pending_research_requests,
     run_web_research_worker_once,
 )
-from backend.app.web_search import MockSearchProvider, SearchResult
+from backend.app.web_search import MockSearchProvider, SearchProviderError, SearchResult
 
 ALPHA_HEADERS = {"X-Demo-User-Id": str(ALPHA_USER_ID)}
 SHARED_COMPANY_ID = demo_uuid("company-示例星河科技一号有限公司")
 SHARED_COMPANY_NAME = "示例星河科技一号有限公司"
+RECENT_DATE = utc_now().date().isoformat()
+RECENT_TIMESTAMP = utc_now().replace(hour=8, minute=0, second=0, microsecond=0).isoformat()
 
 
 def _grant_platform_admin(app: FastAPI) -> None:
@@ -80,7 +83,7 @@ def _result(url: str, title: str, snippet: str) -> SearchResult:
         url=url,
         snippet=snippet,
         source_name="示例公开来源",
-        published_at="2026-09-01",
+        published_at=RECENT_DATE,
     )
 
 
@@ -97,7 +100,7 @@ class RecordingFetcherFactory:
             body = (
                 "<html><head><title>"
                 f'{title}</title><meta property="article:published_time" '
-                'content="2026-09-01T08:00:00Z"></head><body>'
+                f'content="{RECENT_TIMESTAMP}"></head><body>'
                 "<nav>融资排行 产品导航</nav><main>"
                 f"{SHARED_COMPANY_NAME}（{DEMO_SHARED_COMPANY_CREDIT_CODE}）公告："
                 f"{title}，相关事项正在推进。"
@@ -141,8 +144,10 @@ def _drain(
     fetcher_factory: RecordingFetcherFactory,
     *,
     limit: int = 20,
+    policy: WebResearchPolicy | None = None,
 ) -> list[str]:
     statuses: list[str] = []
+    active_policy = policy or WebResearchPolicy()
     for _ in range(limit):
         with app.state.session_factory() as session:
             worker = session.get(User, ALPHA_USER_ID)
@@ -151,7 +156,7 @@ def _drain(
                 session,
                 worker,
                 providers,
-                WebResearchPolicy(),
+                active_policy,
                 fetcher_factory=fetcher_factory,
             )
         statuses.append(result.status)
@@ -179,6 +184,7 @@ def test_shared_job_cache_replay_and_evidence_are_deduplicated(
         migrated_app,
         {"baidu": primary, "bocha": fallback},
         fetcher_factory,
+        policy=WebResearchPolicy(version="bounded-web-v1"),
     )
     assert statuses[-1] == "idle"
     assert len(primary.calls) == 2
@@ -211,6 +217,16 @@ def test_shared_job_cache_replay_and_evidence_are_deduplicated(
             )
             == 2
         )
+        bounded_events = list(
+            session.scalars(
+                select(Event).where(
+                    Event.company_id == SHARED_COMPANY_ID,
+                    Event.fingerprint_version == "web-v1",
+                )
+            )
+        )
+        assert all(event.occurred_at is None for event in bounded_events)
+        assert all(event.published_at is not None for event in bounded_events)
         assert (
             session.scalar(
                 select(func.count())
@@ -249,6 +265,7 @@ def test_shared_job_cache_replay_and_evidence_are_deduplicated(
         assert replay_job is not None
         assert replay_job.status == "completed"
         assert replay_job.external_calls == 0
+        assert replay_job.coverage["policy_version"] == "bounded-web-v2"
         event_count = session.scalar(
             select(func.count()).select_from(Event).where(Event.fingerprint_version == "web-v1")
         )
@@ -263,7 +280,7 @@ def test_shared_job_cache_replay_and_evidence_are_deduplicated(
     bounded_leads = [
         event
         for event in detail["platform_unconfirmed_leads"]
-        if event["publication_policy_version"] == "bounded-web-quality-v1"
+        if event["publication_policy_version"] == "bounded-web-quality-v2"
     ]
     assert len(bounded_leads) == 2
     assert all(event["evidence"] for event in bounded_leads)
@@ -278,7 +295,7 @@ def test_shared_job_cache_replay_and_evidence_are_deduplicated(
     [
         (
             f"{SHARED_COMPANY_NAME}企业资料",
-            '<meta property="article:published_time" content="2026-09-01T08:00:00Z">'
+            f'<meta property="article:published_time" content="{RECENT_TIMESTAMP}">'
             f"</head><body><main><h1>{SHARED_COMPANY_NAME}企业资料</h1>"
             f"<p>{SHARED_COMPANY_NAME}成立于虚构年份，页面展示企业基本资料。</p>"
             '<section class="related news"><p>PaperPass 完成 A 轮融资。</p></section>'
@@ -293,14 +310,14 @@ def test_shared_job_cache_replay_and_evidence_are_deduplicated(
         ),
         (
             f"{SHARED_COMPANY_NAME}企业资料",
-            '<meta property="article:published_time" content="2026-09-01T08:00:00Z">'
+            f'<meta property="article:published_time" content="{RECENT_TIMESTAMP}">'
             f"</head><body><main><p>{SHARED_COMPANY_NAME}是一家虚构测试企业。</p>"
             "<p>PaperPass 完成 A 轮融资。</p></main></body></html>",
             "subject_not_in_change_passage",
         ),
         (
             f"{SHARED_COMPANY_NAME}完成 A 轮融资",
-            '<meta property="article:published_time" content="2026-09-01T08:00:00Z">'
+            f'<meta property="article:published_time" content="{RECENT_TIMESTAMP}">'
             f"</head><body><main><p>{SHARED_COMPANY_NAME}是一家虚构测试企业，"
             "页面正文未披露新变化。</p></main></body></html>",
             "no_material_change_signal",
@@ -389,7 +406,7 @@ def test_low_quality_pages_remain_internal_and_are_not_user_visible(
         )
         assert response.status_code == 200
         assert not any(
-            item["publication_policy_version"] == "bounded-web-quality-v1"
+            item["publication_policy_version"] == "bounded-web-quality-v2"
             for item in response.json()["platform_unconfirmed_leads"]
         )
 
@@ -529,6 +546,443 @@ def test_bocha_is_called_only_when_baidu_has_no_subject_match(
             )
             == 0
         )
+
+
+def test_source_ranking_prefers_government_official_and_reviewed_media(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        company.official_website = "https://www.example-company.cn"
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+        session.commit()
+
+    query = _query(SEARCH_GROUPS[0][1])
+    primary = MockSearchProvider(
+        "baidu",
+        {
+            query: [
+                _result(
+                    "https://www.qcc.com/firm/private-profile.html",
+                    f"{SHARED_COMPANY_NAME}企业资料",
+                    f"{SHARED_COMPANY_NAME}企业资料。",
+                ),
+                _result(
+                    "https://www.newseed.cn/project/example",
+                    f"{SHARED_COMPANY_NAME}完成融资",
+                    f"{SHARED_COMPANY_NAME}披露融资进展。",
+                ),
+                _result(
+                    "https://news.other.example/article/1",
+                    f"{SHARED_COMPANY_NAME}完成融资",
+                    f"{SHARED_COMPANY_NAME}披露融资进展。",
+                ),
+                _result(
+                    "https://www.stcn.com/article/detail/1.html",
+                    f"{SHARED_COMPANY_NAME}完成融资",
+                    f"{SHARED_COMPANY_NAME}披露融资进展。",
+                ),
+                _result(
+                    "https://news.example-company.cn/news/1",
+                    f"{SHARED_COMPANY_NAME}完成融资",
+                    f"{SHARED_COMPANY_NAME}披露融资进展。",
+                ),
+                _result(
+                    "https://notice.example.gov.cn/notices/1",
+                    f"{SHARED_COMPANY_NAME}完成融资",
+                    f"{SHARED_COMPANY_NAME}披露融资进展。",
+                ),
+            ]
+        },
+    )
+    fallback = MockSearchProvider("bocha")
+    with migrated_app.state.session_factory() as session:
+        worker = session.get(User, ALPHA_USER_ID)
+        assert worker is not None
+        result = run_web_research_worker_once(
+            session,
+            worker,
+            {"baidu": primary, "bocha": fallback},
+            WebResearchPolicy(),
+            fetcher_factory=RecordingFetcherFactory(),
+        )
+    assert result.status == "partial"
+    assert fallback.calls == []
+
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        candidates = job.coverage["candidates"]
+        assert [item["source_tier"] for item in candidates] == [
+            "government",
+            "company_official",
+            "trusted_media_article",
+            "locatable_source_page",
+            "profile_or_listing",
+        ]
+        assert all("qcc.com" not in item["url"] for item in candidates)
+        provider_state = job.coverage["search_groups"][SEARCH_GROUPS[0][0]]["providers"]
+        assert provider_state["bocha"] == {
+            "status": "not_called",
+            "reason": "primary_has_qualified_subject_results",
+        }
+
+
+def test_cross_group_duplicate_keeps_the_better_dated_candidate(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+
+    url = "https://www.stcn.com/article/detail/repeated.html"
+    recent = _result(
+        url,
+        f"{SHARED_COMPANY_NAME}完成融资",
+        f"{SHARED_COMPANY_NAME}披露融资进展。",
+    )
+    undated = SearchResult(
+        **{
+            **recent.to_dict(),
+            "title": f"{SHARED_COMPANY_NAME}企业资料",
+            "published_at": None,
+        }
+    )
+    primary = MockSearchProvider(
+        "baidu",
+        {
+            _query(SEARCH_GROUPS[0][1]): [recent],
+            _query(SEARCH_GROUPS[1][1]): [undated],
+        },
+    )
+    fallback = MockSearchProvider("bocha")
+    for _ in range(2):
+        with migrated_app.state.session_factory() as session:
+            worker = session.get(User, ALPHA_USER_ID)
+            assert worker is not None
+            run_web_research_worker_once(
+                session,
+                worker,
+                {"baidu": primary, "bocha": fallback},
+                WebResearchPolicy(),
+                fetcher_factory=RecordingFetcherFactory(),
+            )
+
+    assert len(primary.calls) == 2
+    assert fallback.calls == []
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        candidates = job.coverage["candidates"]
+        assert len(candidates) == 1
+        assert candidates[0]["title"].endswith("完成融资")
+        assert candidates[0]["published_at"] == RECENT_DATE
+        assert candidates[0]["search_date_status"] == "recent"
+
+
+def test_profile_only_primary_results_trigger_conditional_fallback(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+
+    query = _query(SEARCH_GROUPS[0][1])
+    primary = MockSearchProvider(
+        "baidu",
+        {
+            query: [
+                _result(
+                    "https://www.newseed.cn/project/example",
+                    f"{SHARED_COMPANY_NAME}企业资料",
+                    f"{SHARED_COMPANY_NAME}企业资料。",
+                )
+            ]
+        },
+    )
+    fallback = MockSearchProvider(
+        "bocha",
+        {
+            query: [
+                _result(
+                    "https://www.stcn.com/article/detail/2.html",
+                    f"{SHARED_COMPANY_NAME}完成融资",
+                    f"{SHARED_COMPANY_NAME}披露融资进展。",
+                )
+            ]
+        },
+    )
+    with migrated_app.state.session_factory() as session:
+        worker = session.get(User, ALPHA_USER_ID)
+        assert worker is not None
+        run_web_research_worker_once(
+            session,
+            worker,
+            {"baidu": primary, "bocha": fallback},
+            WebResearchPolicy(),
+            fetcher_factory=RecordingFetcherFactory(),
+        )
+
+    assert len(primary.calls) == 1
+    assert len(fallback.calls) == 1
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        providers = job.coverage["search_groups"][SEARCH_GROUPS[0][0]]["providers"]
+        assert providers["baidu"]["subject_results"] == 1
+        assert providers["baidu"]["qualified_subject_results"] == 0
+        assert providers["bocha"]["reason"] == "insufficient_qualified_subject_results"
+        assert [item["source_tier"] for item in job.coverage["candidates"]] == [
+            "trusted_media_article",
+            "profile_or_listing",
+        ]
+
+
+def test_explicitly_old_primary_result_triggers_recent_fallback(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+
+    query = _query(SEARCH_GROUPS[0][1])
+    old_result = _result(
+        "https://news.example.com/article/old",
+        f"{SHARED_COMPANY_NAME}完成融资",
+        f"{SHARED_COMPANY_NAME}披露融资进展。",
+    )
+    old_result = SearchResult(
+        **{
+            **old_result.to_dict(),
+            "published_at": (utc_now() - timedelta(days=366)).date().isoformat(),
+        }
+    )
+    primary = MockSearchProvider("baidu", {query: [old_result]})
+    fallback = MockSearchProvider(
+        "bocha",
+        {
+            query: [
+                _result(
+                    "https://www.stcn.com/article/detail/recent.html",
+                    f"{SHARED_COMPANY_NAME}完成融资",
+                    f"{SHARED_COMPANY_NAME}披露融资进展。",
+                )
+            ]
+        },
+    )
+    with migrated_app.state.session_factory() as session:
+        worker = session.get(User, ALPHA_USER_ID)
+        assert worker is not None
+        run_web_research_worker_once(
+            session,
+            worker,
+            {"baidu": primary, "bocha": fallback},
+            WebResearchPolicy(),
+            fetcher_factory=RecordingFetcherFactory(),
+        )
+
+    assert len(primary.calls) == 1
+    assert len(fallback.calls) == 1
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        candidates = job.coverage["candidates"]
+        assert candidates[0]["url"].endswith("/recent.html")
+        assert candidates[0]["search_date_status"] == "recent"
+        assert candidates[-1]["search_date_status"] == "old"
+        providers = job.coverage["search_groups"][SEARCH_GROUPS[0][0]]["providers"]
+        assert providers["baidu"]["qualified_subject_results"] == 0
+        assert providers["bocha"]["reason"] == "insufficient_qualified_subject_results"
+
+
+@pytest.mark.parametrize(
+    ("published_offset_days", "expected_reason"),
+    [
+        (-366, "published_before_recent_window"),
+        (2, "published_at_in_future"),
+    ],
+)
+def test_non_recent_page_remains_internal_and_cache_replay_uses_zero_calls(
+    migrated_app: FastAPI,
+    published_offset_days: int,
+    expected_reason: str,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+
+    url = "https://notice.example.gov.cn/notices/recency"
+    result = _result(
+        url,
+        f"{SHARED_COMPANY_NAME}完成融资",
+        f"{SHARED_COMPANY_NAME}披露融资进展。",
+    )
+    primary = MockSearchProvider(
+        "baidu",
+        {_query(terms): [result] for _, terms in SEARCH_GROUPS},
+    )
+    fallback = MockSearchProvider("bocha")
+    published_at = (utc_now() + timedelta(days=published_offset_days)).replace(microsecond=0)
+
+    class RecencyFetcherFactory(RecordingFetcherFactory):
+        def __call__(self, policy):
+            def handler(request: httpx.Request) -> httpx.Response:
+                self.requests.append(str(request.url))
+                if request.url.path == "/robots.txt":
+                    return httpx.Response(404, headers={"content-type": "text/plain"})
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/html"},
+                    text=(
+                        f"<html><head><title>{SHARED_COMPANY_NAME}完成融资</title>"
+                        '<meta property="article:published_time" '
+                        f'content="{published_at.isoformat()}"></head><body><main>'
+                        f"{SHARED_COMPANY_NAME}（{DEMO_SHARED_COMPANY_CREDIT_CODE}）"
+                        "完成融资，相关事项已经公告。"
+                        "</main></body></html>"
+                    ),
+                )
+
+            return TrustedSourceFetcher(
+                policy,
+                client=httpx.Client(transport=httpx.MockTransport(handler)),
+                allow_private_test_hosts=True,
+            )
+
+    fetcher = RecencyFetcherFactory()
+    _drain(migrated_app, {"baidu": primary, "bocha": fallback}, fetcher)
+    assert len(primary.calls) == 2
+    assert fallback.calls == []
+    assert len(fetcher.requests) == 2
+
+    with migrated_app.state.session_factory() as session:
+        document = session.scalar(select(RawDocument).where(RawDocument.canonical_url == url))
+        assert document is not None
+        quality = document.payload["quality_gate"]
+        assert quality["date_basis"] == "source_published_at"
+        assert expected_reason in quality["reasons"]
+        assert (
+            session.scalar(
+                select(func.count()).select_from(Event).where(Event.fingerprint_version == "web-v1")
+            )
+            == 0
+        )
+        second_user = session.get(User, BETA_USER_ID)
+        company = session.get(Company, SHARED_COMPANY_ID)
+        assert second_user is not None and company is not None
+        create_refresh_request(session, second_user, PersonalEntitlementPolicy(), company.id)
+
+    _drain(migrated_app, {"baidu": primary, "bocha": fallback}, fetcher)
+    assert len(primary.calls) == 2
+    assert fallback.calls == []
+    assert len(fetcher.requests) == 2
+    with migrated_app.state.session_factory() as session:
+        replay_job = session.scalar(
+            select(CompanyResearchJob)
+            .where(CompanyResearchJob.created_by_user_id == BETA_USER_ID)
+            .order_by(CompanyResearchJob.created_at.desc())
+        )
+        assert replay_job is not None
+        assert replay_job.external_calls == 0
+        assert replay_job.coverage["stats"]["internal_candidates"] == 1
+        assert (
+            session.scalar(
+                select(func.count()).select_from(Event).where(Event.fingerprint_version == "web-v1")
+            )
+            == 0
+        )
+
+
+def test_primary_failure_diagnostic_is_safe_and_fallback_reason_is_explicit(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+
+    class FailingPrimary:
+        code = "baidu"
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def search(self, request):
+            self.calls.append(request)
+            raise SearchProviderError(
+                "authentication_failed",
+                "safe diagnostic",
+                external_calls=1,
+                http_status=401,
+            )
+
+    query = _query(SEARCH_GROUPS[0][1])
+    primary = FailingPrimary()
+    fallback = MockSearchProvider(
+        "bocha",
+        {
+            query: [
+                _result(
+                    "https://www.stcn.com/article/detail/3.html",
+                    f"{SHARED_COMPANY_NAME}完成融资",
+                    f"{SHARED_COMPANY_NAME}披露融资进展。",
+                )
+            ]
+        },
+    )
+    with migrated_app.state.session_factory() as session:
+        worker = session.get(User, ALPHA_USER_ID)
+        assert worker is not None
+        run_web_research_worker_once(
+            session,
+            worker,
+            {"baidu": primary, "bocha": fallback},
+            WebResearchPolicy(),
+            fetcher_factory=RecordingFetcherFactory(),
+        )
+
+    assert len(primary.calls) == 1
+    assert len(fallback.calls) == 1
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        providers = job.coverage["search_groups"][SEARCH_GROUPS[0][0]]["providers"]
+        assert providers["baidu"] == {
+            "status": "failed",
+            "error_code": "authentication_failed",
+            "http_status": 401,
+            "subject_results": 0,
+            "qualified_subject_results": 0,
+        }
+        assert providers["bocha"]["reason"] == "primary_failed"
+        usage = session.scalar(
+            select(UsageLedger).where(UsageLedger.provider == "web_search_baidu")
+        )
+        assert usage is not None
+        assert usage.metrics == {
+            "query_kind": SEARCH_GROUPS[0][0],
+            "status": "failed",
+            "error_code": "authentication_failed",
+            "http_status": 401,
+        }
+        assert "query" not in usage.metrics
 
 
 def test_pause_between_single_steps_does_not_consume_worker_elapsed_budget(
@@ -700,7 +1154,7 @@ def test_cross_company_document_cache_requires_current_identity_mention(
         url=shared_url,
         snippet=f"{second_company_name}披露融资进展。",
         source_name="示例公开来源",
-        published_at="2026-09-01",
+        published_at=RECENT_DATE,
     )
     primary.responses[second_query(SEARCH_GROUPS[0][1])] = [second_result]
     primary.responses[second_query(SEARCH_GROUPS[1][1])] = []
@@ -759,7 +1213,7 @@ def test_severe_negative_stays_unconfirmed_and_never_publishes(
                 body = (
                     f"<html><head><title>{SHARED_COMPANY_NAME}破产线索</title>"
                     '<meta property="article:published_time" '
-                    'content="2026-09-01T08:00:00Z"></head>'
+                    f'content="{RECENT_TIMESTAMP}"></head>'
                     f"<body>{SHARED_COMPANY_NAME}（{DEMO_SHARED_COMPANY_CREDIT_CODE}）"
                     "出现破产清算相关公开线索。</body></html>"
                 ).encode()

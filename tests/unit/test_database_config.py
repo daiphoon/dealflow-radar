@@ -233,6 +233,7 @@ def test_web_research_is_disabled_bounded_and_provider_ordered_by_default(
     settings = Settings.from_env()
     policy = settings.web_research_policy
 
+    assert policy.version == "bounded-web-v2"
     assert settings.web_research_enabled is False
     assert settings.web_research_calls_enabled is False
     assert policy.primary_provider == "baidu"
@@ -240,6 +241,7 @@ def test_web_research_is_disabled_bounded_and_provider_ordered_by_default(
     assert policy.search_cache_ttl_days == 14
     assert policy.max_search_calls_per_job == 4
     assert policy.max_documents_per_job == 3
+    assert policy.recent_change_window_days == 365
     assert policy.daily_search_call_limit == 50
     assert policy.monthly_search_call_limit == 1_500
 
@@ -251,6 +253,24 @@ def test_web_research_rejects_the_same_primary_and_fallback(
     monkeypatch.setenv("WEB_RESEARCH_FALLBACK_PROVIDER", "baidu")
 
     with pytest.raises(ValueError, match="primary and fallback"):
+        Settings.from_env()
+
+
+def test_web_research_rejects_result_limit_above_baidu_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEB_RESEARCH_MAX_RESULTS_PER_SEARCH", "11")
+
+    with pytest.raises(ValueError, match="cannot exceed 10"):
+        Settings.from_env()
+
+
+def test_web_research_rejects_recency_window_above_v1_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEB_RESEARCH_RECENT_CHANGE_WINDOW_DAYS", "366")
+
+    with pytest.raises(ValueError, match="cannot exceed 365"):
         Settings.from_env()
 
 

@@ -46,16 +46,51 @@ from backend.app.web_search import (
 )
 
 WEB_RESEARCH_SOURCE_CODE = "bounded_public_web"
-CONTENT_QUALITY_GATE_VERSION = "bounded-web-quality-v1"
+CONTENT_QUALITY_GATE_VERSION = "bounded-web-quality-v2"
 ACTIVE_JOB_STATUSES = ("queued", "running", "partial", "budget_deferred")
 ACTIVE_REQUEST_STATUSES = ("research_queued", "researching", "partial", "budget_deferred")
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_NAMES = {"from", "spm"}
 BLOCKED_DISCOVERY_DOMAINS = {
+    "aiqicha.baidu.com",
+    "qcc.com",
+    "qixin.com",
     "tianyancha.com",
-    "www.tianyancha.com",
     "qianfan.baidubce.com",
     "api.bochaai.com",
+}
+TRUSTED_MEDIA_DOMAINS = {
+    "21jingji.com",
+    "36kr.com",
+    "caixin.com",
+    "cnstock.com",
+    "cs.com.cn",
+    "eeo.com.cn",
+    "iyiou.com",
+    "news.cn",
+    "pedaily.cn",
+    "people.com.cn",
+    "stcn.com",
+    "thepaper.cn",
+    "xinhuanet.com",
+    "yicai.com",
+}
+PROFILE_AGGREGATOR_DOMAINS = {
+    "baike.baidu.com",
+    "baike.sogou.com",
+    "baike.so.com",
+    "itjuzi.com",
+    "newseed.cn",
+    "pitchhub.36kr.com",
+}
+PROFILE_OR_LISTING_PATH_PARTS = {
+    "brand",
+    "companies",
+    "company",
+    "enterprise",
+    "project",
+    "search",
+    "tag",
 }
 
 RESEARCH_MODULES = (
@@ -280,6 +315,9 @@ class _ContentQualityDecision:
     event_type: str | None
     supporting_excerpt: str | None
     reasons: tuple[str, ...]
+    source_published_at: datetime | None
+    observed_at: datetime
+    recency_cutoff_at: datetime
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -290,6 +328,12 @@ class _ContentQualityDecision:
                 _sha256(self.supporting_excerpt) if self.supporting_excerpt else None
             ),
             "reasons": list(self.reasons),
+            "date_basis": "source_published_at",
+            "source_published_at": (
+                self.source_published_at.isoformat() if self.source_published_at else None
+            ),
+            "observed_at": self.observed_at.isoformat(),
+            "recency_cutoff_at": self.recency_cutoff_at.isoformat(),
         }
 
 
@@ -544,6 +588,16 @@ def _official_host(company: Company) -> str | None:
     return host.removeprefix("www.") or None
 
 
+def _host_matches_domain(host: str, domain: str) -> bool:
+    normalized_host = host.lower().rstrip(".").removeprefix("www.")
+    normalized_domain = domain.lower().rstrip(".").removeprefix("www.")
+    return normalized_host == normalized_domain or normalized_host.endswith(f".{normalized_domain}")
+
+
+def _host_matches_any(host: str, domains: set[str]) -> bool:
+    return any(_host_matches_domain(host, domain) for domain in domains)
+
+
 def _subject_match(company: Company, result: SearchResult) -> bool:
     haystack = _normalized_identity(f"{result.title} {result.snippet}")
     if _normalized_identity(company.legal_name) in haystack:
@@ -561,7 +615,7 @@ def _canonical_candidate_url(value: str) -> str | None:
     except ValueError:
         return None
     host = (parsed.hostname or "").lower().rstrip(".")
-    if not host or host in BLOCKED_DISCOVERY_DOMAINS or host.endswith(".tianyancha.com"):
+    if not host or _host_matches_any(host, BLOCKED_DISCOVERY_DOMAINS):
         return None
     root_domain = host.removeprefix("www.")
     try:
@@ -580,19 +634,102 @@ def _canonical_candidate_url(value: str) -> str | None:
     )
 
 
-def _result_score(company: Company, result: SearchResult) -> tuple[int, str]:
-    host = (urlsplit(result.url).hostname or "").lower().removeprefix("www.")
-    score = 0
-    if host.endswith(".gov.cn") or host == "gov.cn":
-        score += 50
-    if _official_host(company) == host:
-        score += 45
+@dataclass(frozen=True)
+class _SourceRank:
+    tier: str
+    score: int
+    reasons: tuple[str, ...]
+
+
+def _profile_or_listing_url(url: str) -> bool:
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if _host_matches_any(host, PROFILE_AGGREGATOR_DOMAINS):
+        return True
+    path_parts = {part.casefold() for part in parsed.path.split("/") if part}
+    if not path_parts:
+        return True
+    return bool(path_parts & PROFILE_OR_LISTING_PATH_PARTS)
+
+
+def _source_rank(company: Company, result: SearchResult) -> _SourceRank:
+    host = (urlsplit(result.url).hostname or "").lower().rstrip(".")
+    official_host = _official_host(company)
+    if host == "gov.cn" or host.endswith(".gov.cn"):
+        return _SourceRank("government", 500, ("government_domain",))
+    if official_host and _host_matches_domain(host, official_host):
+        return _SourceRank("company_official", 450, ("verified_company_domain",))
+    if _profile_or_listing_url(result.url):
+        return _SourceRank("profile_or_listing", 100, ("profile_or_listing_page",))
+    if _host_matches_any(host, TRUSTED_MEDIA_DOMAINS):
+        return _SourceRank("trusted_media_article", 350, ("reviewed_media_domain",))
+    return _SourceRank("locatable_source_page", 250, ("specific_https_page",))
+
+
+def _search_result_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    candidate = value.strip()
+    matched = re.search(r"(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})", candidate)
+    if matched:
+        candidate = "-".join(part.zfill(2) for part in matched.groups())
+    try:
+        parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _aware(parsed)
+
+
+def _search_date_status(
+    result: SearchResult,
+    policy: WebResearchPolicy,
+    *,
+    observed_at: datetime | None = None,
+) -> str:
+    published_at = _search_result_datetime(result.published_at)
+    if published_at is None:
+        return "unknown"
+    observed = _aware(observed_at or utc_now())
+    if published_at > observed + timedelta(days=1):
+        return "future"
+    if published_at < observed - timedelta(days=policy.recent_change_window_days):
+        return "old"
+    return "recent"
+
+
+def _qualified_subject_result(
+    company: Company,
+    result: SearchResult,
+    policy: WebResearchPolicy,
+) -> bool:
+    return bool(
+        _subject_match(company, result)
+        and _canonical_candidate_url(result.url)
+        and _source_rank(company, result).tier != "profile_or_listing"
+        and not _profile_or_listing_url(result.url)
+        and _search_date_status(result, policy) not in {"old", "future"}
+    )
+
+
+def _result_score(
+    company: Company,
+    result: SearchResult,
+    policy: WebResearchPolicy,
+) -> tuple[int, float, str]:
+    rank = _source_rank(company, result)
+    score = rank.score
     if _normalized_identity(company.legal_name) in _normalized_identity(result.title):
         score += 20
     result_text = f"{result.title}{result.snippet}".lower()
     if any(keyword in result_text for _, terms in EVENT_KEYWORDS for keyword in terms):
         score += 10
-    return score, result.published_at or ""
+    published_at = _search_result_datetime(result.published_at)
+    date_status = _search_date_status(result, policy)
+    if date_status == "recent":
+        score += 25
+    elif date_status in {"old", "future"}:
+        score -= 1_000
+    return score, published_at.timestamp() if published_at else 0.0, result.url
 
 
 def _cached_response(
@@ -755,6 +892,12 @@ def _provider_response(
         )
     except SearchProviderError as error:
         job.external_calls += error.external_calls
+        safe_diagnostic = {
+            "query_kind": query_kind,
+            "status": "failed",
+            "error_code": error.code,
+            "http_status": error.http_status,
+        }
         _record_usage(
             session,
             user,
@@ -762,7 +905,7 @@ def _provider_response(
             provider=f"web_search_{provider.code}",
             operation="company_discovery",
             external_calls=error.external_calls,
-            metrics={"query_kind": query_kind, "status": "failed", "error_code": error.code},
+            metrics=safe_diagnostic,
             idempotency_suffix=f"search:{query_kind}:{provider.code}",
         )
         session.commit()
@@ -825,6 +968,7 @@ def _process_search_group(
     responses: list[SearchResponse] = []
     provider_state: dict[str, object] = {}
     cache_hits = 0
+    primary_failure_code: str | None = None
     try:
         response, cached = _provider_response(
             session,
@@ -843,7 +987,12 @@ def _process_search_group(
             "results": len(response.results),
         }
     except SearchProviderError as error:
-        provider_state[primary.code] = {"status": "failed", "error_code": error.code}
+        primary_failure_code = error.code
+        provider_state[primary.code] = {
+            "status": "failed",
+            "error_code": error.code,
+            "http_status": error.http_status,
+        }
     _restore_worker_context(session, user)
     job = _refresh_job(session, job.id)
     if _job_should_stop(session, job):
@@ -854,7 +1003,23 @@ def _process_search_group(
         for result in response.results
         if _subject_match(company, result)
     )
-    if primary_subject_results < policy.fallback_min_subject_results:
+    primary_qualified_results = sum(
+        1
+        for response in responses
+        for result in response.results
+        if _qualified_subject_result(company, result, policy)
+    )
+    if primary.code in provider_state:
+        state = dict(provider_state[primary.code])
+        state["subject_results"] = primary_subject_results
+        state["qualified_subject_results"] = primary_qualified_results
+        provider_state[primary.code] = state
+    fallback_reason = (
+        "primary_failed"
+        if primary_failure_code is not None
+        else "insufficient_qualified_subject_results"
+    )
+    if primary_qualified_results < policy.fallback_min_subject_results:
         try:
             response, cached = _provider_response(
                 session,
@@ -871,10 +1036,28 @@ def _process_search_group(
             provider_state[fallback.code] = {
                 "status": "cache_hit" if cached else "completed",
                 "results": len(response.results),
-                "reason": "primary_failed_or_insufficient",
+                "subject_results": sum(
+                    1 for result in response.results if _subject_match(company, result)
+                ),
+                "qualified_subject_results": sum(
+                    1
+                    for result in response.results
+                    if _qualified_subject_result(company, result, policy)
+                ),
+                "reason": fallback_reason,
             }
         except SearchProviderError as error:
-            provider_state[fallback.code] = {"status": "failed", "error_code": error.code}
+            provider_state[fallback.code] = {
+                "status": "failed",
+                "error_code": error.code,
+                "http_status": error.http_status,
+                "reason": fallback_reason,
+            }
+    else:
+        provider_state[fallback.code] = {
+            "status": "not_called",
+            "reason": "primary_has_qualified_subject_results",
+        }
     _restore_worker_context(session, user)
     job = _refresh_job(session, job.id)
     if _job_should_stop(session, job):
@@ -889,11 +1072,16 @@ def _process_search_group(
             if canonical_url is None:
                 continue
             current = merged.get(canonical_url)
+            source_rank = _source_rank(company, result)
+            search_date_status = _search_date_status(result, policy)
             candidate = {
                 **result.to_dict(),
                 "url": canonical_url,
                 "discovered_by": [response.provider_code],
                 "query_kind": group_code,
+                "source_tier": source_rank.tier,
+                "source_rank_reasons": list(source_rank.reasons),
+                "search_date_status": search_date_status,
             }
             if current is None:
                 merged[canonical_url] = candidate
@@ -902,12 +1090,22 @@ def _process_search_group(
                 if response.provider_code not in discovered:
                     discovered.append(response.provider_code)
                 current["discovered_by"] = discovered
+                if _result_score(company, result, policy) > _result_score(
+                    company, SearchResult.from_dict(current), policy
+                ):
+                    candidate["discovered_by"] = discovered
+                    merged[canonical_url] = candidate
     coverage = dict(job.coverage)
     groups = dict(coverage.get("search_groups", {}))
     groups[group_code] = {
         "status": "completed",
         "providers": provider_state,
         "subject_results": len(merged),
+        "qualified_subject_results": sum(
+            1
+            for item in merged.values()
+            if _qualified_subject_result(company, SearchResult.from_dict(item), policy)
+        ),
     }
     coverage["search_groups"] = groups
     modules = dict(coverage.get("modules", {}))
@@ -919,10 +1117,26 @@ def _process_search_group(
         for item in coverage.get("candidates", [])
         if isinstance(item, dict) and item.get("url")
     }
-    existing_candidates.update(merged)
+    for canonical_url, candidate in merged.items():
+        current = existing_candidates.get(canonical_url)
+        if current is None:
+            existing_candidates[canonical_url] = candidate
+            continue
+        discovered = list(current.get("discovered_by", []))
+        for provider_code in candidate.get("discovered_by", []):
+            if provider_code not in discovered:
+                discovered.append(provider_code)
+        if _result_score(company, SearchResult.from_dict(candidate), policy) > _result_score(
+            company, SearchResult.from_dict(current), policy
+        ):
+            candidate["discovered_by"] = discovered
+            existing_candidates[canonical_url] = candidate
+        else:
+            current["discovered_by"] = discovered
     candidates = list(existing_candidates.values())
     candidates.sort(
-        key=lambda item: _result_score(company, SearchResult.from_dict(item)), reverse=True
+        key=lambda item: _result_score(company, SearchResult.from_dict(item), policy),
+        reverse=True,
     )
     coverage["candidates"] = candidates[: policy.max_candidate_urls]
     job.coverage = coverage
@@ -1081,12 +1295,21 @@ def _content_quality_decision(
     title: str,
     excerpt: str,
     published_at: datetime | None,
+    observed_at: datetime,
+    policy: WebResearchPolicy,
 ) -> _ContentQualityDecision:
     reasons: list[str] = []
+    observed = _aware(observed_at)
+    published = _aware(published_at) if published_at is not None else None
+    recency_cutoff = observed - timedelta(days=policy.recent_change_window_days)
     if not excerpt:
         reasons.append("missing_clean_body")
-    if published_at is None:
+    if published is None:
         reasons.append("missing_reliable_published_at")
+    elif published > observed + timedelta(days=1):
+        reasons.append("published_at_in_future")
+    elif published < recency_cutoff:
+        reasons.append("published_before_recent_window")
     passages = _content_passages(excerpt)
     identity_passages = [item for item in passages if _body_identity_match(company, item)]
     if not identity_passages:
@@ -1117,12 +1340,18 @@ def _content_quality_decision(
             event_type=matched_type,
             supporting_excerpt=supporting_excerpt,
             reasons=tuple(dict.fromkeys(reasons)),
+            source_published_at=published,
+            observed_at=observed,
+            recency_cutoff_at=recency_cutoff,
         )
     return _ContentQualityDecision(
         eligible=True,
         event_type=matched_type,
         supporting_excerpt=supporting_excerpt,
         reasons=("content_quality_gate_passed",),
+        source_published_at=published,
+        observed_at=observed,
+        recency_cutoff_at=recency_cutoff,
     )
 
 
@@ -1218,6 +1447,7 @@ def _candidate_event(
     company: Company,
     document: RawDocument,
     source: Source,
+    policy: WebResearchPolicy,
 ) -> tuple[Event | None, bool, _ContentQualityDecision]:
     excerpt = str(document.payload.get("excerpt") or "").strip()
     quality = _content_quality_decision(
@@ -1225,6 +1455,8 @@ def _candidate_event(
         title=document.title,
         excerpt=excerpt,
         published_at=document.published_at,
+        observed_at=document.observed_at,
+        policy=policy,
     )
     if not quality.eligible or quality.event_type is None or quality.supporting_excerpt is None:
         return None, False, quality
@@ -1264,8 +1496,11 @@ def _candidate_event(
         title=document.title[:200],
         summary=f"公开来源出现与该公司相关的变化线索：{supporting_excerpt[:700]}",
         facts=[{"name": "公开页面标题", "value": document.title, "unit": None}],
-        uncertainties=["该内容由程序发现并完成主体核对，尚未经过人工事实复核。"],
-        occurred_at=document.published_at,
+        uncertainties=[
+            "该内容由程序发现并完成主体核对，尚未经过人工事实复核。",
+            "来源发布时间已经记录，事件实际发生时间尚未独立核验。",
+        ],
+        occurred_at=None,
         published_at=document.published_at,
         published_on=document.published_on,
         observed_at=document.observed_at,
@@ -1277,6 +1512,8 @@ def _candidate_event(
             "auto_publish_disabled",
             "bounded_public_web_discovery",
             "content_quality_gate_passed",
+            "source_published_within_recent_window",
+            "event_time_not_independently_verified",
             "human_fact_review_not_completed",
             *(["serious_negative_requires_review"] if severe else []),
         ],
@@ -1385,6 +1622,7 @@ def _fetch_candidate(
             company,
             cached_document,
             source,
+            policy,
         )
         events_created += int(event_created)
         quality_gate_passed += int(quality.eligible)
@@ -1441,6 +1679,8 @@ def _fetch_candidate(
                         title=discovered.title,
                         excerpt=excerpt,
                         published_at=discovered.published_at,
+                        observed_at=utc_now(),
+                        policy=policy,
                     )
                     document, document_created = _raw_document(
                         session,
@@ -1457,6 +1697,7 @@ def _fetch_candidate(
                         company,
                         document,
                         source,
+                        policy,
                     )
                     events_created += int(event_created)
                     quality_gate_passed += int(quality.eligible)
