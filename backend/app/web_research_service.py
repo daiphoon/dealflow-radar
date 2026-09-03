@@ -52,12 +52,21 @@ ACTIVE_REQUEST_STATUSES = ("research_queued", "researching", "partial", "budget_
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_NAMES = {"from", "spm"}
 BLOCKED_DISCOVERY_DOMAINS = {
+    "aiqicha.com",
     "aiqicha.baidu.com",
     "qcc.com",
     "qixin.com",
     "tianyancha.com",
     "qianfan.baidubce.com",
     "api.bochaai.com",
+}
+REGULATORY_DISCLOSURE_DOMAINS = {
+    "bse.cn",
+    "hkex.com.hk",
+    "hkexnews.hk",
+    "neeq.com.cn",
+    "sse.com.cn",
+    "szse.cn",
 }
 TRUSTED_MEDIA_DOMAINS = {
     "21jingji.com",
@@ -112,7 +121,7 @@ SEARCH_GROUPS = (
     ),
     (
         "technology_risk_exit",
-        "产品 专利 高管 诉讼 处罚 产能 上市 并购 回购",
+        "公告 变更 上市 备案 诉讼 处罚 投产 产品",
     ),
 )
 
@@ -657,6 +666,8 @@ def _source_rank(company: Company, result: SearchResult) -> _SourceRank:
     official_host = _official_host(company)
     if host == "gov.cn" or host.endswith(".gov.cn"):
         return _SourceRank("government", 500, ("government_domain",))
+    if _host_matches_any(host, REGULATORY_DISCLOSURE_DOMAINS):
+        return _SourceRank("regulatory_disclosure", 480, ("regulatory_domain",))
     if official_host and _host_matches_domain(host, official_host):
         return _SourceRank("company_official", 450, ("verified_company_domain",))
     if _profile_or_listing_url(result.url):
@@ -702,12 +713,40 @@ def _qualified_subject_result(
     result: SearchResult,
     policy: WebResearchPolicy,
 ) -> bool:
+    source_rank = _source_rank(company, result)
     return bool(
         _subject_match(company, result)
         and _canonical_candidate_url(result.url)
-        and _source_rank(company, result).tier != "profile_or_listing"
-        and not _profile_or_listing_url(result.url)
+        and source_rank.tier != "profile_or_listing"
         and _search_date_status(result, policy) not in {"old", "future"}
+    )
+
+
+def _verified_official_site_response(
+    company: Company,
+    policy: WebResearchPolicy,
+) -> SearchResponse | None:
+    if not company.official_website:
+        return None
+    canonical_url = _canonical_candidate_url(company.official_website)
+    if canonical_url is None:
+        return None
+    result = SearchResult(
+        provider_record_id=f"verified-company-website:{company.id}",
+        title=f"{company.legal_name}已核验官方网站",
+        url=canonical_url,
+        snippet=f"{company.legal_name}已核验官方网站。",
+        source_name="公司已核验官网",
+        published_at=None,
+    )
+    if not _qualified_subject_result(company, result, policy):
+        return None
+    return SearchResponse(
+        provider_code="verified_company_identity",
+        request_id=None,
+        results=[result],
+        response_hash=_sha256(f"verified-company-website:{company.id}:{canonical_url}"),
+        external_calls=0,
     )
 
 
@@ -1063,10 +1102,16 @@ def _process_search_group(
     if _job_should_stop(session, job):
         return _cancel_job(session, job)
 
+    candidate_responses = list(responses)
+    if group_code == SEARCH_GROUPS[-1][0]:
+        official_site_response = _verified_official_site_response(company, policy)
+        if official_site_response is not None:
+            candidate_responses.append(official_site_response)
+
     merged: dict[str, dict[str, object]] = {}
-    for response in responses:
+    for response in candidate_responses:
         for result in response.results:
-            if not _subject_match(company, result):
+            if not _qualified_subject_result(company, result, policy):
                 continue
             canonical_url = _canonical_candidate_url(result.url)
             if canonical_url is None:

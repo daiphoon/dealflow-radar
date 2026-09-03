@@ -285,7 +285,7 @@ docker compose -f compose.production.yml -f deploy/compose.single-host.yml \
   python -m scripts.run_web_research_worker --dry-run
 ```
 
-真实运行前，把 `BAIDU_SEARCH_API_KEY` 和 `BOCHA_SEARCH_API_KEY` 只写入权限受限且 Git 忽略的生产环境文件，不得粘贴到命令、聊天、日志或 Git。四个 Worker 专用开关必须同时临时设为 true：`WEB_RESEARCH_WORKER_ENABLED`、`WEB_RESEARCH_EXTERNAL_CALLS_ENABLED`、`WEB_RESEARCH_WORKER_CALLS_ENABLED`、`WEB_RESEARCH_PAID_API_CALLS_ENABLED`。最后一个开关表示“这是受额度或可能计费的调用，需要明确批准”，不表示本次一定收费。`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED`、可信来源调度和投资解读 Agent 必须继续为 false。
+真实运行前，把 `BAIDU_SEARCH_API_KEY` 和 `BOCHA_SEARCH_API_KEY` 只写入权限受限且 Git 忽略的生产环境文件，不得粘贴到命令、聊天、日志或 Git。更换 Key 时使用终端不回显输入并要求重复确认，原子替换前创建 `0600` 回退备份；完成后只记录不可逆短指纹，不打印或通过命令参数传递 Key。四个 Worker 专用开关必须同时临时设为 true：`WEB_RESEARCH_WORKER_ENABLED`、`WEB_RESEARCH_EXTERNAL_CALLS_ENABLED`、`WEB_RESEARCH_WORKER_CALLS_ENABLED`、`WEB_RESEARCH_PAID_API_CALLS_ENABLED`。最后一个开关表示“这是受额度或可能计费的调用，需要明确批准”，不表示本次一定收费。`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED`、可信来源调度和投资解读 Agent 必须继续为 false。
 
 首次生产验收只处理一个已批准申请，并用 `--once` 单步观察 `company_research_jobs`、个人申请进度、`usage_ledger`、搜索缓存、原网页主体匹配和候选作用域：
 
@@ -298,7 +298,7 @@ docker compose -f compose.production.yml -f deploy/compose.single-host.yml \
 
 确认百度有主体准确、非资料页且未明确过期的结果时，博查调用为 0；只有百度失败或缺少上述合格结果才允许回退。搜索摘要不能生成事件，必须存在经安全抓取和主体匹配的原网页证据。任务结束或停止验收后，立即把四个 Worker 专用开关恢复为 false，并确认没有常驻 Worker。合格共享缓存可保留 14 天；取消申请不删除已取得缓存，但不得把未完成、跨公司或身份已变化的结果继续复用。生产数据库降级前必须备份并评估真实缓存与 RLS 数据，优先应用版本回退并保留向前兼容 Schema。
 
-R3.1 部署时把 `WEB_RESEARCH_POLICY_VERSION` 设置为 `bounded-web-v2`，`WEB_RESEARCH_RECENT_CHANGE_WINDOW_DAYS` 默认设为 `365`。策略升级不使既有搜索缓存失效。部署后先保持真实调用开关和常驻 Worker 关闭；北京智齿博创既有缓存必须在生产备份的隔离副本中，使用明确拒绝联网的 Provider 和抓取器完成重放，确认 `company_research_jobs.external_calls` 与 `usage_ledger` 均无新增、历史噪声页只保留为系统受限文档且不重新生成用户可见线索。不得直接开启生产 Worker 并把可能命中缓存的运行称为“零调用回放”。隔离回放通过后，才可由项目负责人另行授权一家新公司做一次受控真实实测。
+R3.1 部署时把 `WEB_RESEARCH_POLICY_VERSION` 设置为 `bounded-web-v2`，`WEB_RESEARCH_RECENT_CHANGE_WINDOW_DAYS` 默认设为 `365`。策略升级不使既有搜索缓存失效。北京智齿博创既有缓存已经在生产备份的隔离副本中，使用明确拒绝联网的 Provider 和抓取器完成回放，确认 `company_research_jobs.external_calls` 与 `usage_ledger` 均无新增、历史噪声未重新生成用户可见线索。后续生产实测若暴露配置或质量问题，必须关闭调用开关，在代码与配置修复后复用同一家公司验证；不得连续查询新公司来代替根因修复。
 
 百度诊断只查看 `company_research_jobs.coverage.search_groups.*.providers` 和对应 `usage_ledger.metrics` 中的检索组、错误类别、HTTP 状态及调用数。允许的类别包括 `authentication_failed`、`permission_denied`、`request_rejected`、`rate_limited`、`quota_unavailable`、`invalid_request`、`upstream_timeout`、`provider_unavailable` 和兜底 `http_error`。不得为排错输出 `web_search_cache_entries.query_text`、API Key、供应商错误消息或原始响应正文；个人用户只看任务状态，不看 Provider 内部诊断。
 
