@@ -67,6 +67,7 @@ def test_baidu_provider_maps_documented_shape_and_drops_unsafe_urls() -> None:
         "messages": [{"role": "user", "content": "示例公司 融资"}],
         "search_source": "baidu_search_v2",
         "resource_type_filter": [{"type": "web", "top_k": 5}],
+        "search_recency_filter": "year",
     }
 
 
@@ -142,7 +143,17 @@ def test_bocha_provider_maps_documented_shape_without_requesting_summary() -> No
     }
 
 
-@pytest.mark.parametrize("status,code", [(429, "rate_limited"), (503, "http_error")])
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (400, "invalid_request"),
+        (401, "authentication_failed"),
+        (403, "permission_denied"),
+        (429, "rate_limited"),
+        (503, "provider_unavailable"),
+        (504, "upstream_timeout"),
+    ],
+)
 def test_provider_returns_auditable_error_without_retry(status: int, code: str) -> None:
     calls = 0
 
@@ -162,8 +173,63 @@ def test_provider_returns_auditable_error_without_retry(status: int, code: str) 
         provider.search(SearchRequest("示例公司"))
 
     assert caught.value.code == code
+    assert caught.value.http_status == status
     assert caught.value.external_calls == 1
     assert calls == 1
+
+
+def test_baidu_provider_classifies_200_error_payload_without_leaking_message() -> None:
+    provider = BaiduSearchProvider(
+        "test-key",
+        timeout_seconds=2,
+        max_response_bytes=4096,
+        user_agent="DealflowRadarTest/1.0",
+        client=_client(
+            lambda _: httpx.Response(
+                200,
+                json={
+                    "code": "rpm_rate_limit_exceeded",
+                    "message": "sensitive upstream details for 示例公司",
+                },
+            )
+        ),
+    )
+
+    with pytest.raises(SearchProviderError) as caught:
+        provider.search(SearchRequest("示例公司"))
+
+    assert caught.value.code == "rate_limited"
+    assert caught.value.http_status == 200
+    assert "sensitive" not in str(caught.value)
+    assert "示例公司" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("provider_code", "expected"),
+    [
+        ("QianfanApiExpired", "quota_unavailable"),
+        ("no_parameter_permission", "permission_denied"),
+        ("system_unsafe", "request_rejected"),
+        ("characters_too_long", "invalid_request"),
+        ("internal_error", "provider_unavailable"),
+    ],
+)
+def test_baidu_provider_maps_payload_error_categories(
+    provider_code: str,
+    expected: str,
+) -> None:
+    provider = BaiduSearchProvider(
+        "test-key",
+        timeout_seconds=2,
+        max_response_bytes=4096,
+        user_agent="DealflowRadarTest/1.0",
+        client=_client(lambda _: httpx.Response(200, json={"code": provider_code})),
+    )
+
+    with pytest.raises(SearchProviderError) as caught:
+        provider.search(SearchRequest("示例公司"))
+
+    assert caught.value.code == expected
 
 
 def test_provider_rejects_oversized_or_redirected_response() -> None:
