@@ -12,6 +12,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.app.config import SourceMonitoringPolicy, WebResearchPolicy
+from backend.app.database import set_request_context
 from backend.app.models import (
     PLATFORM_SHARED_SCOPE,
     SYSTEM_RESTRICTED_SCOPE,
@@ -657,6 +658,10 @@ def _job_should_stop(session: Session, job: CompanyResearchJob) -> bool:
     return job.cancel_requested_at is not None or not _active_linked_requests(session, job.id)
 
 
+def _restore_worker_context(session: Session, user: User) -> None:
+    set_request_context(session, user.id, user.tenant_id)
+
+
 def _process_search_group(
     session: Session,
     user: User,
@@ -692,6 +697,7 @@ def _process_search_group(
         }
     except SearchProviderError as error:
         provider_state[primary.code] = {"status": "failed", "error_code": error.code}
+    _restore_worker_context(session, user)
     job = _refresh_job(session, job.id)
     if _job_should_stop(session, job):
         return _cancel_job(session, job)
@@ -722,6 +728,7 @@ def _process_search_group(
             }
         except SearchProviderError as error:
             provider_state[fallback.code] = {"status": "failed", "error_code": error.code}
+    _restore_worker_context(session, user)
     job = _refresh_job(session, job.id)
     if _job_should_stop(session, job):
         return _cancel_job(session, job)
@@ -1231,6 +1238,7 @@ def _fetch_candidate(
         request.heartbeat_at = job.heartbeat_at
         request.leased_until = None
     session.commit()
+    _restore_worker_context(session, user)
     job = _refresh_job(session, job.id)
     if _job_should_stop(session, job):
         return _cancel_job(session, job)
@@ -1329,14 +1337,17 @@ def run_web_research_worker_once(
     *,
     fetcher_factory: Callable[[SourceMonitoringPolicy], TrustedSourceFetcher] | None = None,
 ) -> WebResearchWorkerResult:
+    _restore_worker_context(session, user)
     if not user_has_role(session, user.id, "platform_admin"):
         raise WebResearchAccessError("platform_admin role required")
     if policy.primary_provider not in providers or policy.fallback_provider not in providers:
         raise ValueError("configured web research providers are missing")
     prepare_pending_research_requests(session, user, policy)
+    _restore_worker_context(session, user)
     job = _lease_job(session, user, policy)
     if job is None:
         return WebResearchWorkerResult(status="idle")
+    _restore_worker_context(session, user)
     company = session.get(Company, job.company_id)
     if not _public_company(company):
         job.status = "failed"
