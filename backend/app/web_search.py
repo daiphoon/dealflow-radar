@@ -10,6 +10,7 @@ import httpx
 
 BAIDU_WEB_SEARCH_ENDPOINT = "https://qianfan.baidubce.com/v2/ai_search/web_search"
 BOCHA_WEB_SEARCH_ENDPOINT = "https://api.bochaai.com/v1/web-search"
+BAIDU_QUERY_WEIGHT_LIMIT = 72
 
 
 class SearchProviderError(RuntimeError):
@@ -116,6 +117,27 @@ def _response_hash(provider_code: str, results: list[SearchResult]) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(f"{provider_code}:{payload}".encode()).hexdigest()
+
+
+def _baidu_query_weight(value: str) -> int:
+    return sum(2 if ord(character) > 127 else 1 for character in value)
+
+
+def _bounded_baidu_query(value: str) -> str:
+    if _baidu_query_weight(value) <= BAIDU_QUERY_WEIGHT_LIMIT:
+        return value
+    result: list[str] = []
+    weight = 0
+    for character in value:
+        character_weight = 2 if ord(character) > 127 else 1
+        if weight + character_weight > BAIDU_QUERY_WEIGHT_LIMIT:
+            break
+        result.append(character)
+        weight += character_weight
+    bounded = "".join(result).rstrip()
+    if bounded.count('"') % 2:
+        bounded = bounded.replace('"', "")
+    return bounded
 
 
 class _JsonSearchProvider:
@@ -234,7 +256,7 @@ class BaiduSearchProvider(_JsonSearchProvider):
 
     def _request_payload(self, request: SearchRequest) -> dict[str, object]:
         return {
-            "messages": [{"role": "user", "content": request.query}],
+            "messages": [{"role": "user", "content": _bounded_baidu_query(request.query)}],
             "search_source": "baidu_search_v2",
             "resource_type_filter": [{"type": "web", "top_k": request.max_results}],
         }

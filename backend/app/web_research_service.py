@@ -71,11 +71,11 @@ RESEARCH_MODULES = (
 SEARCH_GROUPS = (
     (
         "business_capital",
-        "财务 经营 融资 股权 股东 增资 合同 中标 客户 订单",
+        "财务 融资 股权 合同 中标 订单",
     ),
     (
         "technology_risk_exit",
-        "产品 技术 专利 高管 诉讼 处罚 产能 工厂 IPO 上市 并购 回购",
+        "产品 专利 高管 诉讼 处罚 产能 上市 并购 回购",
     ),
 )
 
@@ -384,7 +384,7 @@ def _lease_job(
 
 
 def _query_for(company: Company, terms: str) -> str:
-    return f'"{company.legal_name}" "{company.credit_code}" {terms}'
+    return f'"{company.legal_name}" {terms}'
 
 
 def _official_host(company: Company) -> str | None:

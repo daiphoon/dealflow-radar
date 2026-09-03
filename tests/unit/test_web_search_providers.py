@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from backend.app.web_search import (
+    BAIDU_QUERY_WEIGHT_LIMIT,
     BAIDU_WEB_SEARCH_ENDPOINT,
     BOCHA_WEB_SEARCH_ENDPOINT,
     BaiduSearchProvider,
@@ -67,6 +68,34 @@ def test_baidu_provider_maps_documented_shape_and_drops_unsafe_urls() -> None:
         "search_source": "baidu_search_v2",
         "resource_type_filter": [{"type": "web", "top_k": 5}],
     }
+
+
+def test_baidu_provider_bounds_weighted_query_without_unbalanced_quotes() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"references": []})
+
+    provider = BaiduSearchProvider(
+        "test-key",
+        timeout_seconds=2,
+        max_response_bytes=4096,
+        user_agent="DealflowRadarTest/1.0",
+        client=_client(handler),
+    )
+    provider.search(
+        SearchRequest(
+            '"示例超长工商主体名称有限公司" "91310000MA1K00000X" '
+            "产品 专利 高管 诉讼 处罚 产能 上市 并购 回购"
+        )
+    )
+
+    content = json.loads(requests[0].read())["messages"][0]["content"]
+    assert sum(2 if ord(character) > 127 else 1 for character in content) <= (
+        BAIDU_QUERY_WEIGHT_LIMIT
+    )
+    assert content.count('"') % 2 == 0
 
 
 def test_bocha_provider_maps_documented_shape_without_requesting_summary() -> None:

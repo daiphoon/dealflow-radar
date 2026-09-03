@@ -69,7 +69,7 @@ def _grant_platform_admin(app: FastAPI) -> None:
 
 
 def _query(terms: str) -> str:
-    return f'"{SHARED_COMPANY_NAME}" "{DEMO_SHARED_COMPANY_CREDIT_CODE}" {terms}'
+    return f'"{SHARED_COMPANY_NAME}" {terms}'
 
 
 def _result(url: str, title: str, snippet: str) -> SearchResult:
@@ -508,7 +508,6 @@ def test_cross_company_document_cache_requires_current_identity_mention(
         session.commit()
         second_company_id = second_company.id
         second_company_name = second_company.legal_name
-        second_company_credit_code = second_company.credit_code
         create_refresh_request(session, owner, PersonalEntitlementPolicy(), alpha_company.id)
 
     shared_url = "https://news.example.com/shared-page"
@@ -530,7 +529,7 @@ def test_cross_company_document_cache_requires_current_identity_mention(
     _drain(migrated_app, {"baidu": primary, "bocha": fallback}, fetcher)
 
     def second_query(terms: str) -> str:
-        return f'"{second_company_name}" "{second_company_credit_code}" {terms}'
+        return f'"{second_company_name}" {terms}'
 
     second_result = SearchResult(
         provider_record_id="second-company-result",
