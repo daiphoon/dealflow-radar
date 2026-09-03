@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -45,6 +46,7 @@ from backend.app.web_search import (
 )
 
 WEB_RESEARCH_SOURCE_CODE = "bounded_public_web"
+CONTENT_QUALITY_GATE_VERSION = "bounded-web-quality-v1"
 ACTIVE_JOB_STATUSES = ("queued", "running", "partial", "budget_deferred")
 ACTIVE_REQUEST_STATUSES = ("research_queued", "researching", "partial", "budget_deferred")
 TRACKING_QUERY_PREFIXES = ("utm_",)
@@ -139,6 +141,129 @@ SEVERE_TERMS = (
 )
 NEGATIVE_TERMS = SEVERE_TERMS + ("处罚", "诉讼", "仲裁", "执行", "冻结", "查封", "违约")
 POSITIVE_TERMS = ("融资", "中标", "首单", "投产", "获批", "认证", "合作", "上市辅导")
+EVENT_CHANGE_SIGNALS: dict[str, tuple[str, ...]] = {
+    "exit_liquidity": (
+        "辅导备案",
+        "申报",
+        "问询",
+        "挂牌",
+        "并购",
+        "收购",
+        "回购",
+        "股权转让",
+        "撤回",
+        "中止",
+        "终止",
+    ),
+    "legal_compliance": (
+        "被处罚",
+        "行政处罚",
+        "立案",
+        "判决",
+        "被执行",
+        "限制高消费",
+        "失信",
+        "冻结",
+        "查封",
+        "吊销",
+        "破产",
+        "清算",
+    ),
+    "financing_cap_table": (
+        "完成融资",
+        "获得融资",
+        "获投",
+        "增资",
+        "减资",
+        "新增股东",
+        "股东变更",
+        "控制权变更",
+        "股权转让",
+        "股权质押",
+        "股权冻结",
+    ),
+    "contract_commercial": (
+        "中标",
+        "签署合同",
+        "签订合同",
+        "获得订单",
+        "达成合作",
+        "成为供应商",
+        "完成首单",
+        "实现量产",
+    ),
+    "product_technology": (
+        "发布新产品",
+        "推出新产品",
+        "获批",
+        "取得注册证",
+        "通过认证",
+        "专利授权",
+        "进入临床",
+        "启动临床",
+        "产品召回",
+        "研发暂停",
+        "研发终止",
+    ),
+    "governance_people": (
+        "法定代表人变更",
+        "董事变更",
+        "监事变更",
+        "高管变更",
+        "任命",
+        "辞任",
+        "离职",
+        "裁员",
+        "组织重组",
+    ),
+    "capacity_assets": (
+        "开工",
+        "竣工",
+        "投产",
+        "扩产",
+        "新建工厂",
+        "新建产线",
+        "资产抵押",
+        "资产查封",
+        "场所关闭",
+        "获得环评",
+    ),
+    "financial_operation": (
+        "营收增长",
+        "营收下降",
+        "收入增长",
+        "收入下降",
+        "利润增长",
+        "利润下降",
+        "实现盈利",
+        "出现亏损",
+        "扭亏",
+        "欠薪",
+        "停工",
+        "停产",
+        "销量增长",
+        "销量下降",
+        "出货增长",
+        "出货下降",
+    ),
+}
+EVENT_CHANGE_PATTERNS: dict[str, tuple[str, ...]] = {
+    "financing_cap_table": (
+        r"完成.{0,12}融资",
+        r"获得.{0,12}融资",
+        r"获(?:得)?.{0,12}投资",
+    ),
+    "contract_commercial": (
+        r"签(?:署|订).{0,12}合同",
+        r"获得.{0,12}订单",
+        r"达成.{0,12}合作",
+    ),
+    "product_technology": (
+        r"发布.{0,12}产品",
+        r"推出.{0,12}产品",
+        r"通过.{0,12}认证",
+    ),
+}
 
 
 class WebResearchAccessError(RuntimeError):
@@ -147,6 +272,25 @@ class WebResearchAccessError(RuntimeError):
 
 class WebResearchBudgetDeferred(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class _ContentQualityDecision:
+    eligible: bool
+    event_type: str | None
+    supporting_excerpt: str | None
+    reasons: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "version": CONTENT_QUALITY_GATE_VERSION,
+            "status": "eligible" if self.eligible else "internal_only",
+            "event_type": self.event_type,
+            "supporting_excerpt_hash": (
+                _sha256(self.supporting_excerpt) if self.supporting_excerpt else None
+            ),
+            "reasons": list(self.reasons),
+        }
 
 
 @dataclass(frozen=True)
@@ -230,6 +374,8 @@ def _initial_coverage(policy: WebResearchPolicy) -> dict[str, object]:
             "fetch_calls": 0,
             "downloaded_bytes": 0,
             "events_created": 0,
+            "quality_gate_passed": 0,
+            "internal_candidates": 0,
         },
     }
 
@@ -894,9 +1040,90 @@ def _ensure_entity_mention(
 def _event_classification(title: str, excerpt: str) -> str | None:
     content = f"{title} {excerpt}".casefold()
     for event_type, keywords in EVENT_KEYWORDS:
-        if any(keyword.casefold() in content for keyword in keywords):
+        has_category = any(keyword.casefold() in content for keyword in keywords)
+        has_change = any(
+            signal.casefold() in content for signal in EVENT_CHANGE_SIGNALS[event_type]
+        ) or any(
+            re.search(pattern, content, flags=re.IGNORECASE)
+            for pattern in EVENT_CHANGE_PATTERNS.get(event_type, ())
+        )
+        if has_category and has_change:
             return event_type
     return None
+
+
+def _content_passages(excerpt: str) -> list[str]:
+    passages: list[str] = []
+    for item in re.split(r"\n+|(?<=[。！？!?；;])", excerpt):
+        normalized = " ".join(item.split()).strip()
+        if not normalized:
+            continue
+        if len(normalized) <= 500:
+            passages.append(normalized)
+            continue
+        start = 0
+        while start < len(normalized):
+            passages.append(normalized[start : start + 500])
+            start += 400
+    return passages
+
+
+def _body_identity_match(company: Company, value: str) -> bool:
+    normalized = _normalized_identity(value)
+    return _normalized_identity(company.legal_name) in normalized or bool(
+        company.credit_code and company.credit_code.casefold() in value.casefold()
+    )
+
+
+def _content_quality_decision(
+    company: Company,
+    *,
+    title: str,
+    excerpt: str,
+    published_at: datetime | None,
+) -> _ContentQualityDecision:
+    reasons: list[str] = []
+    if not excerpt:
+        reasons.append("missing_clean_body")
+    if published_at is None:
+        reasons.append("missing_reliable_published_at")
+    passages = _content_passages(excerpt)
+    identity_passages = [item for item in passages if _body_identity_match(company, item)]
+    if not identity_passages:
+        reasons.append("subject_not_in_clean_body")
+
+    matched_type: str | None = None
+    supporting_excerpt: str | None = None
+    for passage in identity_passages:
+        # The subject and the change must be supported by the same body passage.
+        # A headline keyword must not combine with an unrelated company profile
+        # paragraph to manufacture a user-visible lead.
+        event_type = _event_classification("", passage)
+        if event_type is None:
+            continue
+        matched_type = event_type
+        supporting_excerpt = f"{title}。{passage}"[:1000]
+        break
+    if matched_type is None:
+        unrelated_change = any(_event_classification("", item) for item in passages)
+        reasons.append(
+            "subject_not_in_change_passage"
+            if unrelated_change and identity_passages
+            else "no_material_change_signal"
+        )
+    if reasons:
+        return _ContentQualityDecision(
+            eligible=False,
+            event_type=matched_type,
+            supporting_excerpt=supporting_excerpt,
+            reasons=tuple(dict.fromkeys(reasons)),
+        )
+    return _ContentQualityDecision(
+        eligible=True,
+        event_type=matched_type,
+        supporting_excerpt=supporting_excerpt,
+        reasons=("content_quality_gate_passed",),
+    )
 
 
 def _event_direction(content: str) -> str:
@@ -932,6 +1159,7 @@ def _raw_document(
     candidate: dict[str, object],
     discovered: object,
     job: CompanyResearchJob,
+    quality: _ContentQualityDecision,
 ) -> tuple[RawDocument, bool]:
     canonical_url = str(discovered.canonical_url)
     existing = session.scalar(
@@ -945,7 +1173,7 @@ def _raw_document(
     if existing is not None:
         _ensure_entity_mention(session, existing, company)
         return existing, False
-    excerpt = (discovered.excerpt or "").strip()[:1000]
+    excerpt = (discovered.excerpt or "").strip()[:1500]
     document = RawDocument(
         source_id=source.id,
         research_import_id=None,
@@ -967,6 +1195,8 @@ def _raw_document(
             "excerpt": excerpt,
             "discovered_by": candidate.get("discovered_by", []),
             "research_job_id": str(job.id),
+            "content_extraction": dict(discovered.metadata),
+            "quality_gate": quality.to_dict(),
             "_source_verification": {
                 "status": discovered.link_health_status,
                 "checked_at": utc_now().isoformat(),
@@ -988,11 +1218,17 @@ def _candidate_event(
     company: Company,
     document: RawDocument,
     source: Source,
-) -> tuple[Event | None, bool]:
+) -> tuple[Event | None, bool, _ContentQualityDecision]:
     excerpt = str(document.payload.get("excerpt") or "").strip()
-    event_type = _event_classification(document.title, excerpt)
-    if event_type is None or not excerpt:
-        return None, False
+    quality = _content_quality_decision(
+        company,
+        title=document.title,
+        excerpt=excerpt,
+        published_at=document.published_at,
+    )
+    if not quality.eligible or quality.event_type is None or quality.supporting_excerpt is None:
+        return None, False, quality
+    event_type = quality.event_type
     fingerprint = _sha256(
         f"{company.id}|{document.canonical_url}|{document.content_hash}|{event_type}"
     )
@@ -1005,8 +1241,9 @@ def _candidate_event(
         )
     )
     if existing is not None:
-        return existing, False
-    content = f"{document.title} {excerpt}"
+        return existing, False, quality
+    supporting_excerpt = quality.supporting_excerpt
+    content = f"{document.title} {supporting_excerpt}"
     severe = any(term in content for term in SEVERE_TERMS)
     source_quality = _source_quality(company, document.canonical_url)
     event = Event(
@@ -1025,7 +1262,7 @@ def _candidate_event(
         confidence_score=Decimal("0.800") if source_quality == "A" else Decimal("0.700"),
         source_quality=source_quality,
         title=document.title[:200],
-        summary=f"公开来源出现与该公司相关的变化线索：{excerpt[:700]}",
+        summary=f"公开来源出现与该公司相关的变化线索：{supporting_excerpt[:700]}",
         facts=[{"name": "公开页面标题", "value": document.title, "unit": None}],
         uncertainties=["该内容由程序发现并完成主体核对，尚未经过人工事实复核。"],
         occurred_at=document.published_at,
@@ -1035,10 +1272,11 @@ def _candidate_event(
         fingerprint_version="web-v1",
         event_fingerprint=fingerprint,
         publication_route="unconfirmed_lead",
-        publication_policy_version="bounded-web-v1",
+        publication_policy_version=CONTENT_QUALITY_GATE_VERSION,
         publication_reasons=[
             "auto_publish_disabled",
             "bounded_public_web_discovery",
+            "content_quality_gate_passed",
             "human_fact_review_not_completed",
             *(["serious_negative_requires_review"] if severe else []),
         ],
@@ -1054,8 +1292,8 @@ def _candidate_event(
             owner_user_id=None,
             owner_tenant_id=None,
             visibility_scope=PLATFORM_SHARED_SCOPE,
-            evidence_excerpt=excerpt[:1000],
-            span_hash=_sha256(excerpt[:1000]),
+            evidence_excerpt=supporting_excerpt,
+            span_hash=_sha256(supporting_excerpt),
             support_type="supports",
             display_source_name=urlsplit(document.canonical_url).hostname or source.name,
             display_source_quality=source_quality,
@@ -1072,7 +1310,7 @@ def _candidate_event(
             display_allowed=True,
         )
     )
-    return event, True
+    return event, True, quality
 
 
 def _fetch_policy(
@@ -1136,13 +1374,30 @@ def _fetch_candidate(
     cached_document = _document_cache(session, source.id, url, company, policy)
     documents_created = 0
     events_created = 0
+    quality_gate_passed = 0
+    internal_candidates = 0
     fetch_calls = 0
     downloaded_bytes = 0
     error_code: str | None = None
     if cached_document is not None:
-        _, event_created = _candidate_event(session, company, cached_document, source)
+        _, event_created, quality = _candidate_event(
+            session,
+            company,
+            cached_document,
+            source,
+        )
         events_created += int(event_created)
-        documents.append({"url": url, "status": "reused", "document_id": str(cached_document.id)})
+        quality_gate_passed += int(quality.eligible)
+        internal_candidates += int(not quality.eligible)
+        documents.append(
+            {
+                "url": url,
+                "status": "reused",
+                "document_id": str(cached_document.id),
+                "event_created": event_created,
+                "quality_gate": quality.to_dict(),
+            }
+        )
         stats = dict(coverage.get("stats", {}))
         stats["document_cache_hits"] = int(stats.get("document_cache_hits", 0)) + 1
         coverage["stats"] = stats
@@ -1181,6 +1436,12 @@ def _fetch_candidate(
                 ):
                     error_code = "fetched_page_identity_mismatch"
                 else:
+                    quality = _content_quality_decision(
+                        company,
+                        title=discovered.title,
+                        excerpt=excerpt,
+                        published_at=discovered.published_at,
+                    )
                     document, document_created = _raw_document(
                         session,
                         source,
@@ -1188,16 +1449,25 @@ def _fetch_candidate(
                         candidate,
                         discovered,
                         job,
+                        quality,
                     )
                     documents_created += int(document_created)
-                    _, event_created = _candidate_event(session, company, document, source)
+                    _, event_created, quality = _candidate_event(
+                        session,
+                        company,
+                        document,
+                        source,
+                    )
                     events_created += int(event_created)
+                    quality_gate_passed += int(quality.eligible)
+                    internal_candidates += int(not quality.eligible)
                     documents.append(
                         {
                             "url": url,
                             "status": "created" if document_created else "reused",
                             "document_id": str(document.id),
                             "event_created": event_created,
+                            "quality_gate": quality.to_dict(),
                         }
                     )
         except SourceFetchError as error:
@@ -1227,6 +1497,8 @@ def _fetch_candidate(
     stats["fetch_calls"] = int(stats.get("fetch_calls", 0)) + fetch_calls
     stats["downloaded_bytes"] = int(stats.get("downloaded_bytes", 0)) + downloaded_bytes
     stats["events_created"] = int(stats.get("events_created", 0)) + events_created
+    stats["quality_gate_passed"] = int(stats.get("quality_gate_passed", 0)) + quality_gate_passed
+    stats["internal_candidates"] = int(stats.get("internal_candidates", 0)) + internal_candidates
     coverage["documents"] = documents
     coverage["stats"] = stats
     job.coverage = coverage

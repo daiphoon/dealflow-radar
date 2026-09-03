@@ -48,6 +48,52 @@ BLOCKED_FILE_SUFFIXES = {
 }
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_NAMES = {"from", "spm"}
+HTML_IGNORED_TAGS = {"script", "style", "noscript", "svg", "template"}
+HTML_SUPPRESSED_TAGS = {"aside", "footer", "form", "nav"}
+HTML_BLOCK_TAGS = {
+    "article",
+    "blockquote",
+    "br",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "li",
+    "main",
+    "p",
+    "section",
+    "table",
+    "td",
+    "th",
+    "tr",
+    "ul",
+}
+HTML_VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta"}
+HTML_BOILERPLATE_MARKERS = {
+    "breadcrumb",
+    "comment",
+    "comments",
+    "footer",
+    "hotlist",
+    "menu",
+    "nav",
+    "navbar",
+    "pagination",
+    "ranking",
+    "recommend",
+    "recommended",
+    "related",
+    "share",
+    "sidebar",
+    "social",
+    "toolbar",
+}
 
 
 class SourceFetchError(Exception):
@@ -106,27 +152,35 @@ class _HtmlMetadataParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.title_parts: list[str] = []
         self.text_parts: list[str] = []
+        self.main_text_parts: list[str] = []
         self.links: list[tuple[str, str]] = []
         self.canonical_href: str | None = None
         self.published_value: str | None = None
         self._in_title = False
+        self._in_head = False
         self._ignored_depth = 0
+        self._suppressed_depth = 0
+        self._main_depth = 0
+        self.found_main_content = False
         self._current_link: str | None = None
         self._current_link_text: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         lowered = tag.lower()
         attributes = {key.lower(): value for key, value in attrs if value is not None}
-        if lowered in {"script", "style", "noscript", "svg"}:
+        if lowered in HTML_IGNORED_TAGS:
             self._ignored_depth += 1
             return
         if self._ignored_depth:
             return
+        if self._suppressed_depth:
+            if lowered not in HTML_VOID_TAGS:
+                self._suppressed_depth += 1
+            return
+        if lowered == "head":
+            self._in_head = True
         if lowered == "title":
             self._in_title = True
-        if lowered == "a" and attributes.get("href"):
-            self._current_link = attributes["href"]
-            self._current_link_text = []
         if lowered == "link" and "canonical" in attributes.get("rel", "").lower():
             self.canonical_href = attributes.get("href")
         if lowered == "meta":
@@ -141,15 +195,35 @@ class _HtmlMetadataParser(HTMLParser):
                 self.published_value = attributes.get("content") or self.published_value
         if lowered == "time" and attributes.get("datetime"):
             self.published_value = attributes["datetime"]
+        if self._is_boilerplate_container(lowered, attributes):
+            self._suppressed_depth = 1
+            return
+        if self._main_depth:
+            if lowered not in HTML_VOID_TAGS:
+                self._main_depth += 1
+        elif lowered in {"article", "main"}:
+            self._main_depth = 1
+            self.found_main_content = True
+        if lowered == "a" and attributes.get("href"):
+            self._current_link = attributes["href"]
+            self._current_link_text = []
+        if lowered in HTML_BLOCK_TAGS:
+            self._append_boundary()
 
     def handle_endtag(self, tag: str) -> None:
         lowered = tag.lower()
-        if lowered in {"script", "style", "noscript", "svg"}:
+        if lowered in HTML_IGNORED_TAGS:
             if self._ignored_depth:
                 self._ignored_depth -= 1
             return
         if self._ignored_depth:
             return
+        if self._suppressed_depth:
+            if lowered not in HTML_VOID_TAGS:
+                self._suppressed_depth -= 1
+            return
+        if lowered in HTML_BLOCK_TAGS:
+            self._append_boundary()
         if lowered == "title":
             self._in_title = False
         if lowered == "a" and self._current_link is not None:
@@ -158,22 +232,57 @@ class _HtmlMetadataParser(HTMLParser):
             )
             self._current_link = None
             self._current_link_text = []
+        if self._main_depth and lowered not in HTML_VOID_TAGS:
+            self._main_depth -= 1
+        if lowered == "head":
+            self._in_head = False
 
     def handle_data(self, data: str) -> None:
-        if self._ignored_depth:
+        if self._ignored_depth or self._suppressed_depth:
             return
         normalized = _normalize_text(data)
         if not normalized:
             return
-        self.text_parts.append(normalized)
         if self._in_title:
             self.title_parts.append(normalized)
+            return
+        if self._in_head:
+            return
+        self.text_parts.append(normalized)
+        if self._main_depth:
+            self.main_text_parts.append(normalized)
         if self._current_link is not None:
             self._current_link_text.append(normalized)
+
+    def _append_boundary(self) -> None:
+        if not self._in_head and self.text_parts and self.text_parts[-1] != "\n":
+            self.text_parts.append("\n")
+        if self._main_depth and self.main_text_parts and self.main_text_parts[-1] != "\n":
+            self.main_text_parts.append("\n")
+
+    def _is_boilerplate_container(
+        self,
+        tag: str,
+        attributes: dict[str, str],
+    ) -> bool:
+        if tag in HTML_SUPPRESSED_TAGS or (tag == "header" and not self._main_depth):
+            return True
+        descriptor = " ".join(
+            attributes.get(name, "") for name in ("id", "class", "role", "aria-label")
+        ).casefold()
+        tokens = {token for token in re.split(r"[^a-z0-9\u4e00-\u9fff]+", descriptor) if token}
+        return bool(tokens & HTML_BOILERPLATE_MARKERS)
 
 
 def _normalize_text(value: str) -> str:
     return " ".join(value.split())
+
+
+def _normalize_document_text(parts: list[str]) -> str:
+    value = " ".join(parts)
+    value = re.sub(r"[ \t\f\v]+", " ", value)
+    value = re.sub(r" *\n+ *", "\n", value)
+    return value.strip()
 
 
 def _sha256(value: str | bytes) -> str:
@@ -333,7 +442,10 @@ def _html_document(
     text = _decode_body(response.body, response.content_type)
     parser = _HtmlMetadataParser()
     parser.feed(text)
-    visible_text = _normalize_text(" ".join(parser.text_parts))
+    body_text = _normalize_document_text(parser.text_parts)
+    main_text = _normalize_document_text(parser.main_text_parts)
+    use_main = parser.found_main_content and len(main_text) >= 10
+    visible_text = main_text if use_main else body_text
     title = _normalize_text(" ".join(parser.title_parts)) or response.final_url
     canonical_url = response.final_url
     if parser.canonical_href:
@@ -352,12 +464,16 @@ def _html_document(
         title=title[:500],
         published_at=_parse_datetime(parser.published_value),
         content_hash=_sha256(hash_input),
-        excerpt=visible_text[:500] if keep_excerpt and visible_text else None,
+        excerpt=visible_text[:1500] if keep_excerpt and visible_text else None,
         http_status=response.status_code,
         etag=response.etag,
         last_modified=response.last_modified,
         link_health_status="healthy",
-        metadata={"content_type": response.content_type or "unknown"},
+        metadata={
+            "content_type": response.content_type or "unknown",
+            "extraction_method": "main_content" if use_main else "clean_body",
+            "extracted_text_length": len(visible_text),
+        },
     )
     return document, parser
 
