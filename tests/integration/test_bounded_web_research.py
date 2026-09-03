@@ -548,7 +548,7 @@ def test_bocha_is_called_only_when_baidu_has_no_subject_match(
         )
 
 
-def test_source_ranking_prefers_government_official_and_reviewed_media(
+def test_source_ranking_prefers_government_regulatory_official_and_reviewed_media(
     migrated_app: FastAPI,
 ) -> None:
     _grant_platform_admin(migrated_app)
@@ -595,6 +595,11 @@ def test_source_ranking_prefers_government_official_and_reviewed_media(
                     f"{SHARED_COMPANY_NAME}完成融资",
                     f"{SHARED_COMPANY_NAME}披露融资进展。",
                 ),
+                _result(
+                    "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0903/example.pdf",
+                    f"{SHARED_COMPANY_NAME}上市备案公告",
+                    f"{SHARED_COMPANY_NAME}披露上市备案进展。",
+                ),
             ]
         },
     )
@@ -618,10 +623,10 @@ def test_source_ranking_prefers_government_official_and_reviewed_media(
         candidates = job.coverage["candidates"]
         assert [item["source_tier"] for item in candidates] == [
             "government",
+            "regulatory_disclosure",
             "company_official",
             "trusted_media_article",
             "locatable_source_page",
-            "profile_or_listing",
         ]
         assert all("qcc.com" not in item["url"] for item in candidates)
         provider_state = job.coverage["search_groups"][SEARCH_GROUPS[0][0]]["providers"]
@@ -742,8 +747,7 @@ def test_profile_only_primary_results_trigger_conditional_fallback(
         assert providers["baidu"]["qualified_subject_results"] == 0
         assert providers["bocha"]["reason"] == "insufficient_qualified_subject_results"
         assert [item["source_tier"] for item in job.coverage["candidates"]] == [
-            "trusted_media_article",
-            "profile_or_listing",
+            "trusted_media_article"
         ]
 
 
@@ -799,12 +803,105 @@ def test_explicitly_old_primary_result_triggers_recent_fallback(
         job = session.scalar(select(CompanyResearchJob))
         assert job is not None
         candidates = job.coverage["candidates"]
-        assert candidates[0]["url"].endswith("/recent.html")
+        assert [item["url"] for item in candidates] == [
+            "https://www.stcn.com/article/detail/recent.html"
+        ]
         assert candidates[0]["search_date_status"] == "recent"
-        assert candidates[-1]["search_date_status"] == "old"
         providers = job.coverage["search_groups"][SEARCH_GROUPS[0][0]]["providers"]
         assert providers["baidu"]["qualified_subject_results"] == 0
         assert providers["bocha"]["reason"] == "insufficient_qualified_subject_results"
+
+
+def test_old_and_profile_search_results_never_reach_fetch_queue(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        company.official_website = None
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+        session.commit()
+
+    old_result = _result(
+        "https://news.example.com/company/history",
+        f"{SHARED_COMPANY_NAME}企业历史资料",
+        f"{SHARED_COMPANY_NAME}企业历史资料。",
+    )
+    old_result = SearchResult(
+        **{
+            **old_result.to_dict(),
+            "published_at": (utc_now() - timedelta(days=366)).date().isoformat(),
+        }
+    )
+    blocked_profile_result = _result(
+        "https://www.aiqicha.com/company_detail_95055071027653",
+        f"{SHARED_COMPANY_NAME}企业资料",
+        f"{SHARED_COMPANY_NAME}企业资料。",
+    )
+    primary = MockSearchProvider(
+        "baidu",
+        {
+            _query(SEARCH_GROUPS[0][1]): [old_result, blocked_profile_result],
+            _query(SEARCH_GROUPS[1][1]): [old_result, blocked_profile_result],
+        },
+    )
+    fallback = MockSearchProvider("bocha")
+    fetcher = RecordingFetcherFactory()
+
+    _drain(migrated_app, {"baidu": primary, "bocha": fallback}, fetcher)
+
+    assert fetcher.requests == []
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        assert job.coverage["candidates"] == []
+        assert job.coverage["stats"]["fetch_calls"] == 0
+        for group_code, _ in SEARCH_GROUPS:
+            providers = job.coverage["search_groups"][group_code]["providers"]
+            assert providers["baidu"]["subject_results"] == 2
+            assert providers["baidu"]["qualified_subject_results"] == 0
+
+
+def test_verified_official_website_is_seeded_without_an_extra_search_call(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        company.official_website = "https://www.example-company.cn"
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+        session.commit()
+
+    primary = MockSearchProvider("baidu")
+    fallback = MockSearchProvider("bocha")
+    for _ in SEARCH_GROUPS:
+        with migrated_app.state.session_factory() as session:
+            worker = session.get(User, ALPHA_USER_ID)
+            assert worker is not None
+            result = run_web_research_worker_once(
+                session,
+                worker,
+                {"baidu": primary, "bocha": fallback},
+                WebResearchPolicy(),
+                fetcher_factory=RecordingFetcherFactory(),
+            )
+        assert result.status == "partial"
+
+    assert len(primary.calls) == len(SEARCH_GROUPS)
+    assert len(fallback.calls) == len(SEARCH_GROUPS)
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        assert job.current_stage == "fetch"
+        candidates = job.coverage["candidates"]
+        assert len(candidates) == 1
+        assert candidates[0]["url"] == "https://www.example-company.cn/"
+        assert candidates[0]["source_tier"] == "company_official"
+        assert candidates[0]["discovered_by"] == ["verified_company_identity"]
 
 
 @pytest.mark.parametrize(
