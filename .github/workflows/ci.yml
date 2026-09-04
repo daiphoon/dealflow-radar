@@ -71,6 +71,15 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Audit frontend dependencies
+        working-directory: frontend
+        run: >-
+          npm audit --audit-level=high
+          --fetch-retries=2
+          --fetch-retry-mintimeout=1000
+          --fetch-retry-maxtimeout=5000
+          --fetch-timeout=30000
+
       - name: Check backend style
         run: |
           uv run --frozen ruff check backend migrations scripts tests
@@ -97,7 +106,6 @@ jobs:
       - name: Check and build frontend
         working-directory: frontend
         run: |
-          npm audit --audit-level=high
           npm run typecheck
           npm run build
 
