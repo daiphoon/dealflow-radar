@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from datetime import timedelta
 
 import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
+from pypdf.generic import (
+    ArrayObject,
+    DecodedStreamObject,
+    DictionaryObject,
+    NameObject,
+    NumberObject,
+    TextStringObject,
+)
 from sqlalchemy import func, select
 
 from backend.app.config import PersonalEntitlementPolicy, WebResearchPolicy
@@ -88,6 +98,111 @@ def _result(url: str, title: str, snippet: str) -> SearchResult:
         source_name="示例公开来源",
         published_at=RECENT_DATE,
     )
+
+
+def _unicode_pdf_bytes(text: str) -> bytes:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    cid_font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/CIDFontType0"),
+            NameObject("/BaseFont"): NameObject("/STSong-Light"),
+            NameObject("/CIDSystemInfo"): DictionaryObject(
+                {
+                    NameObject("/Registry"): TextStringObject("Adobe"),
+                    NameObject("/Ordering"): TextStringObject("GB1"),
+                    NameObject("/Supplement"): NumberObject(4),
+                }
+            ),
+        }
+    )
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type0"),
+            NameObject("/BaseFont"): NameObject("/STSong-Light"),
+            NameObject("/Encoding"): NameObject("/UniGB-UCS2-H"),
+            NameObject("/DescendantFonts"): ArrayObject([writer._add_object(cid_font)]),
+        }
+    )
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})}
+    )
+    stream = DecodedStreamObject()
+    stream.set_data(
+        f"BT /F1 12 Tf 72 720 Td <{text.encode('utf-16-be').hex().upper()}> Tj ET".encode()
+    )
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    writer.add_metadata({"/Title": "公司官方披露"})
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+class RobotsRecoveryFetcherFactory:
+    def __init__(self) -> None:
+        self.requests: list[str] = []
+
+    def __call__(self, policy):
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.requests.append(str(request.url))
+            if request.url.path == "/robots.txt":
+                if request.url.host == "blocked.example.com":
+                    return httpx.Response(
+                        200,
+                        headers={"content-type": "text/plain"},
+                        text="User-agent: *\nDisallow: /article\n",
+                    )
+                return httpx.Response(404, headers={"content-type": "text/plain"})
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text=(
+                    "<html><head><title>官方融资公告</title>"
+                    f'<meta property="article:published_time" content="{RECENT_TIMESTAMP}">'
+                    "</head><body><main>"
+                    f"{SHARED_COMPANY_NAME}（{DEMO_SHARED_COMPANY_CREDIT_CODE}）完成融资，"
+                    "本次融资事项已完成。</main></body></html>"
+                ),
+            )
+
+        return TrustedSourceFetcher(
+            policy,
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+            allow_private_test_hosts=True,
+        )
+
+
+class OfficialPdfFetcherFactory:
+    def __init__(self) -> None:
+        self.requests: list[str] = []
+        self.body = _unicode_pdf_bytes(
+            f"{SHARED_COMPANY_NAME}（{DEMO_SHARED_COMPANY_CREDIT_CODE}）完成融资 2026年9月4日"
+        )
+
+    def __call__(self, policy):
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.requests.append(str(request.url))
+            if request.url.path == "/robots.txt":
+                return httpx.Response(404, headers={"content-type": "text/plain"})
+            if request.url.path.endswith(".pdf"):
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "application/pdf"},
+                    content=self.body,
+                )
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text=f"<title>{SHARED_COMPANY_NAME}</title><main>公司官网</main>",
+            )
+
+        return TrustedSourceFetcher(
+            policy,
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+            allow_private_test_hosts=True,
+        )
 
 
 class RecordingFetcherFactory:
@@ -372,6 +487,237 @@ def test_shared_job_cache_replay_and_evidence_are_deduplicated(
     assert all("PaperPass" not in excerpt for excerpt in evidence_excerpts)
     assert detail["investments"] == []
     assert detail["private_events"] == []
+
+
+def test_valid_fallback_cache_is_fused_without_calling_fallback_provider(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    query = _query(SEARCH_GROUPS[0][1])
+    shared_url = "https://news.example.com/cache-fused"
+    cached_result = _result(
+        shared_url,
+        f"{SHARED_COMPANY_NAME}完成融资",
+        f"{SHARED_COMPANY_NAME}披露融资进展。",
+    )
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        session.add(
+            WebSearchCacheEntry(
+                company_id=company.id,
+                provider_code="bocha",
+                query_kind=SEARCH_GROUPS[0][0],
+                query_text=query,
+                query_hash=hashlib.sha256(query.encode()).hexdigest(),
+                identity_fingerprint=_identity_fingerprint(company),
+                response_hash="cached-fallback-response",
+                results=[cached_result.to_dict()],
+                fetched_at=utc_now(),
+                expires_at=utc_now() + timedelta(days=14),
+            )
+        )
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+        session.commit()
+
+    primary = MockSearchProvider("baidu", {query: [cached_result]})
+    fallback = MockSearchProvider("bocha")
+    with migrated_app.state.session_factory() as session:
+        worker = session.get(User, ALPHA_USER_ID)
+        assert worker is not None
+        result = run_web_research_worker_once(
+            session,
+            worker,
+            {"baidu": primary, "bocha": fallback},
+            WebResearchPolicy(),
+            fetcher_factory=RecordingFetcherFactory(),
+        )
+    assert result.status == "partial"
+    assert len(primary.calls) == 1
+    assert fallback.calls == []
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        providers = job.coverage["search_groups"][SEARCH_GROUPS[0][0]]["providers"]
+        assert providers["bocha"]["status"] == "cache_fused"
+        assert job.coverage["stats"]["search_cache_hits"] == 1
+        assert job.coverage["stats"]["search_calls"] == 1
+        assert job.coverage["candidates"][0]["discovered_by"] == ["baidu", "bocha"]
+
+
+def test_robots_blocked_candidate_uses_one_bounded_original_source_recovery(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    blocked_title = f"{SHARED_COMPANY_NAME}完成融资"
+    group_query = _query(SEARCH_GROUPS[0][1])
+    recovery_query = f'"{SHARED_COMPANY_NAME}" "{blocked_title}" 原文 公告'
+    blocked_url = "https://blocked.example.com/article/financing"
+    recovered_url = "https://notice.gov.cn/company/financing"
+    primary = MockSearchProvider(
+        "baidu",
+        {
+            group_query: [
+                _result(
+                    blocked_url,
+                    blocked_title,
+                    f"{SHARED_COMPANY_NAME}披露已完成融资。",
+                )
+            ],
+            recovery_query: [
+                _result(
+                    recovered_url,
+                    f"{SHARED_COMPANY_NAME}完成融资的官方公告",
+                    f"{SHARED_COMPANY_NAME}披露已完成融资。",
+                )
+            ],
+        },
+    )
+    fallback = MockSearchProvider("bocha")
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+
+    fetcher = RobotsRecoveryFetcherFactory()
+    statuses = _drain(
+        migrated_app,
+        {"baidu": primary, "bocha": fallback},
+        fetcher,
+        policy=WebResearchPolicy(max_candidate_urls=1, max_documents_per_job=1),
+    )
+    assert statuses[-1] == "idle"
+    assert [call.query for call in primary.calls].count(recovery_query) == 1
+    assert all("blocked.example.com/article" not in url for url in fetcher.requests)
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        assert job.coverage["source_recovery"]["status"] == "completed"
+        assert job.coverage["source_recovery"]["attempts"] == 1
+        assert job.coverage["source_recovery"]["candidate_count_added"] == 1
+        blocked = next(item for item in job.coverage["candidates"] if item["url"] == blocked_url)
+        assert blocked["source_access_status"] == "robots_blocked"
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(RawDocument)
+                .where(RawDocument.canonical_url == blocked_url)
+            )
+            == 0
+        )
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(RawDocument)
+                .where(RawDocument.canonical_url == recovered_url)
+            )
+            == 1
+        )
+        assert (
+            session.scalar(
+                select(func.count()).select_from(Event).where(Event.fingerprint_version == "web-v1")
+            )
+            == 1
+        )
+
+
+def test_verified_company_official_pdf_can_supply_bounded_evidence(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    pdf_url = "https://www.example-company.cn/notices/financing.pdf"
+    query = _query(SEARCH_GROUPS[0][1])
+    primary = MockSearchProvider(
+        "baidu",
+        {
+            query: [
+                _result(
+                    pdf_url,
+                    f"{SHARED_COMPANY_NAME}完成融资公告",
+                    f"{SHARED_COMPANY_NAME}披露已完成融资。",
+                )
+            ]
+        },
+    )
+    fallback = MockSearchProvider("bocha")
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        company.official_website = "https://www.example-company.cn"
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+        session.commit()
+
+    fetcher = OfficialPdfFetcherFactory()
+    statuses = _drain(
+        migrated_app,
+        {"baidu": primary, "bocha": fallback},
+        fetcher,
+    )
+    assert statuses[-1] == "idle"
+    with migrated_app.state.session_factory() as session:
+        document = session.scalar(select(RawDocument).where(RawDocument.canonical_url == pdf_url))
+        assert document is not None
+        extraction = document.payload["content_extraction"]
+        assert extraction["document_format"] == "pdf"
+        assert extraction["page_count"] == 1
+        assert document.payload["retention"] == "minimal_excerpt"
+        assert (
+            session.scalar(
+                select(func.count()).select_from(Event).where(Event.fingerprint_version == "web-v1")
+            )
+            == 1
+        )
+
+
+def test_non_authoritative_pdf_is_not_downloaded_or_used_as_evidence(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    pdf_url = "https://media.example.com/financing.pdf"
+    primary = MockSearchProvider(
+        "baidu",
+        {
+            _query(SEARCH_GROUPS[0][1]): [
+                _result(
+                    pdf_url,
+                    f"{SHARED_COMPANY_NAME}完成融资",
+                    f"{SHARED_COMPANY_NAME}披露已完成融资。",
+                )
+            ]
+        },
+    )
+    fallback = MockSearchProvider("bocha")
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+
+    fetcher = RecordingFetcherFactory()
+    statuses = _drain(
+        migrated_app,
+        {"baidu": primary, "bocha": fallback},
+        fetcher,
+    )
+    assert statuses[-1] == "idle"
+    assert fetcher.requests == []
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        candidate = next(item for item in job.coverage["candidates"] if item["url"] == pdf_url)
+        assert candidate["source_access_status"] == "authorized_manual_import_required"
+        assert candidate["source_access_reason"] == "pdf_source_not_authoritative"
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(RawDocument)
+                .where(RawDocument.canonical_url == pdf_url)
+            )
+            == 0
+        )
 
 
 def test_unicode_equivalent_identity_replays_existing_search_cache_without_provider_calls(

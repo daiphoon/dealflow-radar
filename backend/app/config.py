@@ -109,6 +109,9 @@ class SourceMonitoringPolicy:
     max_requests_per_run: int = 10
     max_download_bytes_per_run: int = 5_000_000
     max_response_bytes: int = 1_000_000
+    max_pdf_pages: int = 40
+    max_pdf_text_chars: int = 100_000
+    pdf_parse_timeout_seconds: int = 5
     timeout_seconds: int = 10
     retry_limit: int = 1
     max_redirects: int = 3
@@ -123,6 +126,9 @@ class SourceMonitoringPolicy:
             ("SOURCE_MONITOR_MAX_REQUESTS", self.max_requests_per_run),
             ("SOURCE_MONITOR_MAX_DOWNLOAD_BYTES", self.max_download_bytes_per_run),
             ("SOURCE_MONITOR_MAX_RESPONSE_BYTES", self.max_response_bytes),
+            ("SOURCE_MONITOR_MAX_PDF_PAGES", self.max_pdf_pages),
+            ("SOURCE_MONITOR_MAX_PDF_TEXT_CHARS", self.max_pdf_text_chars),
+            ("SOURCE_MONITOR_PDF_PARSE_TIMEOUT_SECONDS", self.pdf_parse_timeout_seconds),
             ("SOURCE_MONITOR_TIMEOUT_SECONDS", self.timeout_seconds),
             ("SOURCE_MONITOR_MAX_REDIRECTS", self.max_redirects),
             ("SOURCE_MONITOR_WORKER_LEASE_SECONDS", self.worker_lease_seconds),
@@ -158,6 +164,9 @@ class WebResearchPolicy:
     max_fetch_requests_per_job: int = 8
     max_download_bytes_per_job: int = 2_000_000
     max_response_bytes: int = 500_000
+    max_pdf_pages: int = 40
+    max_pdf_text_chars: int = 100_000
+    pdf_parse_timeout_seconds: int = 5
     max_elapsed_seconds: int = 180
     daily_search_call_limit: int = 50
     monthly_search_call_limit: int = 1_500
@@ -186,6 +195,9 @@ class WebResearchPolicy:
             ("WEB_RESEARCH_MAX_FETCH_REQUESTS_PER_JOB", self.max_fetch_requests_per_job),
             ("WEB_RESEARCH_MAX_DOWNLOAD_BYTES_PER_JOB", self.max_download_bytes_per_job),
             ("WEB_RESEARCH_MAX_RESPONSE_BYTES", self.max_response_bytes),
+            ("WEB_RESEARCH_MAX_PDF_PAGES", self.max_pdf_pages),
+            ("WEB_RESEARCH_MAX_PDF_TEXT_CHARS", self.max_pdf_text_chars),
+            ("WEB_RESEARCH_PDF_PARSE_TIMEOUT_SECONDS", self.pdf_parse_timeout_seconds),
             ("WEB_RESEARCH_MAX_ELAPSED_SECONDS", self.max_elapsed_seconds),
             ("WEB_RESEARCH_DAILY_SEARCH_CALL_LIMIT", self.daily_search_call_limit),
             ("WEB_RESEARCH_MONTHLY_SEARCH_CALL_LIMIT", self.monthly_search_call_limit),
@@ -406,6 +418,11 @@ class Settings:
                     "SOURCE_MONITOR_MAX_DOWNLOAD_BYTES", 5_000_000
                 ),
                 max_response_bytes=_as_positive_int("SOURCE_MONITOR_MAX_RESPONSE_BYTES", 1_000_000),
+                max_pdf_pages=_as_positive_int("SOURCE_MONITOR_MAX_PDF_PAGES", 40),
+                max_pdf_text_chars=_as_positive_int("SOURCE_MONITOR_MAX_PDF_TEXT_CHARS", 100_000),
+                pdf_parse_timeout_seconds=_as_positive_int(
+                    "SOURCE_MONITOR_PDF_PARSE_TIMEOUT_SECONDS", 5
+                ),
                 timeout_seconds=_as_positive_int("SOURCE_MONITOR_TIMEOUT_SECONDS", 10),
                 retry_limit=_as_non_negative_int("SOURCE_MONITOR_RETRY_LIMIT", 1),
                 max_redirects=_as_positive_int("SOURCE_MONITOR_MAX_REDIRECTS", 3),
@@ -449,6 +466,11 @@ class Settings:
                     "WEB_RESEARCH_MAX_DOWNLOAD_BYTES_PER_JOB", 2_000_000
                 ),
                 max_response_bytes=_as_positive_int("WEB_RESEARCH_MAX_RESPONSE_BYTES", 500_000),
+                max_pdf_pages=_as_positive_int("WEB_RESEARCH_MAX_PDF_PAGES", 40),
+                max_pdf_text_chars=_as_positive_int("WEB_RESEARCH_MAX_PDF_TEXT_CHARS", 100_000),
+                pdf_parse_timeout_seconds=_as_positive_int(
+                    "WEB_RESEARCH_PDF_PARSE_TIMEOUT_SECONDS", 5
+                ),
                 max_elapsed_seconds=_as_positive_int("WEB_RESEARCH_MAX_ELAPSED_SECONDS", 180),
                 daily_search_call_limit=_as_positive_int(
                     "WEB_RESEARCH_DAILY_SEARCH_CALL_LIMIT", 50
