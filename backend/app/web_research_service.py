@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -46,7 +47,7 @@ from backend.app.web_search import (
 )
 
 WEB_RESEARCH_SOURCE_CODE = "bounded_public_web"
-CONTENT_QUALITY_GATE_VERSION = "bounded-web-quality-v2"
+CONTENT_QUALITY_GATE_VERSION = "bounded-web-quality-v3"
 ACTIVE_JOB_STATUSES = ("queued", "running", "partial", "budget_deferred")
 ACTIVE_REQUEST_STATUSES = ("research_queued", "researching", "partial", "budget_deferred")
 TRACKING_QUERY_PREFIXES = ("utm_",)
@@ -141,7 +142,25 @@ SEARCH_GROUP_MODULES = {
 }
 
 EVENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("exit_liquidity", ("ipo", "上市", "辅导", "挂牌", "并购", "回购", "股权转让")),
+    (
+        "exit_liquidity",
+        (
+            "ipo",
+            "上市",
+            "辅导",
+            "挂牌",
+            "并购",
+            "回购",
+            "股权转让",
+            "递表",
+            "上市申请",
+            "聆讯",
+            "境外上市备案",
+            "全流通备案",
+            "招股",
+            "公开发售",
+        ),
+    ),
     (
         "legal_compliance",
         ("诉讼", "仲裁", "执行", "处罚", "失信", "合规", "吊销", "破产", "清算"),
@@ -190,6 +209,22 @@ EVENT_CHANGE_SIGNALS: dict[str, tuple[str, ...]] = {
         "辅导备案",
         "申报",
         "问询",
+        "递表",
+        "提交上市申请",
+        "递交上市申请",
+        "通过聆讯",
+        "上市聆讯",
+        "境外上市备案",
+        "全流通备案",
+        "上市获备案",
+        "上市备案通过",
+        "启动招股",
+        "公开招股",
+        "开始招股",
+        "公开发售",
+        "正式上市",
+        "挂牌上市",
+        "完成上市",
         "挂牌",
         "并购",
         "收购",
@@ -292,6 +327,11 @@ EVENT_CHANGE_SIGNALS: dict[str, tuple[str, ...]] = {
     ),
 }
 EVENT_CHANGE_PATTERNS: dict[str, tuple[str, ...]] = {
+    "exit_liquidity": (
+        r"(?:递交|提交).{0,12}(?:上市申请|招股书)",
+        r"通过.{0,8}(?:上市)?聆讯",
+        r"(?:境外上市|全流通).{0,20}备案",
+    ),
     "financing_cap_table": (
         r"完成.{0,12}融资",
         r"获得.{0,12}融资",
@@ -385,6 +425,11 @@ def _aware(value: datetime) -> datetime:
 
 def _normalized_identity(value: str) -> str:
     return "".join(value.split()).casefold()
+
+
+def _normalized_identity_for_match(value: str) -> str:
+    """Normalize equivalent Unicode forms without changing persisted cache identities."""
+    return "".join(unicodedata.normalize("NFKC", value).split()).casefold()
 
 
 def _public_company(company: Company | None) -> bool:
@@ -608,10 +653,10 @@ def _host_matches_any(host: str, domains: set[str]) -> bool:
 
 
 def _subject_match(company: Company, result: SearchResult) -> bool:
-    haystack = _normalized_identity(f"{result.title} {result.snippet}")
-    if _normalized_identity(company.legal_name) in haystack:
+    haystack = _normalized_identity_for_match(f"{result.title} {result.snippet}")
+    if _normalized_identity_for_match(company.legal_name) in haystack:
         return True
-    if company.credit_code and company.credit_code.casefold() in haystack:
+    if company.credit_code and _normalized_identity_for_match(company.credit_code) in haystack:
         return True
     official_host = _official_host(company)
     result_host = (urlsplit(result.url).hostname or "").lower().removeprefix("www.")
@@ -713,13 +758,38 @@ def _qualified_subject_result(
     result: SearchResult,
     policy: WebResearchPolicy,
 ) -> bool:
-    source_rank = _source_rank(company, result)
-    return bool(
-        _subject_match(company, result)
-        and _canonical_candidate_url(result.url)
-        and source_rank.tier != "profile_or_listing"
-        and _search_date_status(result, policy) not in {"old", "future"}
-    )
+    return _qualification_reason(company, result, policy) == "qualified"
+
+
+def _qualification_reason(
+    company: Company,
+    result: SearchResult,
+    policy: WebResearchPolicy,
+) -> str:
+    if not _subject_match(company, result):
+        return "subject_mismatch"
+    if _canonical_candidate_url(result.url) is None:
+        return "blocked_or_unsafe_url"
+    if _source_rank(company, result).tier == "profile_or_listing":
+        return "profile_or_listing"
+    date_status = _search_date_status(result, policy)
+    if date_status == "old":
+        return "published_at_old"
+    if date_status == "future":
+        return "published_at_future"
+    return "qualified"
+
+
+def _qualification_reason_counts(
+    company: Company,
+    results: list[SearchResult],
+    policy: WebResearchPolicy,
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for result in results:
+        reason = _qualification_reason(company, result, policy)
+        counts[reason] = counts.get(reason, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _verified_official_site_response(
@@ -757,7 +827,9 @@ def _result_score(
 ) -> tuple[int, float, str]:
     rank = _source_rank(company, result)
     score = rank.score
-    if _normalized_identity(company.legal_name) in _normalized_identity(result.title):
+    if _normalized_identity_for_match(company.legal_name) in _normalized_identity_for_match(
+        result.title
+    ):
         score += 20
     result_text = f"{result.title}{result.snippet}".lower()
     if any(keyword in result_text for _, terms in EVENT_KEYWORDS for keyword in terms):
@@ -1052,6 +1124,9 @@ def _process_search_group(
         state = dict(provider_state[primary.code])
         state["subject_results"] = primary_subject_results
         state["qualified_subject_results"] = primary_qualified_results
+        if primary_failure_code is None:
+            primary_results = [result for response in responses for result in response.results]
+            state["filter_reasons"] = _qualification_reason_counts(company, primary_results, policy)
         provider_state[primary.code] = state
     fallback_reason = (
         "primary_failed"
@@ -1083,6 +1158,7 @@ def _process_search_group(
                     for result in response.results
                     if _qualified_subject_result(company, result, policy)
                 ),
+                "filter_reasons": _qualification_reason_counts(company, response.results, policy),
                 "reason": fallback_reason,
             }
         except SearchProviderError as error:
@@ -1259,9 +1335,13 @@ def _document_matches_company(
     canonical_url: str,
 ) -> bool:
     content = f"{title} {excerpt}"
-    current_identity_match = _normalized_identity(company.legal_name) in _normalized_identity(
-        content
-    ) or bool(company.credit_code and company.credit_code.casefold() in content.casefold())
+    normalized_content = _normalized_identity_for_match(content)
+    current_identity_match = _normalized_identity_for_match(
+        company.legal_name
+    ) in normalized_content or bool(
+        company.credit_code
+        and _normalized_identity_for_match(company.credit_code) in normalized_content
+    )
     host = (urlsplit(canonical_url).hostname or "").lower().removeprefix("www.")
     return current_identity_match or bool(_official_host(company) == host)
 
@@ -1328,9 +1408,9 @@ def _content_passages(excerpt: str) -> list[str]:
 
 
 def _body_identity_match(company: Company, value: str) -> bool:
-    normalized = _normalized_identity(value)
-    return _normalized_identity(company.legal_name) in normalized or bool(
-        company.credit_code and company.credit_code.casefold() in value.casefold()
+    normalized = _normalized_identity_for_match(value)
+    return _normalized_identity_for_match(company.legal_name) in normalized or bool(
+        company.credit_code and _normalized_identity_for_match(company.credit_code) in normalized
     )
 
 
