@@ -270,6 +270,58 @@ def _create_scoped_lead(
     )
 
 
+def _create_fact_support(
+    connection: Connection,
+    *,
+    event_id: str,
+    evidence_id: str,
+    fact_id: str,
+    support_id: str,
+    suffix: str,
+) -> None:
+    connection.execute(
+        text(
+            """
+            INSERT INTO event_facts (
+                id, event_id, fact_key, name, value, unit, position,
+                occurrence_count, created_at, updated_at
+            ) VALUES (
+                :id, :event_id, :fact_key, 'RLS fact', :value, NULL, 0,
+                1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """
+        ),
+        {
+            "id": fact_id,
+            "event_id": event_id,
+            "fact_key": suffix.rjust(64, "5")[:64],
+            "value": f"RLS {suffix} fact value",
+        },
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO event_fact_supports (
+                id, event_id, event_fact_id, event_evidence_id,
+                support_status, evidence_locator, deterministic_checks,
+                support_reasons, policy_version, assessed_at, created_at, updated_at
+            ) VALUES (
+                :id, :event_id, :fact_id, :evidence_id,
+                'pending_review', CAST('{}' AS JSON), CAST('{}' AS JSON),
+                CAST('["rls_test"]' AS JSON), 'evidence-fact-support-v1',
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """
+        ),
+        {
+            "id": support_id,
+            "event_id": event_id,
+            "fact_id": fact_id,
+            "evidence_id": evidence_id,
+        },
+    )
+
+
 def _create_research_import(
     connection: Connection,
     *,
@@ -400,15 +452,16 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
                         'personal_watchlist_items', 'personal_company_requests',
                         'personal_usage_records', 'personal_company_view_states',
                         'personal_event_view_receipts', 'personal_company_reports',
-                            'personal_quota_increase_requests', 'company_research_jobs',
-                            'investor_change_analyses', 'web_search_cache_entries'
+                        'personal_quota_increase_requests', 'company_research_jobs',
+                        'investor_change_analyses', 'web_search_cache_entries',
+                        'event_facts', 'event_fact_supports'
                     )
                       AND relrowsecurity
                     """
                 )
             )
         assert role == (False, False, False, False, False, True, 0)
-        assert enabled_rls_tables == 31
+        assert enabled_rls_tables == 33
         assert _visible_counts(connection) == (0, 0, 0, 0, 0)
         assert _visible_counts(connection, ALPHA_USER_ID, ALPHA_TENANT_ID) == (10, 1, 10, 1, 0)
         assert _visible_counts(connection, BETA_USER_ID, BETA_TENANT_ID) == (1, 1, 0, 0, 0)
@@ -454,6 +507,16 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
             event_id="2ab550d6-27f8-4fe0-82c4-a4d59eb6cd42",
             evidence_id="88466189-c3ba-4345-952e-fde0686d52b4",
         )
+        organization_fact_id = "4fdac35c-b75d-44d0-94a2-14a24475caf9"
+        organization_support_id = "431052d9-f9fd-48ce-b1c6-72b7d6c3b338"
+        _create_fact_support(
+            connection,
+            event_id="2ab550d6-27f8-4fe0-82c4-a4d59eb6cd42",
+            evidence_id="88466189-c3ba-4345-952e-fde0686d52b4",
+            fact_id=organization_fact_id,
+            support_id=organization_support_id,
+            suffix="organization-alpha",
+        )
         _create_scoped_lead(
             connection,
             user_id=NO_ACCESS_USER_ID,
@@ -466,6 +529,16 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
             mention_id="b3f9af20-3cd1-4f0d-9389-f12342f1a820",
             event_id="41508868-cf3f-4b6c-84ea-7df06ca21e0f",
             evidence_id="bfda099e-a1b5-41bf-92ab-7192cc6b7611",
+        )
+        personal_fact_id = "572ec051-13c4-440f-b08c-c57f40599679"
+        personal_support_id = "8a875bfd-39cc-4da3-8145-940fdaf63723"
+        _create_fact_support(
+            connection,
+            event_id="41508868-cf3f-4b6c-84ea-7df06ca21e0f",
+            evidence_id="bfda099e-a1b5-41bf-92ab-7192cc6b7611",
+            fact_id=personal_fact_id,
+            support_id=personal_support_id,
+            suffix="personal-no-access",
         )
         assert _visible_scope_counts(connection, ALPHA_USER_ID, ALPHA_TENANT_ID)[2:6] == (
             11,
@@ -482,6 +555,92 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
 
         assert _visible_scope_counts(connection, BETA_USER_ID, BETA_TENANT_ID)[2:6] == (
             *shared_scope_counts[2:6],
+        )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM event_facts WHERE id = :id"),
+                {"id": organization_fact_id},
+            )
+            == 1
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM event_facts WHERE id = :id"),
+                {"id": personal_fact_id},
+            )
+            == 0
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM event_fact_supports WHERE id = :id"),
+                {"id": organization_support_id},
+            )
+            == 1
+        )
+        with pytest.raises(DBAPIError):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO event_facts (
+                            id, event_id, fact_key, name, value, unit, position,
+                            occurrence_count, created_at, updated_at
+                        ) VALUES (
+                            :id, :event_id, :fact_key, 'forbidden', 'forbidden', NULL, 1,
+                            1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {
+                        "id": "ff906be4-ae47-4c75-a2c0-e030be298d28",
+                        "event_id": "41508868-cf3f-4b6c-84ea-7df06ca21e0f",
+                        "fact_key": "9" * 64,
+                    },
+                )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(NO_ACCESS_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM event_facts WHERE id = :id"),
+                {"id": personal_fact_id},
+            )
+            == 1
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM event_facts WHERE id = :id"),
+                {"id": organization_fact_id},
+            )
+            == 0
+        )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(BETA_USER_ID), "tenant_id": str(BETA_TENANT_ID)},
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM event_facts WHERE id IN (:first, :second)"),
+                {"first": organization_fact_id, "second": personal_fact_id},
+            )
+            == 0
         )
 
         connection.execute(
@@ -617,6 +776,13 @@ def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:
                 {"id": beta_private_event_id},
             )
             == 1
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM event_facts WHERE id IN (:first, :second)"),
+                {"first": organization_fact_id, "second": personal_fact_id},
+            )
+            == 2
         )
         assert (
             connection.scalar(

@@ -1147,6 +1147,7 @@ class Event(TimestampMixin, Base):
 class EventEvidence(TimestampMixin, Base):
     __tablename__ = "event_evidence"
     __table_args__ = (
+        UniqueConstraint("id", "event_id", name="uq_event_evidence_id_event"),
         UniqueConstraint("event_id", "raw_document_id", "span_hash", name="uq_event_evidence"),
         UniqueConstraint(
             "event_id",
@@ -1193,6 +1194,64 @@ class EventEvidence(TimestampMixin, Base):
     display_license_status: Mapped[str | None] = mapped_column(String(32))
     display_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     display_detail_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+class EventFact(TimestampMixin, Base):
+    __tablename__ = "event_facts"
+    __table_args__ = (
+        UniqueConstraint("event_id", "fact_key", name="uq_event_fact_key"),
+        UniqueConstraint("id", "event_id", name="uq_event_fact_id_event"),
+        CheckConstraint("position >= 0", name="ck_event_fact_position"),
+        CheckConstraint("occurrence_count >= 1", name="ck_event_fact_occurrence_count"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    event_id: Mapped[UUID] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
+    fact_key: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(200))
+    value: Mapped[str] = mapped_column(Text)
+    unit: Mapped[str | None] = mapped_column(String(64))
+    position: Mapped[int] = mapped_column(Integer)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class EventFactSupport(TimestampMixin, Base):
+    __tablename__ = "event_fact_supports"
+    __table_args__ = (
+        UniqueConstraint(
+            "event_fact_id",
+            "event_evidence_id",
+            name="uq_event_fact_support_pair",
+        ),
+        ForeignKeyConstraint(
+            ["event_fact_id", "event_id"],
+            ["event_facts.id", "event_facts.event_id"],
+            ondelete="CASCADE",
+            name="fk_event_fact_support_fact_event",
+        ),
+        ForeignKeyConstraint(
+            ["event_evidence_id", "event_id"],
+            ["event_evidence.id", "event_evidence.event_id"],
+            ondelete="CASCADE",
+            name="fk_event_fact_support_evidence_event",
+        ),
+        CheckConstraint(
+            "support_status IN ('supported', 'partial', 'conflicting', "
+            "'pending_review', 'unsupported')",
+            name="ck_event_fact_support_status",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    event_id: Mapped[UUID] = mapped_column(Uuid, index=True)
+    event_fact_id: Mapped[UUID] = mapped_column(Uuid, index=True)
+    event_evidence_id: Mapped[UUID] = mapped_column(Uuid, index=True)
+    support_status: Mapped[str] = mapped_column(String(32))
+    evidence_locator: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    deterministic_checks: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    support_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+    policy_version: Mapped[str] = mapped_column(String(64))
+    assessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class InvestorChangeAnalysis(TimestampMixin, Base):

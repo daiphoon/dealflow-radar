@@ -63,6 +63,14 @@ const publicationReasonLabels: Record<string, string> = {
   licensed_source_record: "资料来自已授权数据源",
 };
 
+const factSupportLabels: Record<string, string> = {
+  supported: "证据已支持",
+  partial: "证据部分支持",
+  conflicting: "证据存在冲突",
+  pending_review: "等待逐条复核",
+  unsupported: "现有证据未支持",
+};
+
 function formatDate(value: string | null): string {
   if (!value) return "未知";
   return new Intl.DateTimeFormat("zh-CN", {
@@ -160,6 +168,35 @@ function EventCard({
       </div>
       <h3>{event.title}</h3>
       <p>{event.summary}</p>
+      {event.fact_ledger.length > 0 ? (
+        <section className="fact-support-ledger" aria-label="事实与证据支持情况">
+          <div className="fact-support-heading">
+            <strong>事实与证据支持情况</strong>
+            <span>逐条判断，不以“有链接”代替“证据支持”</span>
+          </div>
+          <dl>
+            {event.fact_ledger.map((fact) => (
+              <div key={fact.id}>
+                <dt>{fact.name}</dt>
+                <dd>
+                  <strong>
+                    {fact.value}
+                    {fact.unit ? ` ${fact.unit}` : ""}
+                  </strong>
+                  <span className={`fact-support-status status-${fact.support_status}`}>
+                    {factSupportLabels[fact.support_status] ?? fact.support_status}
+                  </span>
+                  <small>
+                    {fact.evidence_supports.length > 0
+                      ? `${fact.evidence_supports.length} 条当前可见证据已逐条记录`
+                      : "当前没有可见证据支持这条事实"}
+                  </small>
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      ) : null}
       {isDeterministicChange && changeField && beforeValue && afterValue ? (
         <div className="change-comparison" aria-label={`${changeField}前后变化`}>
           <span>{changeField}</span>

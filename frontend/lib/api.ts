@@ -107,8 +107,33 @@ export type Event = {
   publication_reasons: string[];
   observed_at: string;
   evidence: Evidence[];
+  fact_ledger: AtomicFact[];
   visibility_scope: string;
   analysis: InvestorChangeAnalysis | null;
+};
+
+export type FactSupportStatus =
+  | "supported"
+  | "partial"
+  | "conflicting"
+  | "pending_review"
+  | "unsupported";
+
+export type AtomicFact = {
+  id: string;
+  fact_key: string;
+  name: string;
+  value: string;
+  unit: string | null;
+  occurrence_count: number;
+  support_status: FactSupportStatus;
+  evidence_supports: Array<{
+    evidence_id: string;
+    support_status: FactSupportStatus;
+    reason_codes: string[];
+    policy_version: string;
+    assessed_at: string;
+  }>;
 };
 
 export type InvestorChangeAnalysis = {

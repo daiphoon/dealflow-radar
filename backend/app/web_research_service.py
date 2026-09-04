@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.config import SourceMonitoringPolicy, WebResearchPolicy
 from backend.app.database import set_request_context
+from backend.app.fact_support import materialize_event_fact_ledger
 from backend.app.models import (
     PLATFORM_SHARED_SCOPE,
     SYSTEM_RESTRICTED_SCOPE,
@@ -1747,6 +1748,8 @@ def _candidate_event(
             display_allowed=True,
         )
     )
+    session.flush()
+    materialize_event_fact_ledger(session, event)
     return event, True, quality
 
 

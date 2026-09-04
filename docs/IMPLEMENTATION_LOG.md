@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-09-04：R3.4 证据—事实支持账本
+
+- 任务：在现有 PostgreSQL 事件、证据和原文档血缘上新增稳定原子事实以及逐证据支持关系，确定性记录“已支持、部分支持、冲突、待复核、无支持”；历史回填一律保守为待复核，公司详情只返回当前用户可见证据的中文支持状态。本阶段不新增搜索、模型 Agent、自动发布或第二套状态存储。
+- 关键文件：`backend/app/fact_support.py`、`backend/app/models.py`、`backend/app/services.py`、`migrations/versions/0024_add_evidence_fact_support_ledger.py`、`scripts/reassess_event_fact_support.py`、公司详情页/API 类型、迁移/RLS/共享晋升/事实账本测试和受影响设计文档。
+- 实际命令：Ruff 检查与格式检查；事实账本和私有晋升定向 Pytest；一次性 PostgreSQL 16 从空库升级到 `0024`、漂移检查、Demo 初始化、无 `BYPASSRLS` 应用账户和完整 Pytest；SQLite `base → 0024 → base`；有数据 PostgreSQL `0024 → 0023 → 0024`；前端类型检查和生产构建；生产 Compose 解析、API/前端镜像构建和预检；`git diff --check`、敏感信息模式检查和 Codex Security 差异审查。
+- 测试结果：定向 13 项通过；全新 PostgreSQL/RLS 环境 337 项通过，仅有既有 Starlette/httpx 上游弃用警告；SQLite 迁移往返和漂移通过；有数据 PostgreSQL 升降级前后事件和证据均为 11 条，重新升级生成 11 条事实和 11 条待复核支持关系；前端类型、生产构建、生产镜像和预检通过。安全自查发现“同主体同值但未证明事实关系”可能误标为已支持，已收紧为 `pending_review` 并增加回归测试。真实搜索、目标网页、付费 API、业务模型 Token、费用和自动发布均为 0。
+- 未解决阻塞：代码 PR 尚未合并或部署，香港生产数据库仍应保持 `0023`。本机 `npm audit` 三次因 npm registry `socket hang up` 未取得结果，必须以 PR CI 的依赖审计作为合并闸门。公司页的真实浏览器视觉验收、生产备份、升级到 `0024` 和卧安机器人缓存零调用回放必须等合并后另行完成；在此之前不开始 R3.5。
+
 ## 2026-09-04：R3.3 生产关闭与 R3.4 启动检查点
 
 - 任务：在 PR #58 合并后完成香港生产加密备份、部署和卧安机器人现有缓存零调用回放，根据既定关闭条件正式关闭 R3.3，并将当前唯一工程里程碑切换为 R3.4“证据—事实支持账本”。本检查点只更新进度与验收口径，不修改业务代码、数据库或生产数据。

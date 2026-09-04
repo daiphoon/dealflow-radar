@@ -24,6 +24,7 @@ from backend.app.demo import (
     NO_ACCESS_USER_ID,
     demo_uuid,
 )
+from backend.app.fact_support import aggregate_support_status, materialize_event_fact_ledger
 from backend.app.models import (
     ORGANIZATION_PRIVATE_SCOPE,
     PERSONAL_PRIVATE_SCOPE,
@@ -35,6 +36,8 @@ from backend.app.models import (
     EntityMention,
     Event,
     EventEvidence,
+    EventFact,
+    EventFactSupport,
     EventSharingDecision,
     EventSharingDecisionEvidence,
     Fund,
@@ -69,6 +72,7 @@ from backend.app.providers import (
     OfficialIdentityRecord,
 )
 from backend.app.schemas import (
+    AtomicFactOut,
     CompanyDetail,
     CompanyListItem,
     CompanySearchResult,
@@ -78,6 +82,7 @@ from backend.app.schemas import (
     EvidenceDetailOut,
     EvidenceDetailRecordOut,
     EvidenceOut,
+    FactEvidenceSupportOut,
     IdentityCandidateOut,
     IdentityResolutionOut,
     IngestResult,
@@ -419,6 +424,8 @@ def ingest_mock_records(session: Session, provider: MockResearchProvider) -> Ing
                 support_type="supports",
             )
         )
+        session.flush()
+        materialize_event_fact_ledger(session, event)
         session.add(
             ReviewQueue(
                 tenant_id=ALPHA_TENANT_ID,
@@ -1007,6 +1014,11 @@ def _add_manual_event_evidence(
             support_type="supports",
         )
     )
+    session.flush()
+    event = session.get(Event, event_id)
+    if event is None:
+        raise NotFoundError("event not found for evidence ledger")
+    materialize_event_fact_ledger(session, event)
 
 
 def _mark_event_published(session: Session, event: Event, company: Company) -> None:
@@ -1873,6 +1885,57 @@ def _event_out(
                     analysis_output = candidate_analysis
             except ValueError:
                 analysis_output = None
+    visible_evidence_ids = {item.id for item in evidence_items}
+    fact_rows = list(
+        session.scalars(
+            select(EventFact)
+            .where(EventFact.event_id == event.id)
+            .order_by(EventFact.position, EventFact.fact_key)
+        )
+    )
+    supports_by_fact: dict[UUID, list[FactEvidenceSupportOut]] = {}
+    if visible_evidence_ids:
+        support_rows = list(
+            session.scalars(
+                select(EventFactSupport).where(
+                    EventFactSupport.event_id == event.id,
+                    EventFactSupport.event_evidence_id.in_(visible_evidence_ids),
+                )
+            )
+        )
+        for support in support_rows:
+            reason_codes = support.support_reasons
+            if not isinstance(reason_codes, list):
+                reason_codes = []
+            supports_by_fact.setdefault(support.event_fact_id, []).append(
+                FactEvidenceSupportOut(
+                    evidence_id=support.event_evidence_id,
+                    support_status=support.support_status,
+                    reason_codes=[str(reason) for reason in reason_codes],
+                    policy_version=support.policy_version,
+                    assessed_at=support.assessed_at,
+                )
+            )
+    fact_ledger = []
+    for fact in fact_rows:
+        fact_supports = sorted(
+            supports_by_fact.get(fact.id, []),
+            key=lambda support: str(support.evidence_id),
+        )
+        fact_ledger.append(
+            AtomicFactOut(
+                id=fact.id,
+                fact_key=fact.fact_key,
+                name=fact.name,
+                value=fact.value,
+                unit=fact.unit,
+                occurrence_count=fact.occurrence_count,
+                support_status=aggregate_support_status(
+                    [support.support_status for support in fact_supports]
+                ),
+                evidence_supports=fact_supports,
+            )
+        )
     return EventOut(
         id=event.id,
         event_type=event.event_type,
@@ -1895,6 +1958,7 @@ def _event_out(
         publication_reasons=event.publication_reasons,
         observed_at=event.observed_at,
         evidence=evidence_items,
+        fact_ledger=fact_ledger,
         visibility_scope=event.visibility_scope,
         analysis=analysis_output,
     )
@@ -2557,6 +2621,8 @@ def promote_private_event(
             session.add(shared_evidence)
             session.flush()
         shared_evidence_by_source[evidence.id] = shared_evidence
+
+    materialize_event_fact_ledger(session, shared_event)
 
     decision = EventSharingDecision(
         source_event_id=source_event.id,

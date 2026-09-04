@@ -76,7 +76,7 @@ M5B 依据 ADR-0014 使用腾讯云中国香港服务器，不以个人 ICP 备�
 
 共享快照构建器只读平台共享事件和指标；基金投资概览及个人/机构私有数据在响应层按授权单独拼装，不能缓存为全局公司快照。没有基金授权但具有有效共享档案权益的用户仍可读取共享基础层。
 
-当前 31 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`company_snapshots`、两张共享决定审计表、`trusted_sources`、`source_check_runs`、`candidate_documents`、认证审计表、个人留存相关表、`personal_quota_increase_requests`、`company_research_jobs` 和 `web_search_cache_entries`。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权。`system_restricted` 默认不向普通应用用户或平台管理员开放；R3 只增加一个窄例外：平台管理员可读取来源为 `bounded_public_web` 的系统受限最小网页底稿，以及准确绑定到已核验共享公司的对应提及。普通用户、其他租户和基金授权用户均不能读取这些底稿，搜索缓存也只有平台管理员 Worker 可读写。R1 的 `0022` 迁移删除了旧供应商最小身份、用量和原始记录的专用服务身份例外；R3 没有恢复或沿用这些例外。个人关注、用量、查看状态、事件回执、报告、研究申请和临时额度申请仅本人读取；平台管理员只能跨租户处理用户明确提交的研究和提额运营记录。共享研究任务只对关联请求者和平台管理员可见，不暴露其他请求者身份。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
+当前 33 张表已启用 RLS：原有基金、导入、审核、任务和用量表，`companies`、`company_aliases`、`raw_documents`、`entity_mentions`、`events`、`event_evidence`、`event_facts`、`event_fact_supports`、`company_snapshots`、两张共享决定审计表、`trusted_sources`、`source_check_runs`、`candidate_documents`、认证审计表、个人留存相关表、`personal_quota_increase_requests`、`company_research_jobs` 和 `web_search_cache_entries`。事实账本的可见性继承其父事件；支持关系还要求当前用户能看到对应证据，因此不会因看到共享事实而推断私有底稿存在。API 或本机导入命令在事务中设置用户和租户上下文；共享行要求 active 登录用户，个人行要求当前用户为 owner，机构行要求同 tenant 并满足角色或基金公司授权。`system_restricted` 默认不向普通应用用户或平台管理员开放；R3 只增加一个窄例外：平台管理员可读取来源为 `bounded_public_web` 的系统受限最小网页底稿，以及准确绑定到已核验共享公司的对应提及。普通用户、其他租户和基金授权用户均不能读取这些底稿，搜索缓存也只有平台管理员 Worker 可读写。R1 的 `0022` 迁移删除了旧供应商最小身份、用量和原始记录的专用服务身份例外；R3 没有恢复或沿用这些例外。个人关注、用量、查看状态、事件回执、报告、研究申请和临时额度申请仅本人读取；平台管理员只能跨租户处理用户明确提交的研究和提额运营记录。共享研究任务只对关联请求者和平台管理员可见，不暴露其他请求者身份。SQLite 只验证应用层过滤，不能替代 PostgreSQL RLS 负向测试。
 
 当前 CloudBase 认证只替换身份凭证，个人订阅与机构赞助权益尚未实现；M3 完成真实收码和四角色验收前仍只适合本地或受控邀请验证。迁移账户仍可作为表所有者绕过策略，必须继续与日常 `NOBYPASSRLS` 应用账户分离。
 
@@ -90,6 +90,7 @@ M5B 依据 ADR-0014 使用腾讯云中国香港服务器，不以个人 ICP 备�
 - 尚未检查的合法 HTTP(S) 链接只有在管理员显式确认后可晋升，并向个人用户显示“尚未自动验证”；已失效、不安全或许可受限的链接不得晋升或直接开放。
 - 授权商业数据的平台证据详情只保存许可展示的最小结构化字段；联系方式、供应商内部 ID 和完整响应仍位于受限缓存。平台详情接口对非 `platform_shared` 证据统一返回不存在，不泄露私有详情是否存在。
 - 受控晋升固定为“私有候选 → 独立共享事件 → 安全展示引用”；`source_event_evidence_id` 和追加式决定日志保留反向血缘，私有 `raw_document_id` 不复制到共享引用。
+- 事实—证据支持账本不改变任何作用域；迁移仅将历史关系回填为 `pending_review`，不根据“已有链接”推断“证据已支持”。共享事件只序列化当前用户可见证据的支持关系，证据定位和内部确定性检查不进入客户 API。
 
 ## 5. 防枚举和响应隔离
 

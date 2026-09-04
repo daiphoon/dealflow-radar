@@ -18,6 +18,7 @@ from backend.app.demo import (
     NO_ACCESS_USER_ID,
     demo_uuid,
 )
+from backend.app.fact_support import materialize_event_fact_ledger
 from backend.app.models import (
     ORGANIZATION_PRIVATE_SCOPE,
     PLATFORM_SHARED_SCOPE,
@@ -26,6 +27,8 @@ from backend.app.models import (
     EntityMention,
     Event,
     EventEvidence,
+    EventFact,
+    EventFactSupport,
     EventSharingDecision,
     EventSharingDecisionEvidence,
     RawDocument,
@@ -173,6 +176,7 @@ def _add_candidate(
             )
             session.add(evidence)
             evidence_id = evidence.id
+        materialize_event_fact_ledger(session, event)
         session.commit()
         return event.id, evidence_id, document.id
 
@@ -328,11 +332,26 @@ def test_controlled_promotion_deduplication_isolation_and_retraction(
         assert source_event.status == "candidate"
         assert source_document.visibility_scope == ORGANIZATION_PRIVATE_SCOPE
         assert source_document.owner_tenant_id == ALPHA_TENANT_ID
+        private_fact = session.scalar(select(EventFact).where(EventFact.event_id == alpha_event_id))
+        assert private_fact is not None
+        assert private_fact.value == "alpha"
+        private_support = session.scalar(
+            select(EventFactSupport).where(
+                EventFactSupport.event_id == alpha_event_id,
+                EventFactSupport.event_fact_id == private_fact.id,
+                EventFactSupport.event_evidence_id == alpha_evidence_id,
+            )
+        )
+        assert private_support is not None
         shared_event = session.get(Event, shared_event_id)
         assert shared_event is not None
         assert shared_event.visibility_scope == PLATFORM_SHARED_SCOPE
         assert shared_event.owner_user_id is None
         assert shared_event.owner_tenant_id is None
+        shared_fact = session.scalar(select(EventFact).where(EventFact.event_id == shared_event_id))
+        assert shared_fact is not None
+        assert shared_fact.value == "alpha"
+        assert shared_fact.id != private_fact.id
         shared_evidence = list(
             session.scalars(select(EventEvidence).where(EventEvidence.event_id == shared_event_id))
         )
@@ -341,6 +360,16 @@ def test_controlled_promotion_deduplication_isolation_and_retraction(
             beta_evidence_id,
         }
         assert all(item.raw_document_id is None for item in shared_evidence)
+        shared_supports = list(
+            session.scalars(
+                select(EventFactSupport).where(EventFactSupport.event_id == shared_event_id)
+            )
+        )
+        assert {item.event_fact_id for item in shared_supports} == {shared_fact.id}
+        assert {item.event_evidence_id for item in shared_supports} == {
+            item.id for item in shared_evidence
+        }
+        assert alpha_evidence_id not in {item.event_evidence_id for item in shared_supports}
         assert session.scalar(select(func.count()).select_from(EventSharingDecision)) == 2
         assert session.scalar(select(func.count()).select_from(EventSharingDecisionEvidence)) == 2
 
