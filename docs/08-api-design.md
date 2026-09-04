@@ -60,6 +60,8 @@
 
 当前详情响应使用 `events` 表示平台共享的“已核实事实”和“授权来源记录·影响待判断”；后者使用 `publication_route=licensed_source_record`，只确认授权来源已返回该概览记录，不表示平台已确认责任、影响或投资结论。`platform_unconfirmed_leads` 只保留真正未解决的平台待核实线索，`private_events` 表示当前机构可见的已确认信息，`unconfirmed_leads` 表示当前个人或机构 owner 可见的私有待核实线索，`investments` 只在基金授权存在时返回记录；`is_platform_shared` 只用于决定是否展示个人关注/更新/报告入口，不暴露私有记录。个人变化通过客户端组件在页面挂载后单独记录，Next.js 链接预取或服务端渲染不会提前标记为已看。证据引用和原始文档分别做作用域过滤；共享事实、授权来源记录和固定报告只序列化独立展示引用的来源名称、URL、日期、状态和许可短摘录，不读取系统受限或私有原文档。无基金用户不会因共享详情请求触发机构私有刷新状态或任务。`GET /reviews/workbench` 默认返回 `404`，仅在本机受控环境设置 `REVIEW_WORKBENCH_ENABLED=true` 后开放；普通审核区要求 `reviewer`，共享晋升区另要求 `platform_admin`，该开关不能替代认证。
 
+事件对象的 `fact_ledger` 以稳定 `fact_key` 返回原子事实及 `supported`、`partial`、`conflicting`、`pending_review` 或 `unsupported` 支持状态。`evidence_supports` 只包含当前用户已有权看到的证据 ID、状态、理由码、策略版本和评估时间；不返回私有证据存在性、内部定位或检查中间值。历史数据迁移后默认是“等待逐条复核”，不会因链接可点击而自动变成“证据已支持”。
+
 链接展示按 `link_display_allowed` 和检查状态决定：健康链接显示检查时间；合法但未检查的 URL 可点击并明确警告；失效链接只保留历史来源信息；不安全或许可受限链接不返回为可点击链接。链接可点击不表示证据内容已完成实质核验。
 
 `POST /refresh` 的响应明确区分 `fresh_noop`、`queued`、`merged`、`cooldown_deferred`、`budget_deferred`、`external_disabled`。`dry_run=true` 时只返回计划 Provider、搜索数、Token 上界和预计费用，不产生外部调用。

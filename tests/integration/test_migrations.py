@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -19,7 +19,7 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     command.upgrade(config, "head")
     command.check(config)
     engine = create_engine(database_url)
-    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 36
+    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 38
     user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
     assert {"auth_provider", "auth_subject"} <= user_columns
     assert "uq_users_auth_identity" in {
@@ -237,6 +237,35 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
         constraint["name"]
         for constraint in inspect(engine).get_unique_constraints("web_search_cache_entries")
     }
+    assert {"event_facts", "event_fact_supports"} <= set(inspect(engine).get_table_names())
+    assert {
+        "event_id",
+        "fact_key",
+        "name",
+        "value",
+        "unit",
+        "position",
+        "occurrence_count",
+    } <= {column["name"] for column in inspect(engine).get_columns("event_facts")}
+    assert {
+        "event_id",
+        "event_fact_id",
+        "event_evidence_id",
+        "support_status",
+        "evidence_locator",
+        "deterministic_checks",
+        "support_reasons",
+        "policy_version",
+        "assessed_at",
+    } <= {column["name"] for column in inspect(engine).get_columns("event_fact_supports")}
+    assert "uq_event_evidence_id_event" in {
+        constraint["name"]
+        for constraint in inspect(engine).get_unique_constraints("event_evidence")
+    }
+    assert "ck_event_fact_support_status" in {
+        constraint["name"]
+        for constraint in inspect(engine).get_check_constraints("event_fact_supports")
+    }
 
     command.downgrade(config, "0007")
     assert "visibility_scope" not in {
@@ -349,3 +378,163 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "web_search_cache_platform_admin_read" in ddl
     assert "raw_documents_bounded_web_admin_read" in ddl
     assert "entity_mentions_bounded_web_admin_insert" in ddl
+    assert "CREATE TABLE event_facts" in ddl
+    assert "CREATE TABLE event_fact_supports" in ddl
+    assert "uq_event_evidence_id_event" in ddl
+    assert "event_facts_scope_read" in ddl
+    assert "event_fact_supports_scope_insert" in ddl
+
+
+def test_fact_support_migration_backfills_historical_rows_conservatively(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'fact-ledger-backfill.db'}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    config = Config(str(ROOT / "alembic.ini"))
+    command.upgrade(config, "0023")
+    engine = create_engine(database_url)
+    company_id = "11111111111141118111111111111111"
+    source_id = "22222222222242228222222222222222"
+    document_id = "33333333333343338333333333333333"
+    event_id = "44444444444444448444444444444444"
+    evidence_id = "55555555555545558555555555555555"
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO companies (
+                    id, tenant_id, credit_code, legal_name, registered_region,
+                    official_website, identity_status, identity_verification_basis,
+                    last_identity_checked_at, visibility_scope, created_at, updated_at
+                ) VALUES (
+                    :id, NULL, NULL, '历史迁移测试公司', NULL,
+                    NULL, 'verified', 'official_government', NULL, 'public',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {"id": company_id},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO sources (
+                    id, code, name, source_quality, license_status, base_url,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, 'fact-ledger-history', '历史迁移测试来源', 'A', 'public', NULL,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {"id": source_id},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO raw_documents (
+                    id, source_id, research_import_id, candidate_document_id,
+                    owner_user_id, owner_tenant_id, visibility_scope,
+                    external_record_id, canonical_url, title, published_at,
+                    published_on, observed_at, content_hash, document_dedupe_key,
+                    license_status, payload, created_at, updated_at
+                ) VALUES (
+                    :id, :source_id, NULL, NULL,
+                    NULL, NULL, 'platform_shared',
+                    'fact-ledger-history', 'https://example.invalid/history',
+                    '历史迁移测试文档', NULL, NULL, CURRENT_TIMESTAMP,
+                    :content_hash, :dedupe_key, 'public', CAST('{}' AS JSON),
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": document_id,
+                "source_id": source_id,
+                "content_hash": "1" * 64,
+                "dedupe_key": "2" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO events (
+                    id, company_id, owner_user_id, owner_tenant_id, visibility_scope,
+                    event_type, event_subtype, status, direction, materiality_score,
+                    risk_severity, confidence_score, source_quality, title, summary,
+                    facts, uncertainties, occurred_at, published_at, published_on,
+                    observed_at, fingerprint_version, event_fingerprint,
+                    publication_route, publication_policy_version, publication_reasons,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, :company_id, NULL, NULL, 'platform_shared',
+                    'information_quality', 'historical_backfill', 'published', 'neutral', 30,
+                    'low', 0.900, 'A', '历史事实', '迁移不得自动认定逐条支持',
+                    :facts, CAST('[]' AS JSON), NULL, NULL, NULL,
+                    CURRENT_TIMESTAMP, 'history-v1', :fingerprint,
+                    'human_promoted', 'history-v1', CAST('[]' AS JSON),
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": event_id,
+                "company_id": company_id,
+                "facts": '[{"name":"注册资本","value":"1000万元","unit":null}]',
+                "fingerprint": "3" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO event_evidence (
+                    id, event_id, raw_document_id, source_event_evidence_id,
+                    owner_user_id, owner_tenant_id, visibility_scope,
+                    evidence_excerpt, span_hash, support_type, display_allowed,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, :event_id, :document_id, NULL,
+                    NULL, NULL, 'platform_shared',
+                    '历史证据摘录', :span_hash, 'supports', FALSE,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": evidence_id,
+                "event_id": event_id,
+                "document_id": document_id,
+                "span_hash": "4" * 64,
+            },
+        )
+
+    command.upgrade(config, "0024")
+    with engine.connect() as connection:
+        fact = connection.execute(
+            text(
+                "SELECT name, value, occurrence_count FROM event_facts WHERE event_id = :event_id"
+            ),
+            {"event_id": event_id},
+        ).one()
+        support = connection.execute(
+            text(
+                "SELECT support_status, support_reasons FROM event_fact_supports "
+                "WHERE event_id = :event_id"
+            ),
+            {"event_id": event_id},
+        ).one()
+        assert fact == ("注册资本", "1000万元", 1)
+        assert support[0] == "pending_review"
+        assert "historical_relationship_not_proven_per_fact" in support[1]
+
+    command.downgrade(config, "0023")
+    assert "event_facts" not in inspect(engine).get_table_names()
+    assert (
+        engine.connect().scalar(
+            text("SELECT count(*) FROM events WHERE id = :event_id"),
+            {"event_id": event_id},
+        )
+        == 1
+    )
+    engine.dispose()

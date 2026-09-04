@@ -4,7 +4,7 @@
 
 PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；不修改已应用迁移。UUID 主键、UTC `timestamptz`、显式外键和状态约束为默认。原始事实追加保存，派生快照可重建。个人、机构与基金私有行必须通过应用授权和 PostgreSQL 行级安全（RLS）双重限制。
 
-本文件同时描述当前 `0023` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询、受控共享事实晋升、受控可信来源监测、候选研究交接、CloudBase 身份映射、个人留存、受限公开网络研究、版本化变化检测和证据约束投资者解读队列已经实现；标记为“目标”的 organization 和商业订阅权益仍未实现。当前 `tenant` 继续作为技术隔离边界，CloudBase 只提供外部身份，业务授权仍由本地用户、角色、基金授权和 RLS 决定。
+本文件同时描述当前 `0024` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询、受控共享事实晋升、受控可信来源监测、候选研究交接、CloudBase 身份映射、个人留存、受限公开网络研究、版本化变化检测、证据约束投资者解读队列和证据—事实逐条支持账本已经实现；标记为“目标”的 organization 和商业订阅权益仍未实现。当前 `tenant` 继续作为技术隔离边界，CloudBase 只提供外部身份，业务授权仍由本地用户、角色、基金授权和 RLS 决定。
 
 ## 2. 表目录：身份、投资与权限
 
@@ -42,6 +42,8 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `entity_mentions` | 文档中的公司候选、命中依据、候选集合、置信度、解析状态 | 唯一 `(raw_document_id, mention_span_hash, candidate_company_id)`；待解析索引 |
 | `events` | 公司、类型/子类、业务状态、发布路由、作用域、所有者、审核/证据状态、五项评价、事实、时间和事件指纹 | 共享事件全局去重；私有候选在所有者范围内去重；业务状态不推断权限 |
 | `event_evidence` | 事件到文档或结构化记录的证据引用、最小片段、支撑类型、作用域和许可；共享展示引用保存许可允许的来源快照并关联原私有引用 | 私有引用必须关联原文档；共享展示引用不关联私有原文档，使用 `source_event_evidence_id` 保留血缘；不得因事件共享而暴露受限原文 |
+| `event_facts` | 把 `events.facts` 拆成带稳定 `fact_key` 的原子事实，保留名称、值、单位、顺序和重复出现次数 | 同事件同 `fact_key` 唯一；`(id, event_id)` 作为证据支持复合外键边界 |
+| `event_fact_supports` | 一条原子事实与一条事件证据的确定性评估；保存支持状态、证据定位、检查项、理由、策略版本和评估时间 | 状态仅为 `supported/partial/conflicting/pending_review/unsupported`；复合外键禁止跨事件错接事实与证据；同事实/证据唯一 |
 | `metric_definitions` | 指标编码、类型、单位集合、周期和行业命名空间 | 唯一 `metric_code`; 行业索引 |
 | `metric_observations` | 公司指标历史值、单位、期间、`as_of_date`、来源性质、审核状态 | 观测幂等键唯一；公司/指标/基准日降序索引 |
 | `company_snapshots` | 派生状态、信息缺口、新鲜度、构建版本、可空的事实水位 | 唯一 `(company_id, snapshot_version)`；当前快照条件唯一；没有可靠事件/来源日期时 `data_as_of` 保持空 |
@@ -103,6 +105,9 @@ erDiagram
   COMPANIES ||--o{ ENTITY_MENTIONS : candidate
   COMPANIES ||--o{ EVENTS : concerns
   EVENTS ||--|{ EVENT_EVIDENCE : requires
+  EVENTS ||--o{ EVENT_FACTS : decomposes
+  EVENT_FACTS ||--o{ EVENT_FACT_SUPPORTS : assessed_by
+  EVENT_EVIDENCE ||--o{ EVENT_FACT_SUPPORTS : supports
   EVENTS ||--o{ EVENT_SHARING_DECISIONS : source_or_target
   EVENT_SHARING_DECISIONS ||--o{ EVENT_SHARING_DECISION_EVIDENCE : records
   EVENT_EVIDENCE ||--o{ EVENT_SHARING_DECISION_EVIDENCE : selected

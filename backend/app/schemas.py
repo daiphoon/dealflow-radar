@@ -65,6 +65,37 @@ class InvestorChangeAnalysisOut(InvestorChangeAnalysisOutput):
     generated_at: datetime
 
 
+class FactEvidenceSupportOut(BaseModel):
+    evidence_id: UUID
+    support_status: Literal[
+        "supported",
+        "partial",
+        "conflicting",
+        "pending_review",
+        "unsupported",
+    ]
+    reason_codes: list[str]
+    policy_version: str
+    assessed_at: datetime
+
+
+class AtomicFactOut(BaseModel):
+    id: UUID
+    fact_key: str
+    name: str
+    value: str
+    unit: str | None
+    occurrence_count: int
+    support_status: Literal[
+        "supported",
+        "partial",
+        "conflicting",
+        "pending_review",
+        "unsupported",
+    ]
+    evidence_supports: list[FactEvidenceSupportOut]
+
+
 class EventOut(BaseModel):
     id: UUID
     event_type: str
@@ -87,6 +118,7 @@ class EventOut(BaseModel):
     publication_reasons: list[str]
     observed_at: datetime
     evidence: list[EvidenceOut]
+    fact_ledger: list[AtomicFactOut] = Field(default_factory=list)
     visibility_scope: str
     analysis: InvestorChangeAnalysisOut | None = None
 
