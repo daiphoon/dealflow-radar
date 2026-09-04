@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import io
 from collections.abc import Callable
 
 import httpx
 import pytest
+from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from backend.app.config import SourceMonitoringPolicy
 from backend.app.source_fetcher import (
@@ -14,6 +17,31 @@ from backend.app.source_fetcher import (
 )
 
 PUBLIC_ADDRESS = {"93.184.216.34"}
+
+
+def _pdf_bytes(text: str, *, pages: int = 1) -> bytes:
+    writer = PdfWriter()
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_reference = writer._add_object(font)
+    for index in range(pages):
+        page = writer.add_blank_page(width=612, height=792)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_reference})}
+        )
+        stream = DecodedStreamObject()
+        value = text if index == 0 else f"Page {index + 1}"
+        stream.set_data(f"BT /F1 12 Tf 72 720 Td ({value}) Tj ET".encode())
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    writer.add_metadata({"/Title": "Official filing"})
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
 
 
 def _policy(**overrides: int) -> SourceMonitoringPolicy:
@@ -343,7 +371,7 @@ def test_conditional_304_and_response_size_limit() -> None:
     assert large.request_log[-1]["status"] == 200
 
 
-def test_retry_limit_and_mime_check_are_audited() -> None:
+def test_retry_limit_and_pdf_signature_check_are_audited() -> None:
     attempts = 0
 
     def timeout_then_success(request: httpx.Request) -> httpx.Response:
@@ -368,13 +396,89 @@ def test_retry_limit_and_mime_check_are_audited() -> None:
             retention_policy="metadata_only",
             conditional_state={},
         )
-    assert caught.value.code == "unsupported_content_type"
+    assert caught.value.code == "invalid_pdf_signature"
     assert fetcher.request_count == 3
     assert [entry.get("error_code") for entry in fetcher.request_log] == [
         "timeout",
         None,
-        "unsupported_content_type",
+        None,
     ]
+
+
+def test_official_pdf_is_parsed_with_signature_page_and_text_limits() -> None:
+    body = _pdf_bytes("Official Company completed financing on 2026-09-04.")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404, headers={"content-type": "text/plain"})
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/pdf"},
+            content=body,
+        )
+
+    result = _fetcher(handler).check(
+        source_type="single_page",
+        root_domain="example.com",
+        start_url="https://example.com/official.pdf",
+        retention_policy="minimal_excerpt",
+        conditional_state={},
+    )
+
+    document = result.documents[0]
+    assert document.title == "Official filing"
+    assert "completed financing" in (document.excerpt or "")
+    assert document.published_at is not None
+    assert document.metadata["document_format"] == "pdf"
+    assert document.metadata["page_count"] == 1
+    assert document.metadata["published_at_basis"] == "single_explicit_document_date"
+
+
+def test_pdf_page_limit_fails_before_text_extraction() -> None:
+    body = _pdf_bytes("Official filing", pages=2)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404, headers={"content-type": "text/plain"})
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/pdf"},
+            content=body,
+        )
+
+    fetcher = _fetcher(handler, policy=_policy(max_pdf_pages=1))
+    with pytest.raises(SourceFetchError) as caught:
+        fetcher.check(
+            source_type="single_page",
+            root_domain="example.com",
+            start_url="https://example.com/too-many-pages.pdf",
+            retention_policy="minimal_excerpt",
+            conditional_state={},
+        )
+    assert caught.value.code == "pdf_page_limit_exceeded"
+
+
+def test_pdf_with_multiple_dates_does_not_guess_publication_date() -> None:
+    body = _pdf_bytes("Period 2025-01-01 to 2026-09-04.")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404, headers={"content-type": "text/plain"})
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/pdf"},
+            content=body,
+        )
+
+    result = _fetcher(handler).check(
+        source_type="single_page",
+        root_domain="example.com",
+        start_url="https://example.com/multiple-dates.pdf",
+        retention_policy="minimal_excerpt",
+        conditional_state={},
+    )
+    assert result.documents[0].published_at is None
+    assert result.documents[0].metadata["published_at_basis"] is None
 
 
 def test_root_level_list_prefers_repeated_content_directory_over_navigation() -> None:

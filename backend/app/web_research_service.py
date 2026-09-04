@@ -48,6 +48,7 @@ from backend.app.web_search import (
 
 WEB_RESEARCH_SOURCE_CODE = "bounded_public_web"
 CONTENT_QUALITY_GATE_VERSION = "bounded-web-quality-v3"
+EVIDENCE_ROUTING_VERSION = "compliant-evidence-routing-v1"
 ACTIVE_JOB_STATUSES = ("queued", "running", "partial", "budget_deferred")
 ACTIVE_REQUEST_STATUSES = ("research_queued", "researching", "partial", "budget_deferred")
 TRACKING_QUERY_PREFIXES = ("utm_",)
@@ -102,6 +103,16 @@ PROFILE_OR_LISTING_PATH_PARTS = {
     "search",
     "tag",
 }
+OFFICIAL_PDF_SOURCE_TIERS = {
+    "government",
+    "regulatory_disclosure",
+    "company_official",
+}
+SOURCE_ACCESS_API_METADATA_ONLY = "api_metadata_only"
+SOURCE_ACCESS_AUTOMATIC_READ = "automatic_read_allowed"
+SOURCE_ACCESS_ROBOTS_BLOCKED = "robots_blocked"
+SOURCE_ACCESS_MANUAL_IMPORT = "authorized_manual_import_required"
+SOURCE_ACCESS_OFFICIAL_DOCUMENT = "official_document"
 
 RESEARCH_MODULES = (
     "financial_operation",
@@ -458,6 +469,7 @@ def _identity_fingerprint(company: Company) -> str:
 def _initial_coverage(policy: WebResearchPolicy) -> dict[str, object]:
     return {
         "policy_version": policy.version,
+        "evidence_routing_version": EVIDENCE_ROUTING_VERSION,
         "modules": {module: "pending" for module in RESEARCH_MODULES},
         "search_groups": {
             code: {"status": "pending", "providers": {}} for code, _ in SEARCH_GROUPS
@@ -465,6 +477,7 @@ def _initial_coverage(policy: WebResearchPolicy) -> dict[str, object]:
         "candidates": [],
         "candidate_index": 0,
         "documents": [],
+        "source_recovery": {"status": "not_requested", "attempts": 0},
         "stats": {
             "search_cache_hits": 0,
             "document_cache_hits": 0,
@@ -843,6 +856,33 @@ def _result_score(
     return score, published_at.timestamp() if published_at else 0.0, result.url
 
 
+def _candidate_payload(
+    company: Company,
+    result: SearchResult,
+    *,
+    provider_code: str,
+    query_kind: str,
+    policy: WebResearchPolicy,
+) -> dict[str, object] | None:
+    if not _qualified_subject_result(company, result, policy):
+        return None
+    canonical_url = _canonical_candidate_url(result.url)
+    if canonical_url is None:
+        return None
+    source_rank = _source_rank(company, result)
+    return {
+        **result.to_dict(),
+        "url": canonical_url,
+        "discovered_by": [provider_code],
+        "query_kind": query_kind,
+        "source_tier": source_rank.tier,
+        "source_rank_reasons": list(source_rank.reasons),
+        "search_date_status": _search_date_status(result, policy),
+        "source_access_status": SOURCE_ACCESS_API_METADATA_ONLY,
+        "source_access_reason": "search_discovery_metadata_only",
+    }
+
+
 def _cached_response(
     session: Session,
     company: Company,
@@ -893,7 +933,9 @@ def _check_search_budget(
     policy: WebResearchPolicy,
 ) -> None:
     now = utc_now()
-    if job.external_calls >= policy.max_search_calls_per_job:
+    stats = job.coverage.get("stats", {}) if isinstance(job.coverage, dict) else {}
+    search_calls = int(stats.get("search_calls", 0)) if isinstance(stats, dict) else 0
+    if search_calls >= policy.max_search_calls_per_job:
         raise WebResearchBudgetDeferred("job search call limit reached")
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     month_start = day_start.replace(day=1)
@@ -987,14 +1029,7 @@ def _provider_response(
 ) -> tuple[SearchResponse, bool]:
     cached = _cached_response(session, company, provider.code, query, utc_now())
     if cached is not None:
-        coverage = dict(job.coverage)
-        stats = dict(coverage.get("stats", {}))
-        stats["search_cache_hits"] = int(stats.get("search_cache_hits", 0)) + 1
-        coverage["stats"] = stats
-        job.coverage = coverage
-        for request in _active_linked_requests(session, job.id):
-            request.cache_hits += 1
-        session.commit()
+        _record_search_cache_hit(session, job)
         return cached, True
     _check_search_budget(session, job, policy)
     try:
@@ -1003,6 +1038,11 @@ def _provider_response(
         )
     except SearchProviderError as error:
         job.external_calls += error.external_calls
+        coverage = dict(job.coverage)
+        stats = dict(coverage.get("stats", {}))
+        stats["search_calls"] = int(stats.get("search_calls", 0)) + error.external_calls
+        coverage["stats"] = stats
+        job.coverage = coverage
         safe_diagnostic = {
             "query_kind": query_kind,
             "status": "failed",
@@ -1045,6 +1085,17 @@ def _provider_response(
     )
     session.commit()
     return response, False
+
+
+def _record_search_cache_hit(session: Session, job: CompanyResearchJob) -> None:
+    coverage = dict(job.coverage)
+    stats = dict(coverage.get("stats", {}))
+    stats["search_cache_hits"] = int(stats.get("search_cache_hits", 0)) + 1
+    coverage["stats"] = stats
+    job.coverage = coverage
+    for request in _active_linked_requests(session, job.id):
+        request.cache_hits += 1
+    session.commit()
 
 
 def _refresh_job(session: Session, job_id: UUID) -> CompanyResearchJob:
@@ -1169,10 +1220,40 @@ def _process_search_group(
                 "reason": fallback_reason,
             }
     else:
-        provider_state[fallback.code] = {
-            "status": "not_called",
-            "reason": "primary_has_qualified_subject_results",
-        }
+        cached_fallback = _cached_response(
+            session,
+            company,
+            fallback.code,
+            query,
+            utc_now(),
+        )
+        if cached_fallback is None:
+            provider_state[fallback.code] = {
+                "status": "not_called",
+                "reason": "primary_has_qualified_subject_results",
+            }
+        else:
+            responses.append(cached_fallback)
+            cache_hits += 1
+            _record_search_cache_hit(session, job)
+            provider_state[fallback.code] = {
+                "status": "cache_fused",
+                "results": len(cached_fallback.results),
+                "subject_results": sum(
+                    1 for result in cached_fallback.results if _subject_match(company, result)
+                ),
+                "qualified_subject_results": sum(
+                    1
+                    for result in cached_fallback.results
+                    if _qualified_subject_result(company, result, policy)
+                ),
+                "filter_reasons": _qualification_reason_counts(
+                    company,
+                    cached_fallback.results,
+                    policy,
+                ),
+                "reason": "valid_existing_cache_fused_without_provider_call",
+            }
     _restore_worker_context(session, user)
     job = _refresh_job(session, job.id)
     if _job_should_stop(session, job):
@@ -1187,23 +1268,17 @@ def _process_search_group(
     merged: dict[str, dict[str, object]] = {}
     for response in candidate_responses:
         for result in response.results:
-            if not _qualified_subject_result(company, result, policy):
+            candidate = _candidate_payload(
+                company,
+                result,
+                provider_code=response.provider_code,
+                query_kind=group_code,
+                policy=policy,
+            )
+            if candidate is None:
                 continue
-            canonical_url = _canonical_candidate_url(result.url)
-            if canonical_url is None:
-                continue
+            canonical_url = str(candidate["url"])
             current = merged.get(canonical_url)
-            source_rank = _source_rank(company, result)
-            search_date_status = _search_date_status(result, policy)
-            candidate = {
-                **result.to_dict(),
-                "url": canonical_url,
-                "discovered_by": [response.provider_code],
-                "query_kind": group_code,
-                "source_tier": source_rank.tier,
-                "source_rank_reasons": list(source_rank.reasons),
-                "search_date_status": search_date_status,
-            }
             if current is None:
                 merged[canonical_url] = candidate
             else:
@@ -1675,6 +1750,193 @@ def _candidate_event(
     return event, True, quality
 
 
+def _candidate_can_trigger_source_recovery(candidate: dict[str, object]) -> bool:
+    if candidate.get("source_tier") == "profile_or_listing":
+        return False
+    title = str(candidate.get("title") or "")
+    snippet = str(candidate.get("snippet") or "")
+    return _event_classification("", f"{title}。{snippet}") is not None
+
+
+def _source_recovery_query(company: Company, candidate: dict[str, object]) -> str:
+    title = " ".join(str(candidate.get("title") or "").replace('"', "").split())[:100]
+    return f'"{company.legal_name}" "{title}" 原文 公告'
+
+
+def _process_source_recovery(
+    session: Session,
+    user: User,
+    job: CompanyResearchJob,
+    company: Company,
+    policy: WebResearchPolicy,
+    providers: dict[str, SearchProvider],
+) -> WebResearchWorkerResult:
+    coverage = dict(job.coverage)
+    recovery = dict(coverage.get("source_recovery", {}))
+    if recovery.get("status") != "pending" or int(recovery.get("attempts", 0)) >= 1:
+        job.current_stage = "fetch"
+        job.status = "partial"
+        job.leased_until = None
+        session.commit()
+        return WebResearchWorkerResult(
+            status="partial",
+            job_id=job.id,
+            company_id=job.company_id,
+            stage="fetch",
+            external_calls=job.external_calls,
+        )
+
+    candidates = [item for item in coverage.get("candidates", []) if isinstance(item, dict)]
+    blocked_url = str(recovery.get("source_url") or "")
+    blocked_candidate = next(
+        (item for item in candidates if str(item.get("url") or "") == blocked_url),
+        None,
+    )
+    recovery["attempts"] = 1
+    if blocked_candidate is None:
+        recovery.update({"status": "failed", "error_code": "source_candidate_missing"})
+        coverage["source_recovery"] = recovery
+        job.coverage = coverage
+        job.current_stage = "fetch"
+        job.status = "partial"
+        job.leased_until = None
+        session.commit()
+        return WebResearchWorkerResult(
+            status="partial",
+            job_id=job.id,
+            company_id=job.company_id,
+            stage="fetch",
+            external_calls=job.external_calls,
+            error_code="source_candidate_missing",
+        )
+
+    primary = providers[policy.primary_provider]
+    query = _source_recovery_query(company, blocked_candidate)
+    cache_hit = False
+    try:
+        response, cache_hit = _provider_response(
+            session,
+            user,
+            job,
+            company,
+            primary,
+            query_kind="source_recovery",
+            query=query,
+            policy=policy,
+        )
+    except SearchProviderError as error:
+        recovery.update(
+            {
+                "status": "failed",
+                "provider": primary.code,
+                "error_code": error.code,
+                "result_count": 0,
+            }
+        )
+        coverage = dict(job.coverage)
+        coverage["source_recovery"] = recovery
+        job.coverage = coverage
+        job.current_stage = "fetch"
+        job.status = "partial"
+        job.leased_until = None
+        session.commit()
+        return WebResearchWorkerResult(
+            status="partial",
+            job_id=job.id,
+            company_id=job.company_id,
+            stage="fetch",
+            external_calls=job.external_calls,
+            error_code=error.code,
+        )
+
+    _restore_worker_context(session, user)
+    job = _refresh_job(session, job.id)
+    if _job_should_stop(session, job):
+        return _cancel_job(session, job)
+    coverage = dict(job.coverage)
+    candidates = [item for item in coverage.get("candidates", []) if isinstance(item, dict)]
+    recovered: list[dict[str, object]] = []
+    for result in response.results:
+        candidate = _candidate_payload(
+            company,
+            result,
+            provider_code=response.provider_code,
+            query_kind="source_recovery",
+            policy=policy,
+        )
+        if candidate is None or candidate["url"] == blocked_url:
+            continue
+        candidate["recovery_for_url"] = blocked_url
+        recovered.append(candidate)
+    recovered.sort(
+        key=lambda item: _result_score(company, SearchResult.from_dict(item), policy),
+        reverse=True,
+    )
+
+    processed_count = min(int(coverage.get("candidate_index", 0)), len(candidates))
+    processed = candidates[:processed_count]
+    remaining = candidates[processed_count:]
+    seen_urls = {str(item.get("url") or "") for item in processed}
+    recovered_tail: list[dict[str, object]] = []
+    for item in recovered:
+        url = str(item.get("url") or "")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        recovered_tail.append(item)
+        break
+    regular_tail: list[dict[str, object]] = []
+    for item in remaining:
+        url = str(item.get("url") or "")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        regular_tail.append(item)
+    coverage["candidates"] = [
+        *processed,
+        # One dedicated slot keeps a valid recovery result from being discarded
+        # when the original bounded discovery queue was already full.
+        *recovered_tail,
+        *regular_tail[: max(0, policy.max_candidate_urls - len(processed))],
+    ]
+    recovery = dict(coverage.get("source_recovery", recovery))
+    recovery.update(
+        {
+            "status": "completed",
+            "attempts": 1,
+            "provider": primary.code,
+            "provider_status": "cache_hit" if cache_hit else "completed",
+            "result_count": len(recovered),
+            "candidate_count_added": len(recovered_tail),
+        }
+    )
+    if not recovered_tail:
+        recovery["evidence_gap"] = "no_alternative_original_source_found"
+        for item in coverage["candidates"]:
+            if str(item.get("url") or "") == blocked_url:
+                item["source_access_follow_up"] = SOURCE_ACCESS_MANUAL_IMPORT
+                break
+    coverage["source_recovery"] = recovery
+    job.coverage = coverage
+    job.current_stage = "fetch"
+    job.status = "partial"
+    job.leased_until = None
+    job.heartbeat_at = utc_now()
+    for request in _active_linked_requests(session, job.id):
+        request.status = "partial"
+        request.leased_until = None
+        request.heartbeat_at = job.heartbeat_at
+    session.commit()
+    return WebResearchWorkerResult(
+        status="partial",
+        job_id=job.id,
+        company_id=job.company_id,
+        stage="fetch",
+        external_calls=job.external_calls,
+        cache_hits=int(cache_hit),
+    )
+
+
 def _fetch_policy(
     policy: WebResearchPolicy,
     *,
@@ -1686,6 +1948,9 @@ def _fetch_policy(
         max_requests_per_run=remaining_requests,
         max_download_bytes_per_run=remaining_bytes,
         max_response_bytes=policy.max_response_bytes,
+        max_pdf_pages=policy.max_pdf_pages,
+        max_pdf_text_chars=policy.max_pdf_text_chars,
+        pdf_parse_timeout_seconds=policy.pdf_parse_timeout_seconds,
         timeout_seconds=policy.timeout_seconds,
         retry_limit=0,
         max_redirects=3,
@@ -1712,13 +1977,35 @@ def _fetch_candidate(
     stats = dict(coverage.get("stats", {}))
     previous_fetch_calls = int(stats.get("fetch_calls", 0))
     previous_downloaded_bytes = int(stats.get("downloaded_bytes", 0))
+    previous_search_calls = int(stats.get("search_calls", 0))
     successful = sum(1 for item in documents if item.get("status") in {"created", "reused"})
     limits_reached = (
         previous_fetch_calls >= policy.max_fetch_requests_per_job
         or previous_downloaded_bytes >= policy.max_download_bytes_per_job
     )
     if index >= len(candidates) or successful >= policy.max_documents_per_job or limits_reached:
-        job.current_stage = "finalize"
+        recovery = dict(coverage.get("source_recovery", {}))
+        can_recover = (
+            index >= len(candidates)
+            and successful < policy.max_documents_per_job
+            and not limits_reached
+            and previous_search_calls < policy.max_search_calls_per_job
+            and recovery.get("status") == "pending"
+        )
+        job.current_stage = "source_recovery" if can_recover else "finalize"
+        if recovery.get("status") == "pending" and not can_recover:
+            recovery.update(
+                {
+                    "status": "skipped",
+                    "evidence_gap": (
+                        "search_call_limit_reached"
+                        if previous_search_calls >= policy.max_search_calls_per_job
+                        else "document_or_request_limit_reached"
+                    ),
+                }
+            )
+            coverage["source_recovery"] = recovery
+            job.coverage = coverage
         job.status = "partial"
         job.leased_until = None
         session.commit()
@@ -1726,7 +2013,7 @@ def _fetch_candidate(
             status="partial",
             job_id=job.id,
             company_id=job.company_id,
-            stage="finalize",
+            stage=job.current_stage,
             external_calls=job.external_calls,
         )
     candidate = candidates[index]
@@ -1742,6 +2029,14 @@ def _fetch_candidate(
     downloaded_bytes = 0
     error_code: str | None = None
     if cached_document is not None:
+        extraction = cached_document.payload.get("content_extraction", {})
+        is_official_pdf = bool(
+            isinstance(extraction, dict) and extraction.get("document_format") == "pdf"
+        )
+        candidate["source_access_status"] = (
+            SOURCE_ACCESS_OFFICIAL_DOCUMENT if is_official_pdf else SOURCE_ACCESS_AUTOMATIC_READ
+        )
+        candidate["source_access_reason"] = "valid_document_cache_reused"
         _, event_created, quality = _candidate_event(
             session,
             company,
@@ -1759,6 +2054,7 @@ def _fetch_candidate(
                 "document_id": str(cached_document.id),
                 "event_created": event_created,
                 "quality_gate": quality.to_dict(),
+                "source_access_status": candidate["source_access_status"],
             }
         )
         stats = dict(coverage.get("stats", {}))
@@ -1767,81 +2063,97 @@ def _fetch_candidate(
         for request in _active_linked_requests(session, job.id):
             request.cache_hits += 1
     else:
-        host = (urlsplit(url).hostname or "").lower().rstrip(".")
-        root_domain = host.removeprefix("www.")
-        fetcher = fetcher_factory(
-            _fetch_policy(
-                policy,
-                remaining_requests=policy.max_fetch_requests_per_job - previous_fetch_calls,
-                remaining_bytes=policy.max_download_bytes_per_job - previous_downloaded_bytes,
+        is_pdf_url = urlsplit(url).path.casefold().endswith(".pdf")
+        source_tier = str(candidate.get("source_tier") or "")
+        if is_pdf_url and source_tier not in OFFICIAL_PDF_SOURCE_TIERS:
+            error_code = "pdf_source_not_authoritative"
+        else:
+            host = (urlsplit(url).hostname or "").lower().rstrip(".")
+            root_domain = host.removeprefix("www.")
+            fetcher = fetcher_factory(
+                _fetch_policy(
+                    policy,
+                    remaining_requests=policy.max_fetch_requests_per_job - previous_fetch_calls,
+                    remaining_bytes=policy.max_download_bytes_per_job - previous_downloaded_bytes,
+                )
             )
-        )
-        try:
-            result = fetcher.check(
-                source_type="single_page",
-                root_domain=root_domain,
-                start_url=url,
-                retention_policy="minimal_excerpt",
-                conditional_state={},
-            )
-            fetch_calls = result.request_count
-            downloaded_bytes = result.downloaded_bytes
-            if not result.documents:
-                error_code = "no_fetchable_document"
-            else:
-                discovered = result.documents[0]
-                excerpt = discovered.excerpt or ""
-                if not _document_matches_company(
-                    company,
-                    discovered.title,
-                    excerpt,
-                    discovered.canonical_url,
-                ):
-                    error_code = "fetched_page_identity_mismatch"
+            try:
+                result = fetcher.check(
+                    source_type="single_page",
+                    root_domain=root_domain,
+                    start_url=url,
+                    retention_policy="minimal_excerpt",
+                    conditional_state={},
+                )
+                fetch_calls = result.request_count
+                downloaded_bytes = result.downloaded_bytes
+                if not result.documents:
+                    error_code = "no_fetchable_document"
                 else:
-                    quality = _content_quality_decision(
-                        company,
-                        title=discovered.title,
-                        excerpt=excerpt,
-                        published_at=discovered.published_at,
-                        observed_at=utc_now(),
-                        policy=policy,
-                    )
-                    document, document_created = _raw_document(
-                        session,
-                        source,
-                        company,
-                        candidate,
-                        discovered,
-                        job,
-                        quality,
-                    )
-                    documents_created += int(document_created)
-                    _, event_created, quality = _candidate_event(
-                        session,
-                        company,
-                        document,
-                        source,
-                        policy,
-                    )
-                    events_created += int(event_created)
-                    quality_gate_passed += int(quality.eligible)
-                    internal_candidates += int(not quality.eligible)
-                    documents.append(
-                        {
-                            "url": url,
-                            "status": "created" if document_created else "reused",
-                            "document_id": str(document.id),
-                            "event_created": event_created,
-                            "quality_gate": quality.to_dict(),
-                        }
-                    )
-        except SourceFetchError as error:
-            fetch_calls = fetcher.request_count
-            downloaded_bytes = fetcher.downloaded_bytes
-            error_code = error.code
-        finally:
-            fetcher.close()
+                    discovered = result.documents[0]
+                    is_pdf_document = discovered.metadata.get("document_format") == "pdf"
+                    if is_pdf_document and source_tier not in OFFICIAL_PDF_SOURCE_TIERS:
+                        error_code = "pdf_source_not_authoritative"
+                    else:
+                        excerpt = discovered.excerpt or ""
+                        if not _document_matches_company(
+                            company,
+                            discovered.title,
+                            excerpt,
+                            discovered.canonical_url,
+                        ):
+                            error_code = "fetched_page_identity_mismatch"
+                        else:
+                            candidate["source_access_status"] = (
+                                SOURCE_ACCESS_OFFICIAL_DOCUMENT
+                                if is_pdf_document
+                                else SOURCE_ACCESS_AUTOMATIC_READ
+                            )
+                            candidate["source_access_reason"] = "bounded_fetch_completed"
+                            quality = _content_quality_decision(
+                                company,
+                                title=discovered.title,
+                                excerpt=excerpt,
+                                published_at=discovered.published_at,
+                                observed_at=utc_now(),
+                                policy=policy,
+                            )
+                            document, document_created = _raw_document(
+                                session,
+                                source,
+                                company,
+                                candidate,
+                                discovered,
+                                job,
+                                quality,
+                            )
+                            documents_created += int(document_created)
+                            _, event_created, quality = _candidate_event(
+                                session,
+                                company,
+                                document,
+                                source,
+                                policy,
+                            )
+                            events_created += int(event_created)
+                            quality_gate_passed += int(quality.eligible)
+                            internal_candidates += int(not quality.eligible)
+                            documents.append(
+                                {
+                                    "url": url,
+                                    "status": "created" if document_created else "reused",
+                                    "document_id": str(document.id),
+                                    "event_created": event_created,
+                                    "quality_gate": quality.to_dict(),
+                                    "source_access_status": candidate["source_access_status"],
+                                }
+                            )
+            except SourceFetchError as error:
+                fetch_calls = fetcher.request_count
+                downloaded_bytes = fetcher.downloaded_bytes
+                error_code = error.code
+            finally:
+                fetcher.close()
         job.external_calls += fetch_calls
         _record_usage(
             session,
@@ -1858,7 +2170,33 @@ def _fetch_candidate(
             idempotency_suffix=f"fetch:{_sha256(url)}",
         )
         if error_code is not None:
-            documents.append({"url": url, "status": "failed", "error_code": error_code})
+            if error_code == "robots_disallowed":
+                candidate["source_access_status"] = SOURCE_ACCESS_ROBOTS_BLOCKED
+                candidate["source_access_reason"] = error_code
+                recovery = dict(coverage.get("source_recovery", {}))
+                if recovery.get(
+                    "status"
+                ) == "not_requested" and _candidate_can_trigger_source_recovery(candidate):
+                    recovery = {
+                        "status": "pending",
+                        "attempts": 0,
+                        "source_url": url,
+                        "source_tier": candidate.get("source_tier"),
+                    }
+                    coverage["source_recovery"] = recovery
+                else:
+                    candidate["source_access_follow_up"] = SOURCE_ACCESS_MANUAL_IMPORT
+            else:
+                candidate["source_access_status"] = SOURCE_ACCESS_MANUAL_IMPORT
+                candidate["source_access_reason"] = error_code
+            documents.append(
+                {
+                    "url": url,
+                    "status": "failed",
+                    "error_code": error_code,
+                    "source_access_status": candidate["source_access_status"],
+                }
+            )
     stats = dict(coverage.get("stats", {}))
     stats["fetch_calls"] = int(stats.get("fetch_calls", 0)) + fetch_calls
     stats["downloaded_bytes"] = int(stats.get("downloaded_bytes", 0)) + downloaded_bytes
@@ -1866,6 +2204,7 @@ def _fetch_candidate(
     stats["quality_gate_passed"] = int(stats.get("quality_gate_passed", 0)) + quality_gate_passed
     stats["internal_candidates"] = int(stats.get("internal_candidates", 0)) + internal_candidates
     coverage["documents"] = documents
+    coverage["candidates"] = candidates
     coverage["stats"] = stats
     job.coverage = coverage
     job.status = "partial"
@@ -1885,7 +2224,7 @@ def _fetch_candidate(
         status="partial",
         job_id=job.id,
         company_id=job.company_id,
-        stage="fetch",
+        stage=job.current_stage,
         external_calls=job.external_calls,
         cache_hits=int(cached_document is not None),
         documents_created=documents_created,
@@ -2038,6 +2377,15 @@ def run_web_research_worker_once(
                 company,
                 policy,
                 fetcher_factory or TrustedSourceFetcher,
+            )
+        if job.current_stage == "source_recovery":
+            return _process_source_recovery(
+                session,
+                user,
+                job,
+                company,
+                policy,
+                providers,
             )
         if job.current_stage == "finalize":
             return _finalize(session, job)

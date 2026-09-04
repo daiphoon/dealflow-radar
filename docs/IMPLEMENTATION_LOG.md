@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-09-04：R3.3 合规证据通路与原始来源回溯
+
+- 任务：不绕过 robots，在现有受限网络研究 Worker 中分开记录搜索发现元数据、目标页面访问状态和已获取证据；合并有效主备搜索缓存且不新增调用；robots 阻断的高价值线索最多进行一次受预算、缓存、取消和恢复控制的原始来源回溯；仅对政府、监管/交易所和已核验官网 PDF 启用受限文本提取。本阶段不引入 LLM、自主 Agent、新 Provider、数据库迁移、API 或前端改动。
+- 关键文件：`backend/app/web_research_service.py`、`backend/app/source_fetcher.py`、`backend/app/pdf_extractor.py`、`backend/app/config.py`、`tests/integration/test_bounded_web_research.py`、`tests/unit/test_source_fetcher.py`、`tests/unit/test_pdf_extractor.py`、`pyproject.toml`、`uv.lock`、环境示例和受影响的数据源/测试文档。
+- 实际命令：Ruff 检查和格式检查；PDF、缓存融合、robots 回溯和证据闸门定向 Pytest；完整 SQLite 与一次性 PostgreSQL 16/`NOBYPASSRLS` 测试；SQLite `base → 0023 → base`和 PostgreSQL 迁移/漂移检查；Python 已安装依赖漏洞审计；前端依赖审计、类型检查和生产构建；生产 Compose 解析、后端/前端镜像构建、预检和镜像内 PDF 依赖验证；`git diff --check`和敏感信息模式扫描。
+- 测试结果：定向组合 33 项通过；完整 SQLite 套件 310 项通过、15 项按既有 PostgreSQL 条件跳过；一次性 PostgreSQL/RLS 套件 325 项通过；SQLite/PostgreSQL 迁移和漂移、Ruff、Python 依赖审计（未发现已知漏洞）、前端审计（0 个已知高危漏洞）、类型、生产构建、Compose、预检和生产镜像通过。新回归验证主备缓存合并零新调用、受阻摘要不入库、原始来源回溯只执行一次、原候选队列已满时回溯结果仍有专用位、官方 PDF 受限入库以及非权威 PDF 失败关闭。全部自动测试使用 Mock/虚构数据，真实搜索、目标网站、模型 Token、付费调用和自动发布均为 0。
+- 未解决阻塞：代码 PR 尚未合并或部署，R3.3 不得仅因自动测试而关闭。合并后必须先备份生产库并部署，再使用卧安机器人现有缓存做零新搜索回放；确认百度/博查新增调用、模型 Token 和自动发布均为 0，且取得合格证据或明确证据缺口后才能关闭 R3.3。扫描型 PDF 的 OCR、非标准 MIME 文件和 R3.4 证据—事实账本不在本 PR 范围。
+
 ## 2026-09-04：R3.2 关闭与 R3.3—R3.5 证据研究路线检查点
 
 - 任务：根据 PR #56 和卧安机器人受控缓存回放结果正式关闭 R3.2。主体标点归一化和上市阶段精确变化召回已经完成；剩余问题是搜索 API 发现的部分高价值 URL 位于微信、百家号等按 robots 禁止普通自动客户端读取正文的页面，或正式证据位于尚未解析的官方 PDF。搜索 API 返回 URL 不等于目标网站授权自动读取，系统不绕过 robots，也不把摘要改成事实。

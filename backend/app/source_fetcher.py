@@ -18,6 +18,7 @@ from xml.etree import ElementTree
 import httpx
 
 from backend.app.config import SourceMonitoringPolicy
+from backend.app.pdf_extractor import PdfExtractionError, extract_pdf_safely
 
 ALLOWED_DOCUMENT_MIME_TYPES = {
     "text/html",
@@ -26,6 +27,7 @@ ALLOWED_DOCUMENT_MIME_TYPES = {
     "text/xml",
     "application/rss+xml",
     "application/atom+xml",
+    "application/pdf",
 }
 BLOCKED_FILE_SUFFIXES = {
     ".7z",
@@ -478,6 +480,82 @@ def _html_document(
     return document, parser
 
 
+def _pdf_published_at(text: str) -> tuple[datetime | None, str | None]:
+    matches = {
+        tuple(item)
+        for item in re.findall(
+            r"(20\d{2})[\u5e74\-/.](\d{1,2})[\u6708\-/.](\d{1,2})\u65e5?",
+            text[:5_000],
+        )
+    }
+    if len(matches) == 1:
+        value = "-".join(part.zfill(2) for part in next(iter(matches)))
+        return _parse_datetime(value), "single_explicit_document_date"
+    return None, None
+
+
+def _pdf_document(
+    response: _FetchedResponse,
+    *,
+    keep_excerpt: bool,
+    policy: SourceMonitoringPolicy,
+) -> DiscoveredDocument:
+    try:
+        extracted = extract_pdf_safely(
+            response.body,
+            max_pages=policy.max_pdf_pages,
+            max_text_chars=policy.max_pdf_text_chars,
+            timeout_seconds=policy.pdf_parse_timeout_seconds,
+        )
+    except PdfExtractionError as error:
+        raise SourceFetchError(error.code, str(error), http_status=response.status_code) from error
+    published_at, date_basis = _pdf_published_at(extracted.text)
+    path_name = unquote(posixpath.basename(urlsplit(response.final_url).path)).removesuffix(".pdf")
+    title = _normalize_text(extracted.title or path_name) or response.final_url
+    return DiscoveredDocument(
+        canonical_url=response.final_url,
+        title=title[:500],
+        published_at=published_at,
+        content_hash=_sha256(extracted.text),
+        excerpt=extracted.text[:1500] if keep_excerpt else None,
+        http_status=response.status_code,
+        etag=response.etag,
+        last_modified=response.last_modified,
+        link_health_status="healthy",
+        metadata={
+            "content_type": "application/pdf",
+            "document_format": "pdf",
+            "extraction_method": "pypdf_isolated_subprocess",
+            "extracted_text_length": len(extracted.text),
+            "page_count": extracted.page_count,
+            "text_truncated": extracted.truncated,
+            "published_at_basis": date_basis,
+            "pdf_creation_date": extracted.creation_date,
+        },
+    )
+
+
+def _document_from_response(
+    response: _FetchedResponse,
+    root_domain: str,
+    *,
+    keep_excerpt: bool,
+    policy: SourceMonitoringPolicy,
+    allow_test_http: bool,
+    allow_private_test_hosts: bool,
+) -> tuple[DiscoveredDocument, _HtmlMetadataParser | None]:
+    content_type = (response.content_type or "").split(";", 1)[0].strip().lower()
+    if content_type == "application/pdf":
+        return _pdf_document(response, keep_excerpt=keep_excerpt, policy=policy), None
+    return _html_document(
+        response,
+        root_domain,
+        keep_excerpt=keep_excerpt,
+        allow_test_http=allow_test_http,
+        allow_private_test_hosts=allow_private_test_hosts,
+    )
+
+
 def _safe_xml_root(body: bytes) -> ElementTree.Element:
     lowered = body[:4096].lower()
     if b"<!doctype" in lowered or b"<!entity" in lowered:
@@ -590,7 +668,8 @@ class TrustedSourceFetcher:
             "User-Agent": self.policy.user_agent,
             "Accept": (
                 "text/html,application/xhtml+xml,application/rss+xml,"
-                "application/atom+xml,application/xml,text/xml;q=0.9,*/*;q=0.1"
+                "application/atom+xml,application/xml,application/pdf,"
+                "text/xml;q=0.9,*/*;q=0.1"
             ),
             "Cookie": "",
             **headers,
@@ -921,15 +1000,21 @@ class TrustedSourceFetcher:
         start_hash = _sha256(response.body)
 
         if source_type == "single_page":
-            document, _ = _html_document(
+            document, _ = _document_from_response(
                 response,
                 root_domain,
                 keep_excerpt=keep_excerpt,
+                policy=self.policy,
                 allow_test_http=self.allow_test_http,
                 allow_private_test_hosts=self.allow_private_test_hosts,
             )
             documents.append(document)
         elif source_type == "list_page":
+            if (response.content_type or "").split(";", 1)[0].strip().lower() == "application/pdf":
+                raise SourceFetchError(
+                    "unexpected_pdf_source_type",
+                    "a list source must be an HTML document",
+                )
             _, parser = _html_document(
                 response,
                 root_domain,
@@ -999,10 +1084,11 @@ class TrustedSourceFetcher:
                         unchanged_urls.append(link)
                         continue
                     self._response_or_error(child)
-                    document, _ = _html_document(
+                    document, _ = _document_from_response(
                         child,
                         root_domain,
                         keep_excerpt=keep_excerpt,
+                        policy=self.policy,
                         allow_test_http=self.allow_test_http,
                         allow_private_test_hosts=self.allow_private_test_hosts,
                     )
@@ -1092,10 +1178,11 @@ class TrustedSourceFetcher:
                         unchanged_urls.append(link)
                         continue
                     self._response_or_error(child)
-                    document, _ = _html_document(
+                    document, _ = _document_from_response(
                         child,
                         root_domain,
                         keep_excerpt=keep_excerpt,
+                        policy=self.policy,
                         allow_test_http=self.allow_test_http,
                         allow_private_test_hosts=self.allow_private_test_hosts,
                     )
