@@ -25,6 +25,10 @@ from backend.app.demo import (
     demo_uuid,
 )
 from backend.app.fact_support import aggregate_support_status, materialize_event_fact_ledger
+from backend.app.investor_analysis_schema import (
+    INVESTOR_ANALYSIS_SCHEMA_VERSION,
+    RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION,
+)
 from backend.app.models import (
     ORGANIZATION_PRIVATE_SCOPE,
     PERSONAL_PRIVATE_SCOPE,
@@ -90,6 +94,7 @@ from backend.app.schemas import (
     InvestorChangeAnalysisOut,
     OfficialIdentityImportResult,
     RefreshResult,
+    ResearchCandidateAnalysisOut,
     ResearchImportResult,
     ReviewWorkbenchOut,
     SharingActionOut,
@@ -1861,6 +1866,7 @@ def _event_out(
             )
         )
     analysis_output = None
+    research_analysis_output = None
     if event.visibility_scope == PLATFORM_SHARED_SCOPE:
         stored_analysis = session.scalar(
             select(InvestorChangeAnalysis)
@@ -1868,6 +1874,7 @@ def _event_out(
                 InvestorChangeAnalysis.event_id == event.id,
                 InvestorChangeAnalysis.visibility_scope == PLATFORM_SHARED_SCOPE,
                 InvestorChangeAnalysis.status == "completed",
+                InvestorChangeAnalysis.schema_version == INVESTOR_ANALYSIS_SCHEMA_VERSION,
             )
             .order_by(InvestorChangeAnalysis.created_at.desc())
             .limit(1)
@@ -1885,6 +1892,32 @@ def _event_out(
                     analysis_output = candidate_analysis
             except ValueError:
                 analysis_output = None
+        stored_research_analysis = session.scalar(
+            select(InvestorChangeAnalysis)
+            .where(
+                InvestorChangeAnalysis.event_id == event.id,
+                InvestorChangeAnalysis.visibility_scope == PLATFORM_SHARED_SCOPE,
+                InvestorChangeAnalysis.status == "completed",
+                InvestorChangeAnalysis.schema_version == RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION,
+            )
+            .order_by(InvestorChangeAnalysis.created_at.desc())
+            .limit(1)
+        )
+        if stored_research_analysis is not None and isinstance(
+            stored_research_analysis.analysis_output, dict
+        ):
+            try:
+                candidate_research_analysis = ResearchCandidateAnalysisOut.model_validate(
+                    {
+                        **stored_research_analysis.analysis_output,
+                        "generated_at": stored_research_analysis.updated_at,
+                    }
+                )
+                visible_evidence_ids = {item.id for item in evidence_items}
+                if set(candidate_research_analysis.evidence_ids).issubset(visible_evidence_ids):
+                    research_analysis_output = candidate_research_analysis
+            except ValueError:
+                research_analysis_output = None
     visible_evidence_ids = {item.id for item in evidence_items}
     fact_rows = list(
         session.scalars(
@@ -1961,6 +1994,7 @@ def _event_out(
         fact_ledger=fact_ledger,
         visibility_scope=event.visibility_scope,
         analysis=analysis_output,
+        research_analysis=research_analysis_output,
     )
 
 

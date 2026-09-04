@@ -20,6 +20,8 @@ from backend.app.event_schema import Direction, EventType, Fact, RiskSeverity, S
 from backend.app.investor_analysis_schema import (
     InvestorChangeAnalysisRequest,
     LLMProviderResult,
+    ResearchCandidateAnalysisRequest,
+    ResearchLLMProviderResult,
 )
 
 MAX_IMPORT_FILE_BYTES = 1024 * 1024
@@ -41,6 +43,20 @@ class LLMProvider(Protocol):
         self,
         request: InvestorChangeAnalysisRequest,
     ) -> LLMProviderResult: ...
+
+
+class ResearchLLMProvider(Protocol):
+    code: str
+    model: str
+
+    def analyze_research_candidate(
+        self,
+        request: ResearchCandidateAnalysisRequest,
+    ) -> ResearchLLMProviderResult: ...
+
+
+class AnalysisLLMProvider(LLMProvider, ResearchLLMProvider, Protocol):
+    """Provider used by the shared analysis worker for both bounded schemas."""
 
 
 class LLMProviderError(RuntimeError):

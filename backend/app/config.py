@@ -152,7 +152,7 @@ class SourceMonitoringPolicy:
 
 @dataclass(frozen=True)
 class WebResearchPolicy:
-    version: str = "bounded-web-v2"
+    version: str = "bounded-web-v3"
     primary_provider: str = "baidu"
     fallback_provider: str = "bocha"
     search_cache_ttl_days: int = 14
@@ -442,7 +442,7 @@ class Settings:
                 ),
             ),
             web_research_policy=WebResearchPolicy(
-                version=os.getenv("WEB_RESEARCH_POLICY_VERSION", "bounded-web-v2"),
+                version=os.getenv("WEB_RESEARCH_POLICY_VERSION", "bounded-web-v3"),
                 primary_provider=os.getenv("WEB_RESEARCH_PRIMARY_PROVIDER", "baidu")
                 .strip()
                 .lower(),

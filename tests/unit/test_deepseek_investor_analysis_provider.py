@@ -13,9 +13,14 @@ from backend.app.deepseek import DeepSeekInvestorAnalysisProvider, DeepSeekProvi
 from backend.app.investor_analysis_schema import (
     INVESTOR_ANALYSIS_DISCLAIMER,
     INVESTOR_ANALYSIS_SCHEMA_VERSION,
+    RESEARCH_CANDIDATE_ANALYSIS_DISCLAIMER,
+    RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION,
     InvestorChangeAnalysisOutput,
     InvestorChangeAnalysisRequest,
     InvestorEvidenceInput,
+    ResearchCandidateAnalysisOutput,
+    ResearchCandidateAnalysisRequest,
+    ResearchEvidenceInput,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -57,6 +62,47 @@ def _analysis(request: InvestorChangeAnalysisRequest) -> InvestorChangeAnalysisO
         follow_up_items=["关注后续股东变更。"],
         impact_direction="uncertain",
         disclaimer=INVESTOR_ANALYSIS_DISCLAIMER,
+    )
+
+
+def _research_request() -> ResearchCandidateAnalysisRequest:
+    return ResearchCandidateAnalysisRequest(
+        event_id=uuid4(),
+        company_name="苏州涌现智能科技有限公司",
+        credit_code="91320509MA26R3RW5C",
+        event_type="financing_cap_table",
+        deterministic_title="公司完成融资公告",
+        deterministic_summary="公开页面提到公司已完成融资。",
+        evidence=[
+            ResearchEvidenceInput(
+                evidence_id=uuid4(),
+                source_name="公司官方网站",
+                title="公司完成融资公告",
+                excerpt="苏州涌现智能科技有限公司已完成融资，相关事项已经公告。",
+                published_at="2026-09-04T08:00:00+00:00",
+                observed_at="2026-09-04T09:00:00+00:00",
+            )
+        ],
+    )
+
+
+def _research_analysis(
+    request: ResearchCandidateAnalysisRequest,
+) -> ResearchCandidateAnalysisOutput:
+    return ResearchCandidateAnalysisOutput(
+        schema_version=RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION,
+        event_id=request.event_id,
+        event_type=request.event_type,
+        headline="公司出现新的融资进展线索",
+        what_changed="公开页面提到公司已经完成融资。",
+        why_it_matters="该线索可能影响股东对公司资本实力的判断。",
+        potential_impacts=["需要继续核对融资对股权结构的影响。"],
+        uncertainties=["当前证据没有确认融资金额和投资方。"],
+        evidence_ids=[request.evidence[0].evidence_id],
+        confidence=0.82,
+        follow_up_items=["继续核对公司正式公告。"],
+        impact_direction="uncertain",
+        disclaimer=RESEARCH_CANDIDATE_ANALYSIS_DISCLAIMER,
     )
 
 
@@ -134,6 +180,41 @@ def test_provider_retries_invalid_json_once_and_accounts_for_both_attempts() -> 
     assert result.output_tokens == 10
 
 
+def test_research_provider_repairs_one_invalid_output_and_keeps_evidence_binding() -> None:
+    request = _research_request()
+    calls = 0
+    prompts: list[dict[str, object]] = []
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        payload = json.loads(http_request.content)
+        prompts.append(json.loads(payload["messages"][1]["content"]))
+        content = "not-json" if calls == 1 else _research_analysis(request).model_dump_json()
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": content}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 6},
+            },
+        )
+
+    provider = DeepSeekInvestorAnalysisProvider(
+        api_key="test-secret",
+        policy=InvestorAnalysisPolicy(retry_limit=1),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    result = provider.analyze_research_candidate(request)
+
+    assert calls == 2
+    assert result.external_calls == 2
+    assert result.analysis.event_id == request.event_id
+    assert result.analysis.evidence_ids == [request.evidence[0].evidence_id]
+    assert "repair_instruction" not in prompts[0]
+    assert prompts[1]["previous_rejection_code"] == "invalid_model_output"
+
+
 def test_provider_rejects_oversized_prompt_without_external_call() -> None:
     calls = 0
 
@@ -164,3 +245,8 @@ def test_committed_output_schema_matches_required_contract() -> None:
     assert set(schema["required"]) == set(InvestorChangeAnalysisOutput.model_fields)
     assert schema["properties"]["schema_version"]["const"] == (INVESTOR_ANALYSIS_SCHEMA_VERSION)
     assert schema["properties"]["disclaimer"]["const"] == INVESTOR_ANALYSIS_DISCLAIMER
+
+    research_schema = json.loads(
+        (ROOT / "schemas" / "research_candidate_analysis.schema.json").read_text(encoding="utf-8")
+    )
+    assert research_schema == ResearchCandidateAnalysisOutput.model_json_schema()

@@ -383,6 +383,9 @@ def test_postgresql_migration_compiles_without_connecting(
     assert "uq_event_evidence_id_event" in ddl
     assert "event_facts_scope_read" in ddl
     assert "event_fact_supports_scope_insert" in ddl
+    assert "research-candidate-analysis-v1" in ddl
+    assert "bounded-web-quality-v4" in ddl
+    assert "DROP POLICY IF EXISTS investor_change_analyses_read" in ddl
 
 
 def test_fact_support_migration_backfills_historical_rows_conservatively(

@@ -12,6 +12,7 @@ from backend.app.config import Settings
 from backend.app.database import build_engine, build_session_factory, set_request_context
 from backend.app.deepseek import DeepSeekInvestorAnalysisProvider
 from backend.app.investor_analysis import (
+    research_candidate_is_eligible,
     run_investor_analysis_worker_once,
     validate_investor_analysis_worker_user,
 )
@@ -96,9 +97,30 @@ def _dry_run(
                 )
                 or 0
             )
+            research_candidate_events = list(
+                session.scalars(
+                    select(Event).where(
+                        Event.visibility_scope == "platform_shared",
+                        Event.status == "candidate",
+                        Event.publication_route == "unconfirmed_lead",
+                        Event.event_subtype == "bounded_public_web_page",
+                        Event.materiality_score
+                        >= settings.investor_analysis_policy.min_materiality_score,
+                    )
+                )
+            )
+            eligible_research_candidates = sum(
+                research_candidate_is_eligible(
+                    session,
+                    event,
+                    settings.investor_analysis_policy,
+                )
+                for event in research_candidate_events
+            )
         return {
             "status": "dry_run",
             "eligible_change_events": eligible_events,
+            "eligible_research_candidates": eligible_research_candidates,
             "pending_analyses": pending,
             "provider": settings.investor_analysis_policy.provider,
             "model": settings.investor_analysis_policy.model,

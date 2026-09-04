@@ -17,7 +17,7 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       APP_MODE: demo
       EXTERNAL_CALLS_ENABLED: "false"
@@ -61,12 +61,61 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Pin supported npm audit client
+        run: npm install --global npm@11.9.0 --no-audit --no-fund
+
       - name: Install backend dependencies
         run: uv sync --frozen --all-groups
 
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
+
+      - name: Audit frontend dependencies
+        id: npm_audit
+        working-directory: frontend
+        run: |
+          audit_report="${RUNNER_TEMP}/npm-audit.json"
+          audit_error="${RUNNER_TEMP}/npm-audit.stderr"
+
+          set +e
+          npm audit --audit-level=high --json \
+            --fetch-retries=2 \
+            --fetch-retry-mintimeout=1000 \
+            --fetch-retry-maxtimeout=5000 \
+            --fetch-timeout=30000 \
+            >"${audit_report}" 2>"${audit_error}"
+          audit_exit=$?
+          set -e
+
+          cat "${audit_error}" >&2
+          if [ "${audit_exit}" -eq 0 ]; then
+            echo "fallback_required=false" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if grep -q '"auditReportVersion"' "${audit_report}"; then
+            cat "${audit_report}"
+            echo "::error::npm audit found dependency vulnerabilities at or above the configured threshold."
+            exit "${audit_exit}"
+          fi
+
+          if { cat "${audit_report}"; cat "${audit_error}"; } | \
+            grep -Eiq 'network|timed? ?out|timeout|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|50[234]|audit endpoint returned an error'; then
+            echo "fallback_required=true" >>"${GITHUB_OUTPUT}"
+            echo "::warning::npm audit is unavailable because of a transport or service error; running the independent OSV fallback."
+            exit 0
+          fi
+
+          cat "${audit_report}"
+          echo "::error::npm audit failed for an unclassified reason; refusing to fall back."
+          exit "${audit_exit}"
+
+      - name: Audit frontend dependencies with OSV fallback
+        if: ${{ steps.npm_audit.outputs.fallback_required == 'true' }}
+        uses: google/osv-scanner-action/osv-scanner-action@06b2ab4348248b456ee06c9e953637f55e03504f # v2.5.0
+        with:
+          scan-args: --lockfile=frontend/package-lock.json
 
       - name: Check backend style
         run: |
@@ -94,7 +143,6 @@ jobs:
       - name: Check and build frontend
         working-directory: frontend
         run: |
-          npm audit --audit-level=high
           npm run typecheck
           npm run build
 

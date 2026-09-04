@@ -298,7 +298,7 @@ docker compose -f compose.production.yml -f deploy/compose.single-host.yml \
 
 确认百度有主体准确、非资料页且未明确过期的结果时，博查调用为 0；只有百度失败或缺少上述合格结果才允许回退。搜索摘要不能生成事件，必须存在经安全抓取和主体匹配的原网页证据。任务结束或停止验收后，立即把四个 Worker 专用开关恢复为 false，并确认没有常驻 Worker。合格共享缓存可保留 14 天；取消申请不删除已取得缓存，但不得把未完成、跨公司或身份已变化的结果继续复用。生产数据库降级前必须备份并评估真实缓存与 RLS 数据，优先应用版本回退并保留向前兼容 Schema。
 
-R3.1 部署时把 `WEB_RESEARCH_POLICY_VERSION` 设置为 `bounded-web-v2`，`WEB_RESEARCH_RECENT_CHANGE_WINDOW_DAYS` 默认设为 `365`。策略升级不使既有搜索缓存失效。北京智齿博创既有缓存已经在生产备份的隔离副本中，使用明确拒绝联网的 Provider 和抓取器完成回放，确认 `company_research_jobs.external_calls` 与 `usage_ledger` 均无新增、历史噪声未重新生成用户可见线索。后续生产实测若暴露配置或质量问题，必须关闭调用开关，在代码与配置修复后复用同一家公司验证；不得连续查询新公司来代替根因修复。
+R3.5 部署时把 `WEB_RESEARCH_POLICY_VERSION` 设置为 `bounded-web-v3`，`WEB_RESEARCH_RECENT_CHANGE_WINDOW_DAYS` 继续为 `365`。先创建可读、可恢复的加密备份，再升级到 `0025`；该迁移只扩展候选解读的 RLS，不创建新业务表。策略升级不使既有搜索缓存失效。先在生产备份的隔离副本中使用明确拒绝联网的 Provider、抓取器和模型完成卧安机器人缓存回放，确认搜索/抓取调用、模型 Token、新事件和自动发布均无新增；通过后才允许一次性真实运行。后续若暴露配置或质量问题，必须关闭调用开关，在代码与配置修复后复用同一家公司验证；不得连续查询新公司来代替根因修复。
 
 百度诊断只查看 `company_research_jobs.coverage.search_groups.*.providers` 和对应 `usage_ledger.metrics` 中的检索组、错误类别、HTTP 状态及调用数。允许的类别包括 `authentication_failed`、`permission_denied`、`request_rejected`、`rate_limited`、`quota_unavailable`、`invalid_request`、`upstream_timeout`、`provider_unavailable` 和兜底 `http_error`。不得为排错输出 `web_search_cache_entries.query_text`、API Key、供应商错误消息或原始响应正文；个人用户只看任务状态，不看 Provider 内部诊断。
 
@@ -321,7 +321,7 @@ docker compose -f compose.production.yml -f deploy/compose.single-host.yml \
   run --rm investor-analysis-worker
 ```
 
-Worker 只为 `published + platform_shared + deterministic_change` 且重要性达标的事件生成解读。无新变化、静态基线、低价值变化和重复输入均为零模型调用；超出月 Token 上限时标记 `budget_deferred`，本月不重复空转。输出必须通过 JSON Schema、前后值、证据 ID、数字和投资建议禁语校验；失败时不展示半成品，不改写事件，不生成报告。运行后核对 `investor_change_analyses` 和 `usage_ledger`，再立即恢复全部专用开关为 false。
+Worker 处理两类互不混淆的派生解读：`published + deterministic_change` 的已确认重要变化，以及 `candidate + unconfirmed_lead + bounded_public_web_page` 且由本次新增合格证据产生的待核实候选。后一类还必须具有同公司已核验实体提及和已完成研究任务；缓存复用、取消任务及私有原文不入队。无新变化、静态基线、低价值变化和重复输入均为零模型调用；两类任务共用月 Token 上限，超限标记 `budget_deferred`。输出必须通过对应 JSON Schema、事件/证据绑定、数字、信用代码和投资建议禁语校验；失败时不展示半成品，不改写事件，不发布事实，也不生成报告。运行后分别核对两种 `usage_ledger.operation`，再立即恢复全部专用开关为 false。
 
 ### 身份例外与历史审核工作台 V1（仅本机受控环境）
 
