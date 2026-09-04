@@ -233,7 +233,7 @@ def test_web_research_is_disabled_bounded_and_provider_ordered_by_default(
     settings = Settings.from_env()
     policy = settings.web_research_policy
 
-    assert policy.version == "bounded-web-v2"
+    assert policy.version == "bounded-web-v3"
     assert settings.web_research_enabled is False
     assert settings.web_research_calls_enabled is False
     assert policy.primary_provider == "baidu"

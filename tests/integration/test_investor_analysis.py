@@ -10,21 +10,36 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from backend.app.config import InvestorAnalysisPolicy
-from backend.app.demo import ALPHA_TENANT_ID, ALPHA_USER_ID, MOCK_SOURCE_ID, NO_ACCESS_USER_ID
+from backend.app.demo import (
+    ALPHA_TENANT_ID,
+    ALPHA_USER_ID,
+    BETA_USER_ID,
+    MOCK_SOURCE_ID,
+    NO_ACCESS_USER_ID,
+)
 from backend.app.investor_analysis import (
     enqueue_pending_investor_analyses,
+    enqueue_pending_research_candidate_analyses,
     run_investor_analysis_worker_once,
 )
 from backend.app.investor_analysis_schema import (
     INVESTOR_ANALYSIS_DISCLAIMER,
     INVESTOR_ANALYSIS_SCHEMA_VERSION,
+    RESEARCH_CANDIDATE_ANALYSIS_DISCLAIMER,
+    RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION,
+    RESEARCH_CANDIDATE_POLICY_VERSION,
     InvestorChangeAnalysisOutput,
     InvestorChangeAnalysisRequest,
     LLMProviderResult,
+    ResearchCandidateAnalysisOutput,
+    ResearchCandidateAnalysisRequest,
+    ResearchLLMProviderResult,
 )
 from backend.app.models import (
     PLATFORM_SHARED_SCOPE,
     Company,
+    CompanyResearchJob,
+    EntityMention,
     Event,
     EventEvidence,
     InvestorChangeAnalysis,
@@ -205,6 +220,138 @@ def _create_change_event(
         return company.id, event.id, evidence.id, private_event.id, raw_document.id
 
 
+def _create_research_candidate(
+    app: FastAPI,
+    *,
+    suffix: str,
+    job_status: str = "completed",
+    evidence_reason: str = "new_evidence_content",
+    materiality_score: int = 70,
+) -> tuple[UUID, UUID, UUID, UUID, UUID]:
+    with app.state.session_factory() as session:
+        company = session.scalar(
+            select(Company)
+            .where(
+                Company.tenant_id.is_(None),
+                Company.visibility_scope == "public",
+                Company.identity_status == "verified",
+                Company.credit_code.is_not(None),
+            )
+            .order_by(Company.id)
+        )
+        assert company is not None
+        job = CompanyResearchJob(
+            company_id=company.id,
+            created_by_user_id=NO_ACCESS_USER_ID,
+            status=job_status,
+            current_stage=job_status,
+            policy_version="bounded-web-v3",
+            coverage={"fixture": True},
+            external_calls=0,
+            input_tokens=0,
+            output_tokens=0,
+        )
+        session.add(job)
+        session.flush()
+        raw_document = RawDocument(
+            source_id=MOCK_SOURCE_ID,
+            research_import_id=None,
+            candidate_document_id=None,
+            owner_user_id=None,
+            owner_tenant_id=None,
+            visibility_scope="system_restricted",
+            external_record_id=f"research-analysis-{suffix}",
+            canonical_url=f"https://example.invalid/research-analysis-{suffix}",
+            title="公司完成融资公告",
+            published_at=datetime(2026, 9, 4, tzinfo=UTC),
+            published_on=datetime(2026, 9, 4, tzinfo=UTC).date(),
+            observed_at=datetime(2026, 9, 4, tzinfo=UTC),
+            content_hash=_sha256(f"research-analysis-document:{suffix}"),
+            document_dedupe_key=_sha256(f"research-analysis-dedupe:{suffix}"),
+            license_status="public",
+            payload={
+                "research_job_id": str(job.id),
+                "retention": "minimal_excerpt",
+                "excerpt": f"{company.legal_name}已完成融资，相关事项已经公告。",
+                "system_restricted_marker": "must-not-reach-model-or-api",
+            },
+        )
+        session.add(raw_document)
+        session.flush()
+        session.add(
+            EntityMention(
+                raw_document_id=raw_document.id,
+                owner_user_id=None,
+                owner_tenant_id=None,
+                visibility_scope="system_restricted",
+                candidate_company_id=company.id,
+                mention_text=company.legal_name,
+                match_rule="verified_identity_exact_or_official_domain",
+                match_confidence=Decimal("0.950"),
+                resolution_status="verified",
+            )
+        )
+        event = Event(
+            company_id=company.id,
+            owner_user_id=None,
+            owner_tenant_id=None,
+            visibility_scope=PLATFORM_SHARED_SCOPE,
+            event_type="financing_cap_table",
+            event_subtype="bounded_public_web_page",
+            status="candidate",
+            direction="positive",
+            materiality_score=materiality_score,
+            risk_severity="low",
+            confidence_score=Decimal("0.800"),
+            source_quality="A",
+            title="公司完成融资公告",
+            summary=f"公开来源出现与该公司相关的变化线索：{company.legal_name}已完成融资。",
+            facts=[{"name": "公开页面标题", "value": "公司完成融资公告", "unit": None}],
+            uncertainties=["尚未经过人工事实复核。"],
+            occurred_at=None,
+            published_at=datetime(2026, 9, 4, tzinfo=UTC),
+            published_on=datetime(2026, 9, 4, tzinfo=UTC).date(),
+            observed_at=datetime(2026, 9, 4, tzinfo=UTC),
+            fingerprint_version="web-v1",
+            event_fingerprint=_sha256(f"research-analysis-event:{suffix}"),
+            publication_route="unconfirmed_lead",
+            publication_policy_version=RESEARCH_CANDIDATE_POLICY_VERSION,
+            publication_reasons=[
+                "auto_publish_disabled",
+                "bounded_public_web_discovery",
+                evidence_reason,
+            ],
+        )
+        session.add(event)
+        session.flush()
+        evidence = EventEvidence(
+            event_id=event.id,
+            raw_document_id=raw_document.id,
+            source_event_evidence_id=None,
+            owner_user_id=None,
+            owner_tenant_id=None,
+            visibility_scope=PLATFORM_SHARED_SCOPE,
+            evidence_excerpt=f"{company.legal_name}已完成融资，相关事项已经公告。",
+            span_hash=_sha256(f"research-analysis-evidence:{suffix}"),
+            support_type="supports",
+            display_source_name="公司官方网站",
+            display_source_quality="A",
+            display_title="公司完成融资公告",
+            display_canonical_url=f"https://company.example.test/notices/{suffix}",
+            display_published_at=datetime(2026, 9, 4, tzinfo=UTC),
+            display_observed_at=datetime(2026, 9, 4, tzinfo=UTC),
+            display_url_health_status="healthy",
+            display_url_http_status=200,
+            display_url_checked_at=datetime(2026, 9, 4, tzinfo=UTC),
+            display_final_url=f"https://company.example.test/notices/{suffix}",
+            display_license_status="public",
+            display_allowed=True,
+        )
+        session.add(evidence)
+        session.commit()
+        return company.id, event.id, evidence.id, raw_document.id, job.id
+
+
 class _MockAnalysisProvider:
     code = "mock_analysis"
     model = "mock-fixed-output"
@@ -213,6 +360,7 @@ class _MockAnalysisProvider:
         self.calls = 0
         self.invented_number = invented_number
         self.requests: list[InvestorChangeAnalysisRequest] = []
+        self.research_requests: list[ResearchCandidateAnalysisRequest] = []
 
     def analyze_investor_change(
         self,
@@ -246,6 +394,38 @@ class _MockAnalysisProvider:
             output_tokens=80,
             estimated_cost=Decimal("0"),
             response_id="mock-response",
+        )
+
+    def analyze_research_candidate(
+        self,
+        request: ResearchCandidateAnalysisRequest,
+    ) -> ResearchLLMProviderResult:
+        self.calls += 1
+        self.research_requests.append(request)
+        why_it_matters = "该线索可能反映公司融资进展，仍需结合原始公告继续核实。"
+        if self.invented_number:
+            why_it_matters = "该线索可能令公司价值增长30%，仍需继续核实。"
+        return ResearchLLMProviderResult(
+            analysis=ResearchCandidateAnalysisOutput(
+                schema_version=RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION,
+                event_id=request.event_id,
+                event_type=request.event_type,
+                headline="公司出现新的融资进展线索",
+                what_changed="公开页面提到公司已经完成融资。",
+                why_it_matters=why_it_matters,
+                potential_impacts=["这可能影响股东对资本实力和后续发展的判断。"],
+                uncertainties=["融资金额和投资方尚未在当前证据中确认。"],
+                evidence_ids=[request.evidence[0].evidence_id],
+                confidence=0.82,
+                follow_up_items=["继续核对公司正式公告及工商变更。"],
+                impact_direction="uncertain",
+                disclaimer=RESEARCH_CANDIDATE_ANALYSIS_DISCLAIMER,
+            ),
+            external_calls=0,
+            input_tokens=90,
+            output_tokens=60,
+            estimated_cost=Decimal("0"),
+            response_id="mock-research-response",
         )
 
 
@@ -375,6 +555,183 @@ def test_worker_rejects_model_number_absent_from_evidence(migrated_app: FastAPI)
             )
             == 1
         )
+
+
+def test_worker_generates_candidate_analysis_only_from_new_completed_research(
+    client: TestClient,
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    company_id, event_id, evidence_id, raw_document_id, _ = _create_research_candidate(
+        migrated_app,
+        suffix="new-evidence",
+    )
+    provider = _MockAnalysisProvider()
+
+    with migrated_app.state.session_factory() as session:
+        user = session.get(User, ALPHA_USER_ID)
+        assert user is not None
+        result = run_investor_analysis_worker_once(
+            session,
+            user,
+            provider,
+            InvestorAnalysisPolicy(),
+        )
+
+    assert result.outcome == "completed"
+    assert provider.calls == 1
+    assert len(provider.research_requests) == 1
+    request_json = provider.research_requests[0].model_dump_json()
+    assert "must-not-reach-model-or-api" not in request_json
+    with migrated_app.state.session_factory() as session:
+        event = session.get(Event, event_id)
+        raw_document = session.get(RawDocument, raw_document_id)
+        analysis = session.scalar(
+            select(InvestorChangeAnalysis).where(InvestorChangeAnalysis.event_id == event_id)
+        )
+        usage = session.scalar(
+            select(UsageLedger).where(UsageLedger.operation == "research_candidate_analysis")
+        )
+        assert event is not None
+        assert event.status == "candidate"
+        assert event.publication_route == "unconfirmed_lead"
+        assert raw_document is not None
+        assert raw_document.visibility_scope == "system_restricted"
+        assert analysis is not None
+        assert analysis.status == "completed"
+        assert analysis.schema_version == RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION
+        assert usage is not None
+        assert usage.metrics["automatic_publication"] is False
+        assert usage.metrics["report_generated"] is False
+
+        assert enqueue_pending_research_candidate_analyses(session, InvestorAnalysisPolicy()) == 0
+        user = session.get(User, ALPHA_USER_ID)
+        assert user is not None
+        assert (
+            run_investor_analysis_worker_once(
+                session,
+                user,
+                provider,
+                InvestorAnalysisPolicy(),
+            ).status
+            == "idle"
+        )
+    assert provider.calls == 1
+
+    for user_id in (NO_ACCESS_USER_ID, BETA_USER_ID):
+        response = client.get(
+            f"/api/v1/companies/{company_id}",
+            headers={"X-Demo-User-Id": str(user_id)},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        candidate = next(
+            item for item in payload["platform_unconfirmed_leads"] if item["id"] == str(event_id)
+        )
+        assert candidate["research_analysis"]["headline"] == "公司出现新的融资进展线索"
+        assert (
+            candidate["research_analysis"]["disclaimer"] == RESEARCH_CANDIDATE_ANALYSIS_DISCLAIMER
+        )
+        assert "must-not-reach-model-or-api" not in response.text
+        if user_id == NO_ACCESS_USER_ID:
+            assert payload["investments"] == []
+            assert payload["private_events"] == []
+
+    with migrated_app.state.session_factory() as session:
+        evidence = session.get(EventEvidence, evidence_id)
+        assert evidence is not None
+        evidence.display_allowed = False
+        session.commit()
+    response = client.get(f"/api/v1/companies/{company_id}", headers=PERSONAL_HEADERS)
+    assert response.status_code == 200
+    candidate = next(
+        item
+        for item in response.json()["platform_unconfirmed_leads"]
+        if item["id"] == str(event_id)
+    )
+    assert candidate["research_analysis"] is None
+
+
+def test_reused_or_cancelled_research_evidence_never_queues_model(
+    migrated_app: FastAPI,
+) -> None:
+    _, reused_event_id, _, _, _ = _create_research_candidate(
+        migrated_app,
+        suffix="reused-evidence",
+        evidence_reason="reused_evidence_content",
+    )
+    _, cancelled_event_id, _, _, _ = _create_research_candidate(
+        migrated_app,
+        suffix="cancelled-job",
+        job_status="cancelled",
+    )
+
+    with migrated_app.state.session_factory() as session:
+        assert enqueue_pending_research_candidate_analyses(session, InvestorAnalysisPolicy()) == 0
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(InvestorChangeAnalysis)
+                .where(InvestorChangeAnalysis.event_id.in_((reused_event_id, cancelled_event_id)))
+            )
+            == 0
+        )
+
+
+def test_research_candidate_without_verified_company_mention_never_queues_model(
+    migrated_app: FastAPI,
+) -> None:
+    _, event_id, _, raw_document_id, _ = _create_research_candidate(
+        migrated_app,
+        suffix="missing-verified-mention",
+    )
+    with migrated_app.state.session_factory() as session:
+        mention = session.scalar(
+            select(EntityMention).where(EntityMention.raw_document_id == raw_document_id)
+        )
+        assert mention is not None
+        session.delete(mention)
+        session.commit()
+        assert enqueue_pending_research_candidate_analyses(session, InvestorAnalysisPolicy()) == 0
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(InvestorChangeAnalysis)
+                .where(InvestorChangeAnalysis.event_id == event_id)
+            )
+            == 0
+        )
+
+
+def test_research_candidate_analysis_rejects_number_absent_from_evidence(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    _, event_id, _, _, _ = _create_research_candidate(
+        migrated_app,
+        suffix="invented-number",
+    )
+    provider = _MockAnalysisProvider(invented_number=True)
+
+    with migrated_app.state.session_factory() as session:
+        user = session.get(User, ALPHA_USER_ID)
+        assert user is not None
+        result = run_investor_analysis_worker_once(
+            session,
+            user,
+            provider,
+            InvestorAnalysisPolicy(),
+        )
+
+    assert result.outcome == "evidence_validation_failed"
+    with migrated_app.state.session_factory() as session:
+        analysis = session.scalar(
+            select(InvestorChangeAnalysis).where(InvestorChangeAnalysis.event_id == event_id)
+        )
+        event = session.get(Event, event_id)
+        assert analysis is not None and analysis.status == "failed"
+        assert analysis.analysis_output is None
+        assert event is not None and event.status == "candidate"
 
 
 def test_low_materiality_change_is_not_queued(migrated_app: FastAPI) -> None:

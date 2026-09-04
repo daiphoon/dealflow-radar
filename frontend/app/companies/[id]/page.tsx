@@ -241,6 +241,55 @@ function EventCard({
             : ""}
         </p>
       ) : null}
+      {unconfirmed && event.research_analysis ? (
+        <section className="investor-analysis" aria-label="待核实的模型辅助解读">
+          <div className="analysis-heading">
+            <div>
+              <p className="eyebrow">模型辅助整理 · 仍待核实</p>
+              <h4>{event.research_analysis.headline}</h4>
+            </div>
+            <span>
+              解读可信度 {Math.round(Number(event.research_analysis.confidence) * 100)}%
+            </span>
+          </div>
+          <p>{event.research_analysis.what_changed}</p>
+          <div>
+            <strong>为什么值得留意</strong>
+            <p>{event.research_analysis.why_it_matters}</p>
+          </div>
+          {event.research_analysis.potential_impacts.length > 0 ? (
+            <div>
+              <strong>可能影响</strong>
+              <ul>
+                {event.research_analysis.potential_impacts.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {event.research_analysis.uncertainties.length > 0 ? (
+            <div>
+              <strong>目前还不能确定</strong>
+              <ul>
+                {event.research_analysis.uncertainties.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {event.research_analysis.follow_up_items.length > 0 ? (
+            <div>
+              <strong>后续值得关注</strong>
+              <ul>
+                {event.research_analysis.follow_up_items.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          <p className="analysis-disclaimer">{event.research_analysis.disclaimer}</p>
+        </section>
+      ) : null}
       {isLicensedSourceRecord ? (
         <p className="privacy-note">
           这是授权数据源已返回的记录概览，可供查看；平台尚未将数量、关联关系或评分解释为风险结论。

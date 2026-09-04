@@ -49,7 +49,9 @@ from backend.app.source_fetcher import TrustedSourceFetcher
 from backend.app.web_research_service import (
     SEARCH_GROUPS,
     _event_classification,
+    _gap_follow_up_query,
     _identity_fingerprint,
+    _process_gap_follow_up,
     _subject_match,
     prepare_pending_research_requests,
     run_web_research_worker_once,
@@ -225,6 +227,38 @@ class RecordingFetcherFactory:
                 "</main><aside>PaperPass 完成 A 轮融资。</aside></body></html>"
             ).encode()
             return httpx.Response(200, content=body, headers={"content-type": "text/html"})
+
+        return TrustedSourceFetcher(
+            policy,
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+            allow_private_test_hosts=True,
+        )
+
+
+class GapFollowUpFetcherFactory:
+    def __init__(self) -> None:
+        self.requests: list[str] = []
+
+    def __call__(self, policy):
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.requests.append(str(request.url))
+            if request.url.path == "/robots.txt":
+                return httpx.Response(404, headers={"content-type": "text/plain"})
+            published_meta = (
+                ""
+                if request.url.path.endswith("no-date")
+                else f'<meta property="article:published_time" content="{RECENT_TIMESTAMP}">'
+            )
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text=(
+                    f"<html><head><title>{SHARED_COMPANY_NAME}完成融资</title>"
+                    f"{published_meta}</head><body><main>"
+                    f"{SHARED_COMPANY_NAME}（{DEMO_SHARED_COMPANY_CREDIT_CODE}）已完成融资，"
+                    "相关事项已经公告。</main></body></html>"
+                ),
+            )
 
         return TrustedSourceFetcher(
             policy,
@@ -464,7 +498,7 @@ def test_shared_job_cache_replay_and_evidence_are_deduplicated(
         assert replay_job is not None
         assert replay_job.status == "completed"
         assert replay_job.external_calls == 0
-        assert replay_job.coverage["policy_version"] == "bounded-web-v2"
+        assert replay_job.coverage["policy_version"] == "bounded-web-v3"
         event_count = session.scalar(
             select(func.count()).select_from(Event).where(Event.fingerprint_version == "web-v1")
         )
@@ -479,7 +513,7 @@ def test_shared_job_cache_replay_and_evidence_are_deduplicated(
     bounded_leads = [
         event
         for event in detail["platform_unconfirmed_leads"]
-        if event["publication_policy_version"] == "bounded-web-quality-v3"
+        if event["publication_policy_version"] == "bounded-web-quality-v4"
     ]
     assert len(bounded_leads) == 2
     assert all(event["evidence"] for event in bounded_leads)
@@ -597,6 +631,10 @@ def test_robots_blocked_candidate_uses_one_bounded_original_source_recovery(
         assert job.coverage["source_recovery"]["status"] == "completed"
         assert job.coverage["source_recovery"]["attempts"] == 1
         assert job.coverage["source_recovery"]["candidate_count_added"] == 1
+        assert job.coverage["gap_follow_up"]["status"] == "skipped"
+        assert (
+            job.coverage["gap_follow_up"]["reason"] == "source_recovery_consumed_follow_up_budget"
+        )
         blocked = next(item for item in job.coverage["candidates"] if item["url"] == blocked_url)
         assert blocked["source_access_status"] == "robots_blocked"
         assert (
@@ -615,12 +653,176 @@ def test_robots_blocked_candidate_uses_one_bounded_original_source_recovery(
             )
             == 1
         )
+
+
+def test_one_material_evidence_gap_can_trigger_one_targeted_follow_up(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    first_url = "https://news.example.com/no-date"
+    recovered_url = "https://notice.example.com/official-financing"
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and owner is not None
+        follow_up_query = _gap_follow_up_query(company, "financing_cap_table")
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
+
+    primary = MockSearchProvider(
+        "baidu",
+        {
+            _query(SEARCH_GROUPS[0][1]): [
+                _result(
+                    first_url,
+                    f"{SHARED_COMPANY_NAME}完成融资",
+                    f"{SHARED_COMPANY_NAME}已完成融资。",
+                )
+            ],
+            _query(SEARCH_GROUPS[1][1]): [],
+            follow_up_query: [
+                _result(
+                    recovered_url,
+                    f"{SHARED_COMPANY_NAME}完成融资公告",
+                    f"{SHARED_COMPANY_NAME}已完成融资。",
+                )
+            ],
+        },
+    )
+    fallback = MockSearchProvider("bocha")
+    fetcher = GapFollowUpFetcherFactory()
+
+    statuses = _drain(
+        migrated_app,
+        {"baidu": primary, "bocha": fallback},
+        fetcher,
+    )
+
+    assert statuses[-1] == "idle"
+    assert [call.query for call in primary.calls].count(follow_up_query) == 1
+    assert len(primary.calls) == 3
+    assert len(fallback.calls) == 1
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        assert job.coverage["stats"]["search_calls"] == 4
+        assert job.external_calls == 8
+        assert job.coverage["gap_follow_up"]["status"] == "completed"
+        assert job.coverage["gap_follow_up"]["attempts"] == 1
+        assert job.coverage["gap_follow_up"]["event_type"] == "financing_cap_table"
+        assert job.coverage["gap_follow_up"]["candidate_count_added"] == 1
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(Event)
+                .where(
+                    Event.company_id == SHARED_COMPANY_ID,
+                    Event.publication_policy_version == "bounded-web-quality-v4",
+                )
+            )
+            == 1
+        )
+        first_document = session.scalar(
+            select(RawDocument).where(RawDocument.canonical_url == first_url)
+        )
+        assert first_document is not None
+        assert first_document.payload["quality_gate"]["status"] == "internal_only"
+        assert "missing_reliable_published_at" in first_document.payload["quality_gate"]["reasons"]
         assert (
             session.scalar(
                 select(func.count()).select_from(Event).where(Event.fingerprint_version == "web-v1")
             )
             == 1
         )
+
+
+def test_gap_follow_up_attempt_is_checkpointed_before_provider_call(
+    migrated_app: FastAPI,
+) -> None:
+    class CrashingProvider:
+        code = "baidu"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def search(self, request):
+            self.calls += 1
+            raise RuntimeError("simulated worker interruption")
+
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        user = session.get(User, NO_ACCESS_USER_ID)
+        assert company is not None and user is not None
+        request_out = create_refresh_request(
+            session,
+            user,
+            PersonalEntitlementPolicy(),
+            company.id,
+        )
+        job = CompanyResearchJob(
+            company_id=company.id,
+            created_by_user_id=user.id,
+            status="partial",
+            current_stage="gap_follow_up",
+            policy_version="bounded-web-v3",
+            coverage={
+                "source_recovery": {"status": "not_requested", "attempts": 0},
+                "gap_follow_up": {
+                    "status": "pending",
+                    "attempts": 0,
+                    "event_type": "financing_cap_table",
+                    "source_url": "https://news.example.test/original",
+                    "reason": "missing_reliable_published_at",
+                },
+                "candidates": [],
+                "candidate_index": 0,
+                "documents": [],
+                "stats": {"search_calls": 0, "search_cache_hits": 0},
+            },
+        )
+        session.add(job)
+        session.flush()
+        request = session.get(PersonalCompanyRequest, request_out.id)
+        assert request is not None
+        request.research_job_id = job.id
+        request.status = "partial"
+        session.commit()
+        job_id = job.id
+
+    crashing = CrashingProvider()
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        user = session.get(User, NO_ACCESS_USER_ID)
+        job = session.get(CompanyResearchJob, job_id)
+        assert company is not None and user is not None and job is not None
+        with pytest.raises(RuntimeError, match="simulated worker interruption"):
+            _process_gap_follow_up(
+                session,
+                user,
+                job,
+                company,
+                WebResearchPolicy(),
+                {"baidu": crashing, "bocha": MockSearchProvider("bocha")},
+            )
+    assert crashing.calls == 1
+
+    replacement = MockSearchProvider("baidu")
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        user = session.get(User, NO_ACCESS_USER_ID)
+        job = session.get(CompanyResearchJob, job_id)
+        assert company is not None and user is not None and job is not None
+        assert job.coverage["gap_follow_up"]["status"] == "running"
+        assert job.coverage["gap_follow_up"]["attempts"] == 1
+        result = _process_gap_follow_up(
+            session,
+            user,
+            job,
+            company,
+            WebResearchPolicy(),
+            {"baidu": replacement, "bocha": MockSearchProvider("bocha")},
+        )
+    assert result.stage == "finalize"
+    assert replacement.calls == []
 
 
 def test_verified_company_official_pdf_can_supply_bounded_evidence(
@@ -953,7 +1155,7 @@ def test_low_quality_pages_remain_internal_and_are_not_user_visible(
         )
         assert response.status_code == 200
         assert not any(
-            item["publication_policy_version"] == "bounded-web-quality-v3"
+            item["publication_policy_version"] == "bounded-web-quality-v4"
             for item in response.json()["platform_unconfirmed_leads"]
         )
 

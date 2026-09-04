@@ -1,5 +1,14 @@
 # 实施记录
 
+## 2026-09-04：R3.5 受限研究循环 V2（代码待审）
+
+- 任务：在现有 PostgreSQL 研究任务、缓存、预算、取消与断线恢复上，只为明确的高价值证据缺口增加最多一次非递归补查；只有新增、主体已核验且满足正文质量闸门的候选证据，才可进入版本化 JSON Schema 模型解读。模型结果作为独立的“仍待核实”派生层，不修改候选事件状态，不自动发布，不生成用户未请求的长报告。
+- 关键文件：`backend/app/web_research_service.py`、`backend/app/investor_analysis.py`、`backend/app/deepseek.py`、`backend/app/investor_analysis_schema.py`、`schemas/research_candidate_analysis.schema.json`、`migrations/versions/0025_expand_analysis_rls_for_research_candidates.py`、公司详情 API/页面、Worker、环境示例以及受影响的 R3.5 测试与设计文档。
+- 实际命令：Ruff 检查与格式检查；定向与完整 Pytest；一次性 PostgreSQL 16 中的 `0025` 升级、RLS 负向测试、`0025 → 0024 → 0025` 往返和 Alembic 漂移检查；SQLite `base → 0025 → base`；前端类型检查与生产构建；生产 Compose 配置解析、API/前端镜像构建和生产预检；`git diff --check`、敏感信息模式检查和 Codex Security 差异审查。
+- 测试结果：完整离线后端套件 329 项通过、16 项按显式外部或 PostgreSQL 条件跳过；PostgreSQL RLS 定向套件 16 项通过；SQLite/PostgreSQL 迁移往返和漂移、Ruff、前端类型、生产构建、Compose 配置、生产镜像和预检均通过。安全差异审查覆盖全部 13 个变更单元，无可报告漏洞；TAC 连接器未登录，因此受保护报告状态尚无法验证，不影响代码审查结论。本机 `npm audit` 两次均因 npm registry `socket hang up` 未取得结果，须以 PR CI 的依赖审计为合并闸门。
+- 自查修正：发现 `0021` 的旧 RLS 只允许已发布确定性变化分析，已新增 `0025` 将候选研究 Schema 与严格事件路由成对放行，不改历史迁移或数据；补查和原始来源回溯在外部调用前先持久化尝试状态，崩溃恢复不重复调用；模型入口又增加已核验主体提及和提示注入防护。
+- 未解决阻塞：代码 PR 尚未合并或部署，香港生产数据库应继续保持 `0024`。合并后必须先备份、升级至 `0025`，再对卧安机器人现有缓存执行零新搜索/零模型调用回放和真实页面验收；该闸门通过前不恢复 U01—U03，不查询新公司。
+
 ## 2026-09-04：R3.4 生产关闭与 R3.5 启动检查点
 
 - 任务：在 PR #60 合并后核对生产备份、数据库升级、数据保护、卧安机器人缓存回放和真实页面验收，正式关闭 R3.4，并把当前唯一工程里程碑切换为 R3.5“受限研究循环 V2”。本检查点只修改文档，不修改业务代码、数据库、生产配置或数据。

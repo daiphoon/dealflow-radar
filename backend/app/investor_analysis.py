@@ -17,21 +17,32 @@ from backend.app.database import set_request_context
 from backend.app.investor_analysis_schema import (
     INVESTOR_ANALYSIS_PROMPT_VERSION,
     INVESTOR_ANALYSIS_SCHEMA_VERSION,
+    RESEARCH_CANDIDATE_ANALYSIS_PROMPT_VERSION,
+    RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION,
+    RESEARCH_CANDIDATE_POLICY_VERSION,
     InvestorChangeAnalysisOutput,
     InvestorChangeAnalysisRequest,
     InvestorEvidenceInput,
+    ResearchCandidateAnalysisOutput,
+    ResearchCandidateAnalysisRequest,
+    ResearchEvidenceInput,
+    validate_research_candidate_output,
 )
 from backend.app.models import (
     PLATFORM_SHARED_SCOPE,
+    SYSTEM_RESTRICTED_SCOPE,
     Company,
+    CompanyResearchJob,
+    EntityMention,
     Event,
     EventEvidence,
     InvestorChangeAnalysis,
+    RawDocument,
     UsageLedger,
     User,
     utc_now,
 )
-from backend.app.providers import LLMProvider, LLMProviderError
+from backend.app.providers import AnalysisLLMProvider, LLMProviderError
 from backend.app.services import user_has_role
 
 _NUMERIC_TOKEN = re.compile(r"(?<![A-Za-z0-9])\d+(?:\.\d+)?%?")
@@ -145,6 +156,132 @@ def _event_is_eligible(event: Event, policy: InvestorAnalysisPolicy) -> bool:
     )
 
 
+def _research_analysis_request(
+    session: Session,
+    event: Event,
+) -> ResearchCandidateAnalysisRequest | None:
+    company = session.get(Company, event.company_id)
+    if company is None or not company.credit_code:
+        return None
+    evidence_rows = list(
+        session.scalars(
+            select(EventEvidence)
+            .where(
+                EventEvidence.event_id == event.id,
+                EventEvidence.visibility_scope == PLATFORM_SHARED_SCOPE,
+                EventEvidence.owner_user_id.is_(None),
+                EventEvidence.owner_tenant_id.is_(None),
+                EventEvidence.display_allowed.is_(True),
+            )
+            .order_by(EventEvidence.created_at, EventEvidence.id)
+            .limit(5)
+        )
+    )
+    if not evidence_rows:
+        return None
+    try:
+        return ResearchCandidateAnalysisRequest(
+            event_id=event.id,
+            company_name=company.legal_name,
+            credit_code=company.credit_code,
+            event_type=event.event_type,
+            deterministic_title=event.title,
+            deterministic_summary=event.summary,
+            evidence=[
+                ResearchEvidenceInput(
+                    evidence_id=evidence.id,
+                    source_name=evidence.display_source_name or "平台证据",
+                    title=evidence.display_title or event.title,
+                    excerpt=evidence.evidence_excerpt,
+                    published_at=(
+                        evidence.display_published_at.isoformat()
+                        if evidence.display_published_at
+                        else (
+                            evidence.display_published_on.isoformat()
+                            if evidence.display_published_on
+                            else None
+                        )
+                    ),
+                    observed_at=(evidence.display_observed_at or event.observed_at).isoformat(),
+                )
+                for evidence in evidence_rows
+            ],
+        )
+    except ValidationError:
+        return None
+
+
+def _originating_research_job_completed(
+    session: Session,
+    event: Event,
+    evidence_ids: set[UUID],
+) -> bool:
+    evidence_rows = session.scalars(
+        select(EventEvidence).where(
+            EventEvidence.event_id == event.id,
+            EventEvidence.id.in_(evidence_ids),
+            EventEvidence.visibility_scope == PLATFORM_SHARED_SCOPE,
+            EventEvidence.owner_user_id.is_(None),
+            EventEvidence.owner_tenant_id.is_(None),
+            EventEvidence.display_allowed.is_(True),
+            EventEvidence.raw_document_id.is_not(None),
+        )
+    )
+    for evidence in evidence_rows:
+        document = session.get(RawDocument, evidence.raw_document_id)
+        if document is None or document.visibility_scope != SYSTEM_RESTRICTED_SCOPE:
+            continue
+        verified_mention = session.scalar(
+            select(EntityMention.id).where(
+                EntityMention.raw_document_id == document.id,
+                EntityMention.candidate_company_id == event.company_id,
+                EntityMention.visibility_scope == SYSTEM_RESTRICTED_SCOPE,
+                EntityMention.owner_user_id.is_(None),
+                EntityMention.owner_tenant_id.is_(None),
+                EntityMention.resolution_status == "verified",
+            )
+        )
+        if verified_mention is None:
+            continue
+        research_job_id = document.payload.get("research_job_id")
+        if not isinstance(research_job_id, str):
+            continue
+        try:
+            job_id = UUID(research_job_id)
+        except ValueError:
+            continue
+        job = session.get(CompanyResearchJob, job_id)
+        if job is not None and job.company_id == event.company_id and job.status == "completed":
+            return True
+    return False
+
+
+def research_candidate_is_eligible(
+    session: Session,
+    event: Event,
+    policy: InvestorAnalysisPolicy,
+) -> bool:
+    request = _research_analysis_request(session, event)
+    if request is None:
+        return False
+    return (
+        event.visibility_scope == PLATFORM_SHARED_SCOPE
+        and event.owner_user_id is None
+        and event.owner_tenant_id is None
+        and event.status == "candidate"
+        and event.publication_route == "unconfirmed_lead"
+        and event.event_subtype == "bounded_public_web_page"
+        and event.publication_policy_version == RESEARCH_CANDIDATE_POLICY_VERSION
+        and "new_evidence_content" in event.publication_reasons
+        and event.materiality_score >= policy.min_materiality_score
+        and _originating_research_job_completed(
+            session,
+            event,
+            {item.evidence_id for item in request.evidence},
+        )
+    )
+
+
 def enqueue_pending_investor_analyses(
     session: Session,
     policy: InvestorAnalysisPolicy,
@@ -208,6 +345,73 @@ def enqueue_pending_investor_analyses(
     return created
 
 
+def enqueue_pending_research_candidate_analyses(
+    session: Session,
+    policy: InvestorAnalysisPolicy,
+    *,
+    limit: int = 20,
+) -> int:
+    events = session.scalars(
+        select(Event)
+        .where(
+            Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+            Event.owner_user_id.is_(None),
+            Event.owner_tenant_id.is_(None),
+            Event.status == "candidate",
+            Event.publication_route == "unconfirmed_lead",
+            Event.event_subtype == "bounded_public_web_page",
+            Event.publication_policy_version == RESEARCH_CANDIDATE_POLICY_VERSION,
+            Event.materiality_score >= policy.min_materiality_score,
+        )
+        .order_by(Event.created_at, Event.id)
+    ).yield_per(100)
+    creation_limit = max(1, min(limit, 100))
+    created = 0
+    for event in events:
+        if created >= creation_limit:
+            break
+        if not research_candidate_is_eligible(session, event, policy):
+            continue
+        request = _research_analysis_request(session, event)
+        if request is None:
+            continue
+        input_hash = _sha256(request.model_dump(mode="json"))
+        existing = session.scalar(
+            select(InvestorChangeAnalysis).where(
+                InvestorChangeAnalysis.event_id == event.id,
+                InvestorChangeAnalysis.prompt_version == RESEARCH_CANDIDATE_ANALYSIS_PROMPT_VERSION,
+                InvestorChangeAnalysis.input_hash == input_hash,
+            )
+        )
+        if existing is not None:
+            continue
+        session.add(
+            InvestorChangeAnalysis(
+                event_id=event.id,
+                visibility_scope=PLATFORM_SHARED_SCOPE,
+                status="pending",
+                provider=None,
+                model=None,
+                prompt_version=RESEARCH_CANDIDATE_ANALYSIS_PROMPT_VERSION,
+                schema_version=RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION,
+                input_hash=input_hash,
+                evidence_ids=[str(item.evidence_id) for item in request.evidence],
+                analysis_output=None,
+                input_tokens=0,
+                output_tokens=0,
+                estimated_cost=Decimal("0"),
+                attempt_count=0,
+                response_id=None,
+                last_error_code=None,
+                leased_until=None,
+                heartbeat_at=None,
+            )
+        )
+        created += 1
+    session.commit()
+    return created
+
+
 def validate_investor_analysis_worker_user(session: Session, user: User) -> None:
     if not user_has_role(session, user.id, "platform_admin"):
         raise RuntimeError("investor analysis worker requires platform_admin")
@@ -228,7 +432,9 @@ def _monthly_tokens(session: Session, tenant_id: UUID, now: datetime) -> int:
                 )
             ).where(
                 UsageLedger.tenant_id == tenant_id,
-                UsageLedger.operation == "investor_change_analysis",
+                UsageLedger.operation.in_(
+                    ("investor_change_analysis", "research_candidate_analysis")
+                ),
                 UsageLedger.created_at >= _month_start(now),
             )
         )
@@ -320,6 +526,7 @@ def _record_usage(
     output_tokens: int,
     estimated_cost: Decimal,
     outcome: str,
+    operation: str = "investor_change_analysis",
 ) -> None:
     session.add(
         UsageLedger(
@@ -328,7 +535,7 @@ def _record_usage(
                 select(Event.company_id).where(Event.id == analysis.event_id)
             ),
             provider=provider,
-            operation="investor_change_analysis",
+            operation=operation,
             external_calls=external_calls,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -345,7 +552,7 @@ def _record_usage(
             },
             idempotency_key=_sha256(
                 {
-                    "operation": "investor_change_analysis",
+                    "operation": operation,
                     "analysis_id": str(analysis.id),
                     "attempt_count": analysis.attempt_count,
                 }
@@ -357,7 +564,7 @@ def _record_usage(
 def run_investor_analysis_worker_once(
     session: Session,
     user: User,
-    provider: LLMProvider,
+    provider: AnalysisLLMProvider,
     policy: InvestorAnalysisPolicy,
     *,
     now: datetime | None = None,
@@ -368,6 +575,8 @@ def run_investor_analysis_worker_once(
     worker_tenant_id = user.tenant_id
     set_request_context(session, worker_user_id, worker_tenant_id)
     enqueue_pending_investor_analyses(session, policy)
+    set_request_context(session, worker_user_id, worker_tenant_id)
+    enqueue_pending_research_candidate_analyses(session, policy)
     set_request_context(session, worker_user_id, worker_tenant_id)
     lease = _lease_next_analysis(session, policy, checked_at)
     if lease is None:
@@ -383,7 +592,26 @@ def run_investor_analysis_worker_once(
     if analysis is None or event is None or analysis.status != "running":
         session.rollback()
         return InvestorAnalysisWorkerResult(status="lease_lost", analysis_id=lease.analysis_id)
-    if not _event_is_eligible(event, policy):
+    if analysis.schema_version == INVESTOR_ANALYSIS_SCHEMA_VERSION:
+        operation = "investor_change_analysis"
+        eligible = _event_is_eligible(event, policy)
+        request = _analysis_request(session, event)
+    elif analysis.schema_version == RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION:
+        operation = "research_candidate_analysis"
+        eligible = research_candidate_is_eligible(session, event, policy)
+        request = _research_analysis_request(session, event)
+    else:
+        analysis.status = "failed"
+        analysis.last_error_code = "unsupported_analysis_schema"
+        analysis.leased_until = None
+        session.commit()
+        return InvestorAnalysisWorkerResult(
+            status="completed",
+            analysis_id=analysis.id,
+            event_id=event.id,
+            outcome="unsupported_analysis_schema",
+        )
+    if not eligible:
         analysis.status = "failed"
         analysis.last_error_code = "event_no_longer_eligible"
         analysis.leased_until = None
@@ -394,7 +622,6 @@ def run_investor_analysis_worker_once(
             event_id=event.id,
             outcome="event_no_longer_eligible",
         )
-    request = _analysis_request(session, event)
     if request is None or _sha256(request.model_dump(mode="json")) != analysis.input_hash:
         analysis.status = "failed"
         analysis.last_error_code = "analysis_input_changed"
@@ -424,7 +651,10 @@ def run_investor_analysis_worker_once(
             outcome="budget_deferred",
         )
     try:
-        result = provider.analyze_investor_change(request)
+        if isinstance(request, ResearchCandidateAnalysisRequest):
+            result = provider.analyze_research_candidate(request)
+        else:
+            result = provider.analyze_investor_change(request)
     except LLMProviderError as error:
         analysis.status = "failed"
         analysis.provider = provider.code
@@ -444,6 +674,7 @@ def run_investor_analysis_worker_once(
             output_tokens=error.output_tokens,
             estimated_cost=error.estimated_cost,
             outcome="provider_failed",
+            operation=operation,
         )
         session.commit()
         return InvestorAnalysisWorkerResult(
@@ -457,7 +688,14 @@ def run_investor_analysis_worker_once(
             estimated_cost=error.estimated_cost,
         )
     try:
-        _validate_evidence_constrained_output(request, result.analysis)
+        if isinstance(request, ResearchCandidateAnalysisRequest):
+            if not isinstance(result.analysis, ResearchCandidateAnalysisOutput):
+                raise ValueError("provider returned the wrong analysis schema")
+            validate_research_candidate_output(request, result.analysis)
+        else:
+            if not isinstance(result.analysis, InvestorChangeAnalysisOutput):
+                raise ValueError("provider returned the wrong analysis schema")
+            _validate_evidence_constrained_output(request, result.analysis)
     except ValueError:
         analysis.status = "failed"
         analysis.provider = provider.code
@@ -475,6 +713,7 @@ def run_investor_analysis_worker_once(
             output_tokens=result.output_tokens,
             estimated_cost=result.estimated_cost,
             outcome="evidence_validation_failed",
+            operation=operation,
         )
         session.commit()
         return InvestorAnalysisWorkerResult(
@@ -511,6 +750,7 @@ def run_investor_analysis_worker_once(
         output_tokens=result.output_tokens,
         estimated_cost=result.estimated_cost,
         outcome="completed",
+        operation=operation,
     )
     session.commit()
     return InvestorAnalysisWorkerResult(

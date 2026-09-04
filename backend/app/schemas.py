@@ -7,7 +7,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from backend.app.investor_analysis_schema import InvestorChangeAnalysisOutput
+from backend.app.investor_analysis_schema import (
+    InvestorChangeAnalysisOutput,
+    ResearchCandidateAnalysisOutput,
+)
 
 
 class EvidenceOut(BaseModel):
@@ -62,6 +65,10 @@ class EvidenceDetailOut(BaseModel):
 
 
 class InvestorChangeAnalysisOut(InvestorChangeAnalysisOutput):
+    generated_at: datetime
+
+
+class ResearchCandidateAnalysisOut(ResearchCandidateAnalysisOutput):
     generated_at: datetime
 
 
@@ -121,6 +128,7 @@ class EventOut(BaseModel):
     fact_ledger: list[AtomicFactOut] = Field(default_factory=list)
     visibility_scope: str
     analysis: InvestorChangeAnalysisOut | None = None
+    research_analysis: ResearchCandidateAnalysisOut | None = None
 
 
 class InvestmentOut(BaseModel):

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from backend.app.config import SourceMonitoringPolicy, WebResearchPolicy
 from backend.app.database import set_request_context
 from backend.app.fact_support import materialize_event_fact_ledger
+from backend.app.investor_analysis_schema import RESEARCH_CANDIDATE_POLICY_VERSION
 from backend.app.models import (
     PLATFORM_SHARED_SCOPE,
     SYSTEM_RESTRICTED_SCOPE,
@@ -48,7 +49,7 @@ from backend.app.web_search import (
 )
 
 WEB_RESEARCH_SOURCE_CODE = "bounded_public_web"
-CONTENT_QUALITY_GATE_VERSION = "bounded-web-quality-v3"
+CONTENT_QUALITY_GATE_VERSION = RESEARCH_CANDIDATE_POLICY_VERSION
 EVIDENCE_ROUTING_VERSION = "compliant-evidence-routing-v1"
 ACTIVE_JOB_STATUSES = ("queued", "running", "partial", "budget_deferred")
 ACTIVE_REQUEST_STATUSES = ("research_queued", "researching", "partial", "budget_deferred")
@@ -152,6 +153,27 @@ SEARCH_GROUP_MODULES = {
         "exit_liquidity",
     ),
 }
+
+GAP_FOLLOW_UP_TERMS = {
+    "financial_operation": "经营 营收 利润 产量 停产 公告",
+    "financing_cap_table": "融资 增资 股东 股权变更 公告",
+    "contract_commercial": "中标 合同 订单 合作 公告",
+    "product_technology": "新产品 技术 专利 认证 注册证 公告",
+    "governance_people": "法定代表人 董事 高管 核心人员 变更",
+    "legal_compliance": "行政处罚 诉讼 执行 破产 监管公告",
+    "capacity_assets": "工厂 产能 生产线 投产 环评 资产",
+    "exit_liquidity": "IPO 上市辅导 备案 并购 回购 公告",
+}
+GAP_FOLLOW_UP_PRIORITY = (
+    "exit_liquidity",
+    "financing_cap_table",
+    "contract_commercial",
+    "legal_compliance",
+    "product_technology",
+    "capacity_assets",
+    "governance_people",
+    "financial_operation",
+)
 
 EVENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
@@ -479,6 +501,7 @@ def _initial_coverage(policy: WebResearchPolicy) -> dict[str, object]:
         "candidate_index": 0,
         "documents": [],
         "source_recovery": {"status": "not_requested", "attempts": 0},
+        "gap_follow_up": {"status": "not_requested", "attempts": 0},
         "stats": {
             "search_cache_hits": 0,
             "document_cache_hits": 0,
@@ -1649,6 +1672,8 @@ def _candidate_event(
     document: RawDocument,
     source: Source,
     policy: WebResearchPolicy,
+    *,
+    new_document: bool,
 ) -> tuple[Event | None, bool, _ContentQualityDecision]:
     excerpt = str(document.payload.get("excerpt") or "").strip()
     quality = _content_quality_decision(
@@ -1716,6 +1741,7 @@ def _candidate_event(
             "source_published_within_recent_window",
             "event_time_not_independently_verified",
             "human_fact_review_not_completed",
+            *(["new_evidence_content"] if new_document else ["reused_evidence_content"]),
             *(["serious_negative_requires_review"] if severe else []),
         ],
     )
@@ -1764,6 +1790,102 @@ def _candidate_can_trigger_source_recovery(candidate: dict[str, object]) -> bool
 def _source_recovery_query(company: Company, candidate: dict[str, object]) -> str:
     title = " ".join(str(candidate.get("title") or "").replace('"', "").split())[:100]
     return f'"{company.legal_name}" "{title}" 原文 公告'
+
+
+def _gap_follow_up_target(
+    company: Company,
+    coverage: dict[str, object],
+    policy: WebResearchPolicy,
+) -> dict[str, str] | None:
+    candidates = {
+        str(item.get("url")): item
+        for item in coverage.get("candidates", [])
+        if isinstance(item, dict) and item.get("url")
+    }
+    documents = [item for item in coverage.get("documents", []) if isinstance(item, dict)]
+    covered_event_types = {
+        str(quality.get("event_type"))
+        for document in documents
+        if isinstance((quality := document.get("quality_gate")), dict)
+        and quality.get("status") == "eligible"
+        and quality.get("event_type")
+    }
+    priorities = {event_type: index for index, event_type in enumerate(GAP_FOLLOW_UP_PRIORITY)}
+    signals: list[tuple[int, int, float, str, dict[str, str]]] = []
+    for document in documents:
+        if document.get("status") not in {"failed", "created", "reused"}:
+            continue
+        quality = document.get("quality_gate")
+        if isinstance(quality, dict) and quality.get("status") == "eligible":
+            continue
+        if isinstance(quality, dict) and any(
+            reason in {"published_before_recent_window", "published_at_in_future"}
+            for reason in quality.get("reasons", [])
+        ):
+            continue
+        source_url = str(document.get("url") or "")
+        candidate = candidates.get(source_url)
+        if candidate is None or candidate.get("source_tier") == "profile_or_listing":
+            continue
+        title = str(candidate.get("title") or "")
+        snippet = str(candidate.get("snippet") or "")
+        event_type = _event_classification("", f"{title}。{snippet}")
+        if event_type is None or event_type in covered_event_types:
+            continue
+        content = f"{title} {snippet}"
+        if _materiality(event_type, content) < 60:
+            continue
+        target = {
+            "event_type": event_type,
+            "source_url": source_url,
+            "reason": str(document.get("error_code") or "content_quality_gap"),
+        }
+        score, published_score, score_url = _result_score(
+            company, SearchResult.from_dict(candidate), policy
+        )
+        signals.append(
+            (
+                priorities.get(event_type, len(priorities)),
+                -score,
+                -published_score,
+                score_url,
+                target,
+            )
+        )
+    if not signals:
+        return None
+    signals.sort(key=lambda item: item[:4])
+    return signals[0][4]
+
+
+def _prepare_gap_follow_up(
+    company: Company,
+    coverage: dict[str, object],
+    policy: WebResearchPolicy,
+) -> dict[str, object]:
+    follow_up = dict(coverage.get("gap_follow_up", {}))
+    if follow_up.get("status") != "not_requested":
+        return follow_up
+    recovery = dict(coverage.get("source_recovery", {}))
+    if int(recovery.get("attempts", 0)) >= 1:
+        return {
+            "status": "skipped",
+            "attempts": 0,
+            "reason": "source_recovery_consumed_follow_up_budget",
+        }
+    target = _gap_follow_up_target(company, coverage, policy)
+    if target is None:
+        return {
+            "status": "skipped",
+            "attempts": 0,
+            "reason": "no_explicit_material_evidence_gap",
+        }
+    return {"status": "pending", "attempts": 0, **target}
+
+
+def _gap_follow_up_query(company: Company, event_type: str) -> str:
+    terms = GAP_FOLLOW_UP_TERMS[event_type]
+    return _query_for(company, f"{terms} 原文")
 
 
 def _process_source_recovery(
@@ -1815,6 +1937,15 @@ def _process_source_recovery(
 
     primary = providers[policy.primary_provider]
     query = _source_recovery_query(company, blocked_candidate)
+    recovery.update({"status": "running", "attempts": 1, "provider": primary.code})
+    coverage["source_recovery"] = recovery
+    job.coverage = coverage
+    job.heartbeat_at = utc_now()
+    session.commit()
+    _restore_worker_context(session, user)
+    job = _refresh_job(session, job.id)
+    if _job_should_stop(session, job):
+        return _cancel_job(session, job)
     cache_hit = False
     try:
         response, cache_hit = _provider_response(
@@ -1828,6 +1959,9 @@ def _process_source_recovery(
             policy=policy,
         )
     except SearchProviderError as error:
+        _restore_worker_context(session, user)
+        job = _refresh_job(session, job.id)
+        recovery = dict(job.coverage.get("source_recovery", recovery))
         recovery.update(
             {
                 "status": "failed",
@@ -1940,6 +2074,159 @@ def _process_source_recovery(
     )
 
 
+def _process_gap_follow_up(
+    session: Session,
+    user: User,
+    job: CompanyResearchJob,
+    company: Company,
+    policy: WebResearchPolicy,
+    providers: dict[str, SearchProvider],
+) -> WebResearchWorkerResult:
+    coverage = dict(job.coverage)
+    follow_up = dict(coverage.get("gap_follow_up", {}))
+    event_type = str(follow_up.get("event_type") or "")
+    if (
+        follow_up.get("status") != "pending"
+        or int(follow_up.get("attempts", 0)) >= 1
+        or event_type not in GAP_FOLLOW_UP_TERMS
+    ):
+        job.current_stage = "finalize"
+        job.status = "partial"
+        job.leased_until = None
+        session.commit()
+        return WebResearchWorkerResult(
+            status="partial",
+            job_id=job.id,
+            company_id=job.company_id,
+            stage="finalize",
+            external_calls=job.external_calls,
+        )
+
+    primary = providers[policy.primary_provider]
+    fallback = providers[policy.fallback_provider]
+    query = _gap_follow_up_query(company, event_type)
+    follow_up.update({"status": "running", "attempts": 1, "provider": primary.code})
+    coverage["gap_follow_up"] = follow_up
+    job.coverage = coverage
+    job.heartbeat_at = utc_now()
+    session.commit()
+    _restore_worker_context(session, user)
+    job = _refresh_job(session, job.id)
+    if _job_should_stop(session, job):
+        return _cancel_job(session, job)
+    responses: list[SearchResponse] = []
+    cache_hits = 0
+    primary_error_code: str | None = None
+    primary_cached = False
+    fallback_cache_used = False
+    try:
+        response, cached = _provider_response(
+            session,
+            user,
+            job,
+            company,
+            primary,
+            query_kind="gap_follow_up",
+            query=query,
+            policy=policy,
+        )
+        responses.append(response)
+        cache_hits += int(cached)
+        primary_cached = cached
+    except SearchProviderError as error:
+        primary_error_code = error.code
+
+    _restore_worker_context(session, user)
+    job = _refresh_job(session, job.id)
+    if _job_should_stop(session, job):
+        return _cancel_job(session, job)
+    cached_fallback = _cached_response(session, company, fallback.code, query, utc_now())
+    if cached_fallback is not None:
+        responses.append(cached_fallback)
+        cache_hits += 1
+        fallback_cache_used = True
+        _record_search_cache_hit(session, job)
+        _restore_worker_context(session, user)
+        job = _refresh_job(session, job.id)
+
+    recovered: list[dict[str, object]] = []
+    original_url = str(follow_up.get("source_url") or "")
+    for response in responses:
+        for result in response.results:
+            if _event_classification("", f"{result.title}。{result.snippet}") != event_type:
+                continue
+            candidate = _candidate_payload(
+                company,
+                result,
+                provider_code=response.provider_code,
+                query_kind=f"gap_follow_up:{event_type}",
+                policy=policy,
+            )
+            if candidate is None or candidate["url"] == original_url:
+                continue
+            candidate["gap_follow_up_for"] = event_type
+            recovered.append(candidate)
+    recovered.sort(
+        key=lambda item: _result_score(company, SearchResult.from_dict(item), policy),
+        reverse=True,
+    )
+
+    coverage = dict(job.coverage)
+    candidates = [item for item in coverage.get("candidates", []) if isinstance(item, dict)]
+    processed_count = min(int(coverage.get("candidate_index", 0)), len(candidates))
+    processed = candidates[:processed_count]
+    remaining = candidates[processed_count:]
+    seen_urls = {str(item.get("url") or "") for item in candidates}
+    added = next(
+        (candidate for candidate in recovered if str(candidate.get("url") or "") not in seen_urls),
+        None,
+    )
+    follow_up = dict(coverage.get("gap_follow_up", follow_up))
+    follow_up.update(
+        {
+            "status": "completed" if primary_error_code is None or added else "failed",
+            "attempts": 1,
+            "provider": primary.code,
+            "provider_status": (
+                "fallback_cache_after_primary_failure"
+                if primary_error_code is not None and fallback_cache_used
+                else (
+                    "failed"
+                    if primary_error_code is not None
+                    else ("cache_hit" if primary_cached else "completed")
+                )
+            ),
+            "fallback_cache_used": fallback_cache_used,
+            "error_code": primary_error_code,
+            "result_count": len(recovered),
+            "candidate_count_added": int(added is not None),
+        }
+    )
+    if added is None:
+        follow_up["evidence_gap"] = "no_alternative_qualified_source_found"
+    coverage["gap_follow_up"] = follow_up
+    coverage["candidates"] = [*processed, *([added] if added else []), *remaining]
+    job.coverage = coverage
+    job.current_stage = "fetch" if added is not None else "finalize"
+    job.status = "partial"
+    job.leased_until = None
+    job.heartbeat_at = utc_now()
+    for request in _active_linked_requests(session, job.id):
+        request.status = "partial"
+        request.leased_until = None
+        request.heartbeat_at = job.heartbeat_at
+    session.commit()
+    return WebResearchWorkerResult(
+        status="partial",
+        job_id=job.id,
+        company_id=job.company_id,
+        stage=job.current_stage,
+        external_calls=job.external_calls,
+        cache_hits=cache_hits,
+        error_code=primary_error_code,
+    )
+
+
 def _fetch_policy(
     policy: WebResearchPolicy,
     *,
@@ -2008,7 +2295,30 @@ def _fetch_candidate(
                 }
             )
             coverage["source_recovery"] = recovery
-            job.coverage = coverage
+        if not can_recover:
+            follow_up = _prepare_gap_follow_up(company, coverage, policy)
+            can_follow_up = (
+                follow_up.get("status") == "pending"
+                and index >= len(candidates)
+                and successful < policy.max_documents_per_job
+                and not limits_reached
+                and previous_search_calls < policy.max_search_calls_per_job
+            )
+            if follow_up.get("status") == "pending" and not can_follow_up:
+                follow_up.update(
+                    {
+                        "status": "skipped",
+                        "reason": (
+                            "search_call_limit_reached"
+                            if previous_search_calls >= policy.max_search_calls_per_job
+                            else "document_or_request_limit_reached"
+                        ),
+                    }
+                )
+            coverage["gap_follow_up"] = follow_up
+            if can_follow_up:
+                job.current_stage = "gap_follow_up"
+        job.coverage = coverage
         job.status = "partial"
         job.leased_until = None
         session.commit()
@@ -2046,6 +2356,7 @@ def _fetch_candidate(
             cached_document,
             source,
             policy,
+            new_document=False,
         )
         events_created += int(event_created)
         quality_gate_passed += int(quality.eligible)
@@ -2137,6 +2448,7 @@ def _fetch_candidate(
                                 document,
                                 source,
                                 policy,
+                                new_document=document_created,
                             )
                             events_created += int(event_created)
                             quality_gate_passed += int(quality.eligible)
@@ -2238,6 +2550,15 @@ def _fetch_candidate(
 
 def _finalize(session: Session, job: CompanyResearchJob) -> WebResearchWorkerResult:
     coverage = dict(job.coverage)
+    follow_up = dict(coverage.get("gap_follow_up", {}))
+    if follow_up.get("status") in {"not_requested", "pending"}:
+        follow_up.update(
+            {
+                "status": "skipped",
+                "reason": "job_finalized_before_follow_up",
+            }
+        )
+        coverage["gap_follow_up"] = follow_up
     documents = [item for item in coverage.get("documents", []) if isinstance(item, dict)]
     event_types = set(
         session.scalars(
@@ -2383,6 +2704,15 @@ def run_web_research_worker_once(
             )
         if job.current_stage == "source_recovery":
             return _process_source_recovery(
+                session,
+                user,
+                job,
+                company,
+                policy,
+                providers,
+            )
+        if job.current_stage == "gap_follow_up":
+            return _process_gap_follow_up(
                 session,
                 user,
                 job,

@@ -1022,6 +1022,165 @@ def test_investor_change_analysis_rls_hides_queue_and_allows_completed_shared_re
         engine.dispose()
 
 
+def test_research_candidate_analysis_rls_pairs_schema_and_hides_pending_queue() -> None:
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    engine = create_engine(POSTGRES_RLS_DATABASE_URL, pool_pre_ping=True)
+    connection = engine.connect()
+    transaction = connection.begin()
+    event_id = str(uuid4())
+    analysis_id = str(uuid4())
+    try:
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO user_role_assignments (
+                    id, user_id, role_id, scope_id, valid_until, created_at, updated_at
+                )
+                SELECT :id, :user_id, roles.id, NULL, NULL,
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM roles
+                WHERE roles.code = 'platform_admin'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM user_role_assignments AS existing
+                      WHERE existing.user_id = :user_id
+                        AND existing.role_id = roles.id
+                  )
+                """
+            ),
+            {"id": str(uuid4()), "user_id": str(ALPHA_USER_ID)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO events (
+                    id, company_id, visibility_scope, owner_user_id, owner_tenant_id,
+                    event_type, event_subtype, status, direction, materiality_score,
+                    risk_severity, confidence_score, source_quality, title, summary,
+                    facts, uncertainties, occurred_at, published_at, published_on,
+                    observed_at, fingerprint_version, event_fingerprint,
+                    publication_route, publication_policy_version, publication_reasons,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, :company_id, 'platform_shared', NULL, NULL,
+                    'financing_cap_table', 'bounded_public_web_page', 'candidate',
+                    'uncertain', 70, 'low', 0.800, 'A',
+                    'RLS 公开研究候选', '公开页面出现融资变化线索。',
+                    CAST('[]' AS JSON), CAST('["尚待核实"]' AS JSON),
+                    NULL, CURRENT_TIMESTAMP, CURRENT_DATE, CURRENT_TIMESTAMP,
+                    'web-v1', :fingerprint, 'unconfirmed_lead',
+                    'bounded-web-quality-v4', CAST('["new_evidence_content"]' AS JSON),
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": event_id,
+                "company_id": str(demo_uuid("company-示例星河科技一号有限公司")),
+                "fingerprint": uuid4().hex.ljust(64, "0"),
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO investor_change_analyses (
+                    id, event_id, visibility_scope, status, provider, model,
+                    prompt_version, schema_version, input_hash, evidence_ids,
+                    analysis_output, input_tokens, output_tokens, estimated_cost,
+                    attempt_count, response_id, last_error_code, leased_until,
+                    heartbeat_at, created_at, updated_at
+                ) VALUES (
+                    :id, :event_id, 'platform_shared', 'pending', NULL, NULL,
+                    'bounded-research-candidate-zh-v1', 'research-candidate-analysis-v1',
+                    :input_hash, CAST('[]' AS JSON), NULL, 0, 0, 0, 0,
+                    NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {"id": analysis_id, "event_id": event_id, "input_hash": "c" * 64},
+        )
+
+        with pytest.raises(DBAPIError):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO investor_change_analyses (
+                            id, event_id, visibility_scope, status, prompt_version,
+                            schema_version, input_hash, evidence_ids, input_tokens,
+                            output_tokens, estimated_cost, attempt_count,
+                            created_at, updated_at
+                        ) VALUES (
+                            :id, :event_id, 'platform_shared', 'pending', 'wrong-schema',
+                            'investor-change-analysis-v1', :hash, CAST('[]' AS JSON),
+                            0, 0, 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {"id": str(uuid4()), "event_id": event_id, "hash": "d" * 64},
+                )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(BETA_USER_ID), "tenant_id": str(BETA_TENANT_ID)},
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM investor_change_analyses WHERE id = :id"),
+                {"id": analysis_id},
+            )
+            == 0
+        )
+
+        connection.execute(
+            text(
+                "SELECT set_config('app.current_user_id', :user_id, true), "
+                "set_config('app.current_tenant_id', :tenant_id, true)"
+            ),
+            {"user_id": str(ALPHA_USER_ID), "tenant_id": str(ALPHA_TENANT_ID)},
+        )
+        connection.execute(
+            text(
+                "UPDATE investor_change_analyses "
+                "SET status = 'completed', analysis_output = CAST('{}' AS JSON), "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+            ),
+            {"id": analysis_id},
+        )
+
+        for user_id, tenant_id in (
+            (NO_ACCESS_USER_ID, ALPHA_TENANT_ID),
+            (BETA_USER_ID, BETA_TENANT_ID),
+        ):
+            connection.execute(
+                text(
+                    "SELECT set_config('app.current_user_id', :user_id, true), "
+                    "set_config('app.current_tenant_id', :tenant_id, true)"
+                ),
+                {"user_id": str(user_id), "tenant_id": str(tenant_id)},
+            )
+            assert (
+                connection.scalar(
+                    text("SELECT count(*) FROM investor_change_analyses WHERE id = :id"),
+                    {"id": analysis_id},
+                )
+                == 1
+            )
+    finally:
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
 def test_investor_analysis_worker_rebinds_postgres_rls_context_after_commits() -> None:
     if not DATABASE_ADMIN_URL:
         pytest.skip("set DATABASE_ADMIN_URL to prepare worker transaction fixtures")
