@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "batch_id": "demo-exchange-identity-001",
+  "queried_at": "2026-09-06T09:00:00+08:00",
+  "source": {
+    "code": "demo_exchange_disclosure",
+    "name": "交易所披露示例（虚构测试资料）",
+    "base_url": "https://www.hkexnews.hk/"
+  },
+  "original_query": "示例星河科技一号有限公司",
+  "target_company_hint": "示例星河科技一号有限公司",
+  "verification_basis": "exchange_disclosure",
+  "review_reason": "仅供自动测试：确认示例文件中的名称、信用代码和地区属于同一主体，不代表真实交易所披露。",
+  "license_status": "public",
+  "records": [
+    {
+      "external_record_id": "demo-exchange-record-001",
+      "query_text": "示例星河科技一号有限公司",
+      "legal_name": "示例星河科技一号有限公司",
+      "credit_code": "91310000MA1K000006",
+      "registered_region": "虚构省甲市",
+      "registration_status": "未披露",
+      "canonical_url": "https://www.hkexnews.hk/listedco/listconews/sehk/2026/0101/demo-identity.pdf",
+      "checked_at": "2026-09-06T09:00:00+08:00",
+      "data_updated_at": "2026-01-01T00:00:00+08:00",
+      "identity_fields_confirmed": true,
+      "evidence_excerpt": "虚构测试资料：示例星河科技一号有限公司，统一社会信用代码 91310000MA1K000006，注册地区为虚构省甲市。",
+      "evidence_locator": "虚构示例第 1 页；不可作为真实证据"
+    }
+  ]
+}

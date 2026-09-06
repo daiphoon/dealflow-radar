@@ -48,7 +48,7 @@
 | `GET /reviews` | 身份例外及历史审核队列 | 按角色/范围排序；新导入不为每条事件创建任务 |
 | `GET /reviews/workbench` | 审核工作台详情 | V1 仅在显式开关开启后返回身份例外与既有历史候选 |
 | `POST /reviews/{id}/decision` | 既有事件审核决定 | 兼容批准或驳回；理由必填，事务发布并保留决定记录 |
-| `POST /reviews/{id}/identity-resolution` | 选择官方工商候选 | 要求审核员+机构管理员；更新身份、重建原事件/证据并按版本化策略重路由 |
+| `POST /reviews/{id}/identity-resolution` | 选择身份候选 | 要求审核员+机构管理员；ADR-0019 交易所披露候选额外要求 active 且有效的平台管理员；保留实际依据，更新身份、重建原事件/证据并按版本化策略重路由 |
 | `GET /sharing-candidates` | 平台共享候选工作台 | 仅平台管理员；读取可晋升的私有候选、身份/风险/来源/证据状态及既有决定 |
 | `POST /events/{id}/sharing/promotion` | 晋升独立共享事实 | 仅平台管理员；谨慎表述、理由、所选证据和必要确认必填；幂等创建或复用共享事件 |
 | `POST /events/{id}/sharing/rejection` | 拒绝私有候选晋升 | 仅平台管理员；保留私有候选并追加理由与策略审计 |

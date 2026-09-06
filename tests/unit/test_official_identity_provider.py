@@ -140,3 +140,76 @@ def test_official_identity_provider_rejects_files_outside_private_root(
 
     with pytest.raises(ValueError, match="private identity directory"):
         ManualOfficialIdentityImportProvider(outside, allowed_root=allowed_root).load()
+
+
+def _exchange_payload() -> dict:
+    return json.loads(Path("data/sample/exchange_identity_import.json").read_text())
+
+
+def test_exchange_identity_keeps_its_basis_and_manual_evidence(tmp_path: Path) -> None:
+    provider = _provider(tmp_path, _exchange_payload())
+    loaded = provider.load()
+    assert loaded.batch.verification_basis == "exchange_disclosure"
+    assert loaded.batch.records[0].identity_fields_confirmed is True
+    assert loaded.batch.records[0].evidence_locator
+    assert loaded.batch.review_reason
+    assert provider.external_calls == provider.estimated_cost == 0
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://www.hkexnews.hk/listedco/listconews/sehk/demo.pdf",
+        "https://www.hkexnews.hk.attacker.invalid/listedco/listconews/sehk/demo.pdf",
+        "https://attacker.hkexnews.hk/listedco/listconews/sehk/demo.pdf",
+        "https://user:password@www.hkexnews.hk/listedco/listconews/sehk/demo.pdf",
+        "https://www.hkexnews.hk:444/listedco/listconews/sehk/demo.pdf",
+        "https://127.0.0.1/listedco/listconews/sehk/demo.pdf",
+        "https://www.hkexnews.hk/",
+        "https://www.hkexnews.hk/listedco/listconews/sehk/demo.html",
+        "https://www.hkexnews.hk/listedco/listconews/sehk/../other.pdf",
+        "https://www.hkexnews.hk/listedco/listconews/sehk/%2e%2e/other.pdf",
+        "https://www.hkexnews.hk/listedco/listconews/sehk/demo.pdf?url=https://example.com",
+        "https://www.csrc.gov.cn/listedco/listconews/sehk/demo.pdf",
+    ],
+)
+def test_exchange_identity_rejects_non_disclosure_urls(tmp_path: Path, url: str) -> None:
+    payload = _exchange_payload()
+    payload["records"][0]["canonical_url"] = url
+    with pytest.raises(ValueError):
+        _provider(tmp_path, payload).load()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("identity_fields_confirmed", False),
+        ("identity_fields_confirmed", "true"),
+        ("evidence_excerpt", "此处没有信用代码"),
+        ("evidence_locator", "   "),
+        ("registered_region", "   "),
+        ("data_updated_at", None),
+        ("data_updated_at", "2027-01-01T00:00:00+08:00"),
+        ("checked_at", "2027-01-01T00:00:00+08:00"),
+        ("credit_code", "91310000MA1K000007"),
+    ],
+)
+def test_exchange_identity_requires_manual_field_confirmation(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    payload = _exchange_payload()
+    payload["records"][0][field] = value
+    with pytest.raises(ValueError):
+        _provider(tmp_path, payload).load()
+
+
+@pytest.mark.parametrize("field", ["review_reason", "verification_basis", "source"])
+def test_exchange_identity_cannot_claim_government_basis(tmp_path: Path, field: str) -> None:
+    payload = _exchange_payload()
+    payload[field] = {
+        "review_reason": " ",
+        "verification_basis": "official_government",
+        "source": {"code": "gov", "name": "政府", "base_url": "https://www.csrc.gov.cn/"},
+    }[field]
+    with pytest.raises(ValueError):
+        _provider(tmp_path, payload).load()

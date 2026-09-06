@@ -110,6 +110,25 @@ def _validate_identity_https_url(value: str) -> str:
     return value
 
 
+def _validate_exchange_identity_url(value: str, *, document: bool = False) -> str:
+    _validate_identity_https_url(value)
+    parsed = urlsplit(value)
+    if (
+        parsed.hostname not in {"hkexnews.hk", "www.hkexnews.hk", "www1.hkexnews.hk"}
+        or parsed.port not in {None, 443}
+        or parsed.query
+    ):
+        raise ValueError("exchange identity URL must use an approved HKEX disclosure host")
+    if document and (
+        not parsed.path.startswith("/listedco/listconews/sehk/")
+        or not parsed.path.endswith(".pdf")
+        or any(segment in {".", ".."} for segment in parsed.path.split("/"))
+        or "%" in parsed.path
+    ):
+        raise ValueError("exchange identity evidence must link to a formal disclosure PDF")
+    return value
+
+
 def validate_unified_credit_code(value: str) -> str:
     if len(value) != 18 or any(character not in UNIFIED_CREDIT_CODE_CHARSET for character in value):
         raise ValueError("credit_code must use the unified social credit code character set")
@@ -327,6 +346,9 @@ class OfficialIdentityRecord(BaseModel):
     registration_authority: str | None = Field(default=None, max_length=240)
     data_updated_at: datetime | None = None
     provider_metadata: dict[str, object] = Field(default_factory=dict)
+    identity_fields_confirmed: bool = Field(default=False, strict=True)
+    evidence_excerpt: str | None = Field(default=None, min_length=1, max_length=2000)
+    evidence_locator: str | None = Field(default=None, min_length=1, max_length=200)
 
     @field_validator("provider_metadata")
     @classmethod
@@ -391,7 +413,10 @@ class OfficialIdentityImportBatch(BaseModel):
     source: OfficialIdentitySource
     original_query: str = Field(min_length=1, max_length=1000)
     target_company_hint: str = Field(min_length=1, max_length=240)
-    verification_basis: Literal["official_government"] = "official_government"
+    verification_basis: Literal["official_government", "exchange_disclosure"] = (
+        "official_government"
+    )
+    review_reason: str | None = Field(default=None, min_length=1, max_length=1000)
     license_status: Literal["public"]
     records: list[OfficialIdentityRecord] = Field(min_length=1, max_length=500)
 
@@ -404,6 +429,34 @@ class OfficialIdentityImportBatch(BaseModel):
 
     @model_validator(mode="after")
     def validate_basis_source_and_license(self) -> OfficialIdentityImportBatch:
+        if self.verification_basis == "exchange_disclosure":
+            _validate_exchange_identity_url(self.source.base_url)
+            if not self.review_reason or not self.review_reason.strip():
+                raise ValueError("exchange identity requires a manual review_reason")
+            for record in self.records:
+                _validate_exchange_identity_url(record.canonical_url, document=True)
+                if (
+                    not record.identity_fields_confirmed
+                    or not record.registered_region
+                    or not record.registered_region.strip()
+                    or not record.evidence_locator
+                    or not record.evidence_locator.strip()
+                    or not record.evidence_excerpt
+                    or record.credit_code not in "".join(record.evidence_excerpt.split())
+                    or record.data_updated_at is None
+                ):
+                    raise ValueError(
+                        "exchange identity requires confirmed name/code/region, disclosure date, "
+                        "evidence locator and excerpt containing the credit code"
+                    )
+                if (
+                    record.data_updated_at > record.checked_at
+                    or record.checked_at > self.queried_at
+                ):
+                    raise ValueError(
+                        "exchange identity dates must follow disclosure/check/import order"
+                    )
+            return self
         _validate_official_identity_url(self.source.base_url)
         for record in self.records:
             _validate_official_identity_url(record.canonical_url)

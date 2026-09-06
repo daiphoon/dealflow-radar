@@ -63,7 +63,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `company_research_jobs` | 全局公司级研究队列、九类投资研究覆盖状态、租约、取消和调用/缓存/Token 计数；旧任务的历史模块状态继续兼容读取 | 同一公司仅一个活动任务；多个个人或机构请求可关联同一任务；模块状态保存在既有 `coverage` JSON |
 | `web_search_cache_entries` | Provider、规范查询、查询组、公司身份指纹、结果与响应哈希、取得/到期时间 | 全局公共搜索缓存；唯一 `(provider_code, query_hash, company_identity_fingerprint, policy_version)`；只允许平台管理员 Worker 通过 RLS 读写 |
 | `research_imports` | tenant、导入人、批次、格式、工具、原始文件哈希、许可、自动发布/未确认/身份审核计数与状态 | `(tenant_id, batch_id)` 和 `(tenant_id, file_hash, parser_version)` 唯一；机构管理员 RLS；状态索引 |
-| `official_identity_verifications` | tenant、公司候选、私有身份原文档、查询词、工商全称、信用代码、注册地、登记状态、`verification_basis`、核验结果/规则/时间 | 每份原文档唯一核验记录；依据只能为政府官方或授权商业；tenant/状态/时间及信用代码索引；管理员写、审核员读 RLS |
+| `official_identity_verifications` | tenant、公司候选、私有身份原文档、查询词、工商全称、信用代码、注册地、登记状态、`verification_basis`、核验结果/规则/时间 | 每份原文档唯一核验记录；当前入口为政府官方或 ADR-0019 交易所披露人工核验，旧商业依据仅留历史兼容；tenant/状态/时间及信用代码索引；原管理员写、审核员读 RLS 不扩张，交易所入口应用层额外要求平台管理员 |
 | `trusted_sources` | tenant、公司、来源类型、允许域名、起始 URL、可选列表内容路径、许可依据、检查频率、保留策略和最近状态 | 同 tenant/company/URL 唯一；仅当前 tenant 平台管理员可读写；列表路径变更会清除起始页条件缓存 |
 | `source_check_runs` | 来源检查队列、人工/定时触发与应检查时间、策略与资源上限快照、租约、请求/字节/变化/失败计数、robots 状态、请求审计和零费用字段 | 同来源仅一个活跃任务；定时幂等键包含 source 与 due time；tenant/company/source 复合血缘；RLS；运行记录不被后续配置静默改写 |
 | `candidate_documents` | 新增或变化页面的 URL、标题、日期、哈希、最小摘录、许可、链接状态、发现运行、前版本、人工处理状态和研究交接定位 | 同来源/URL/哈希唯一；tenant/company/source/run 复合外键；默认 `organization_private`；只能通过显式结构化交接生成同 tenant 的私有候选，不直接生成共享事实 |

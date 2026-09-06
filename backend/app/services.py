@@ -574,8 +574,9 @@ def _resolve_official_identity_company(
     session: Session,
     tenant_id: UUID,
     record: OfficialIdentityRecord,
+    verification_basis: str = "official_government",
 ) -> tuple[Company | None, str, str]:
-    match_prefix = "official"
+    match_prefix = "exchange" if verification_basis == "exchange_disclosure" else "official"
     visible_company = or_(Company.tenant_id.is_(None), Company.tenant_id == tenant_id)
     company = session.scalar(
         select(Company).where(visible_company, Company.credit_code == record.credit_code)
@@ -584,9 +585,11 @@ def _resolve_official_identity_company(
         _record_identity_check(company, record.checked_at)
         name_matches = company.legal_name == record.legal_name
         region_matches = _regions_compatible(company.registered_region, record.registered_region)
+        if verification_basis == "exchange_disclosure" and not region_matches:
+            return company, "exchange_credit_code_registered_region_conflict", "conflict"
         if name_matches:
             company.identity_status = "verified"
-            company.identity_verification_basis = "official_government"
+            company.identity_verification_basis = verification_basis
             if company.registered_region is None:
                 company.registered_region = record.registered_region
             match_rule = f"{match_prefix}_credit_code_exact"
@@ -613,7 +616,7 @@ def _resolve_official_identity_company(
         return company, f"{match_prefix}_legal_name_registered_region_conflict", "conflict"
     company.credit_code = record.credit_code
     company.identity_status = "verified"
-    company.identity_verification_basis = "official_government"
+    company.identity_verification_basis = verification_basis
     if company.registered_region is None:
         company.registered_region = record.registered_region
     return company, f"{match_prefix}_legal_name_exact_credit_code_enriched", "verified"
@@ -663,6 +666,11 @@ def import_official_identities(
         session.rollback()
         raise AccessDeniedError("institution_admin role required")
     loaded = provider.load()
+    if loaded.batch.verification_basis == "exchange_disclosure" and (
+        user.status != "active" or not user_has_role(session, user.id, "platform_admin")
+    ):
+        session.rollback()
+        raise AccessDeniedError("active platform_admin required for exchange disclosure identity")
     existing_file = session.scalar(
         select(ResearchImport).where(
             ResearchImport.tenant_id == user.tenant_id,
@@ -721,6 +729,7 @@ def import_official_identities(
                 session,
                 user.tenant_id,
                 record,
+                batch.verification_basis,
             )
             if verification_status == "verified":
                 verified_count += 1
@@ -733,6 +742,14 @@ def import_official_identities(
                     unmatched_count += 1
 
             record_payload = record.model_dump(mode="json")
+            if batch.verification_basis == "exchange_disclosure":
+                record_payload["manual_review"] = {
+                    "reviewed_by": str(user.id),
+                    "reviewed_at": utc_now().isoformat(),
+                    "reason": batch.review_reason,
+                    "verification_basis": batch.verification_basis,
+                    "policy_version": "exchange-identity-v1",
+                }
             content_hash = _sha256(json.dumps(record_payload, ensure_ascii=False, sort_keys=True))
             source_record_key = _sha256(
                 f"{user.tenant_id}:{batch.batch_id}:{record.external_record_id}"
@@ -2198,7 +2215,9 @@ def _identity_candidates_for_mention(
         .where(
             OfficialIdentityVerification.tenant_id == tenant_id,
             OfficialIdentityVerification.company_id.is_not(None),
-            OfficialIdentityVerification.verification_basis == "official_government",
+            OfficialIdentityVerification.verification_basis.in_(
+                ["official_government", "exchange_disclosure"]
+            ),
             OfficialIdentityVerification.verification_status.in_(["verified", "conflict"]),
         )
         .order_by(OfficialIdentityVerification.checked_at.desc())
@@ -3298,6 +3317,12 @@ def resolve_identity_review(
         verification = session.get(OfficialIdentityVerification, verification_id)
         if verification is None or verification.company_id is None:
             raise AccessDeniedError("identity candidate is unavailable")
+        if verification.verification_basis == "exchange_disclosure" and (
+            user.status != "active" or not user_has_role(session, user.id, "platform_admin")
+        ):
+            raise AccessDeniedError(
+                "active platform_admin required for exchange disclosure identity"
+            )
         company = session.get(Company, verification.company_id)
         identity_document = session.get(RawDocument, verification.raw_document_id)
         source_document = session.get(RawDocument, mention.raw_document_id)
