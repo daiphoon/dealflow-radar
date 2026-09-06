@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import replace
 from decimal import Decimal
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -37,7 +39,9 @@ from backend.app.investor_analysis_schema import (
     LLMProviderResult,
 )
 from backend.app.main import create_app
-from backend.app.models import User
+from backend.app.models import Company, OfficialIdentityVerification, RawDocument, User
+from backend.app.providers import ManualOfficialIdentityImportProvider
+from backend.app.services import import_official_identities
 from backend.app.web_research_service import SEARCH_GROUPS, run_web_research_worker_once
 from backend.app.web_search import MockSearchProvider
 
@@ -367,6 +371,82 @@ def _create_research_import(
             "file_hash": file_hash,
         },
     )
+
+
+def test_exchange_identity_evidence_remains_tenant_private(tmp_path: Path) -> None:
+    assert POSTGRES_RLS_DATABASE_URL is not None
+    engine = create_engine(POSTGRES_RLS_DATABASE_URL)
+    connection = engine.connect()
+    transaction = connection.begin()
+    payload = json.loads(Path("data/sample/exchange_identity_import.json").read_text())
+    payload["batch_id"] = f"exchange-rls-{uuid4()}"
+    path = tmp_path / "exchange.json"
+    path.write_text(json.dumps(payload))
+    provider = ManualOfficialIdentityImportProvider(path, allowed_root=tmp_path)
+    try:
+        with Session(bind=connection, join_transaction_mode="create_savepoint") as session:
+            set_request_context(session, ALPHA_USER_ID, ALPHA_TENANT_ID)
+            connection.execute(
+                text(
+                    "INSERT INTO user_role_assignments "
+                    "(id,user_id,role_id,scope_id,valid_until,created_at,updated_at) "
+                    "SELECT :id,:user_id,id,NULL,NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP "
+                    "FROM roles WHERE code='platform_admin'"
+                ),
+                {"id": uuid4(), "user_id": ALPHA_USER_ID},
+            )
+            user = session.get(User, ALPHA_USER_ID)
+            assert user is not None
+            company = session.get(Company, demo_uuid("company-示例星河科技一号有限公司"))
+            assert company is not None
+            company.credit_code = "91310000MA1K000006"
+            result = import_official_identities(session, user, provider)
+            assert result.verified_records == 1
+            verification_id = connection.scalar(
+                text(
+                    "SELECT id FROM official_identity_verifications WHERE verification_basis="
+                    "'exchange_disclosure' ORDER BY created_at DESC LIMIT 1"
+                )
+            )
+            verification = session.get(OfficialIdentityVerification, verification_id)
+            assert verification is not None
+            document_id = verification.raw_document_id
+            document = session.get(RawDocument, document_id)
+            assert document is not None and document.owner_tenant_id == ALPHA_TENANT_ID
+            session.commit()
+
+        for viewer, tenant in (
+            (NO_ACCESS_USER_ID, ALPHA_TENANT_ID),
+            (BETA_USER_ID, BETA_TENANT_ID),
+        ):
+            connection.execute(
+                text(
+                    "SELECT set_config('app.current_user_id',:user_id,true), "
+                    "set_config('app.current_tenant_id',:tenant_id,true)"
+                ),
+                {"user_id": str(viewer), "tenant_id": str(tenant)},
+            )
+            for table, record_id in (
+                ("official_identity_verifications", verification_id),
+                ("raw_documents", document_id),
+            ):
+                assert (
+                    connection.scalar(
+                        text(f"SELECT count(*) FROM {table} WHERE id=:id"), {"id": record_id}
+                    )
+                    == 0
+                )
+                assert (
+                    connection.execute(
+                        text(f"UPDATE {table} SET updated_at=CURRENT_TIMESTAMP WHERE id=:id"),
+                        {"id": record_id},
+                    ).rowcount
+                    == 0
+                )
+    finally:
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
 
 
 def test_non_owner_role_enforces_tenant_fund_and_review_rls() -> None:

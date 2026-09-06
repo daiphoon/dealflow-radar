@@ -179,7 +179,7 @@ class Company(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint(
             "identity_verification_basis IS NULL OR identity_verification_basis IN "
-            "('official_government', 'licensed_business_data')",
+            "('official_government', 'licensed_business_data', 'exchange_disclosure')",
             name="ck_company_identity_verification_basis",
         ),
     )
@@ -796,7 +796,8 @@ class OfficialIdentityVerification(TimestampMixin, Base):
             name="ck_official_identity_status",
         ),
         CheckConstraint(
-            "verification_basis IN ('official_government', 'licensed_business_data')",
+            "verification_basis IN "
+            "('official_government', 'licensed_business_data', 'exchange_disclosure')",
             name="ck_official_identity_verification_basis",
         ),
         Index(

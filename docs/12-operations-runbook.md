@@ -253,6 +253,16 @@ uv run python -m scripts.import_official_identity_json
 
 V1 只接收不超过 1 MiB、最多 500 条且许可为 `public` 的 JSON。不得放入内部财务、投资协议、投委会材料、API Key、Cookie 或商业数据库受限内容；原始文件由操作者在私有目录管理，不进入 Git，也不会被系统复制到存储。当前没有网页/API 上传入口。
 
+### 交易所披露资料人工身份核验（ADR-0019）
+
+仅在 `0026` 合并部署后使用；本节不是打开研究开关的指令。复用上方 CLI，JSON 结构参考 `data/sample/exchange_identity_import.json`（完全虚构，不可当真实证据导入）。真实文件放在 `data/private/identity_imports/`，设置 `IDENTITY_IMPORT_FILE` 后先执行同一 `IDENTITY_IMPORT_DRY_RUN=true` 命令；应显示 `verification_basis=exchange_disclosure` 和零数据库写入/外部调用/Token。
+
+人工核对港交所正式披露 PDF 的发行主体、工商全称、代码及校验位、注册地区、披露日期和页码。填 `identity_fields_confirmed=true`、包含信用代码的最小 `evidence_excerpt`、`evidence_locator`、`review_reason`；不得从其他主体或文件拼接必要字段。`data_updated_at ≤ checked_at ≤ queried_at`；未知登记状态保持未知，不把历史披露说成实时工商查询。当前只准入 ADR-0019 明列的 HKEX 域名和正式 PDF 路径；程序不联网下载或自动理解文件。
+
+正式导入者须 active 且同时有机构管理员、平台管理员；重复文件返回 `duplicate`。冲突保留原公司数据，在原身份工作台处理时额外要求有效平台管理员及原审核员/机构管理员。核验文档和人工审计只在本租户私有层保存，不能随共享公司身份一起公开。许可 `public` 不代表可商业再分发全文；本流程不生成共享事件或研究任务。核验完成后仍须按原请求审批及 U01 单任务预算单独执行。
+
+迁移 `0026` 只扩展两项依据约束，不回填既有数据。升级前后备份；没有新依据记录时可降级，任一相关表已有新依据记录时程序会拒绝 downgrade。不得改标来源或删记录强行回退，优先保留数据库结构并评估应用版本回退。
+
 ### 旧商业数据供应商 R1 退役部署
 
 R1 合并前不得删除生产 Secret、缓存或历史数据库记录。正确顺序是：

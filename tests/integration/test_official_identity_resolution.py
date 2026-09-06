@@ -30,8 +30,10 @@ from backend.app.models import (
     OfficialIdentityVerification,
     ResearchImport,
     ReviewQueue,
+    Role,
     UsageLedger,
     User,
+    UserRoleAssignment,
 )
 from backend.app.providers import (
     ManualOfficialIdentityImportProvider,
@@ -171,10 +173,12 @@ def test_official_identity_conflict_is_recorded_without_silent_master_data_chang
         assert company.last_identity_checked_at is not None
 
 
+@pytest.mark.parametrize("basis", ["official_government", "exchange_disclosure"])
 def test_identity_selection_reroutes_original_record_without_external_call(
     tmp_path: Path,
     manual_import_payload: dict[str, object],
     migrated_app: FastAPI,
+    basis: str,
 ) -> None:
     query_text = "星河技术品牌"
     legal_name = "示例星河科技一号有限公司"
@@ -190,10 +194,28 @@ def test_identity_selection_reroutes_original_record_without_external_call(
         manual_payload,
         ManualResearchImportProvider,
     )
+    identity_payload = _official_payload(query_text=legal_name, legal_name=official_legal_name)
+    if basis == "exchange_disclosure":
+        identity_payload.update(
+            verification_basis=basis,
+            review_reason="人工确认虚构交易所披露中的名称、代码和注册地区",
+            source={
+                "code": "demo_exchange_disclosure",
+                "name": "交易所披露示例（虚构测试资料）",
+                "base_url": "https://www.hkexnews.hk/",
+            },
+        )
+        identity_payload["records"][0].update(
+            canonical_url="https://www.hkexnews.hk/listedco/listconews/sehk/2026/0101/demo.pdf",
+            data_updated_at=identity_payload["queried_at"],
+            identity_fields_confirmed=True,
+            evidence_excerpt=f"{official_legal_name}，91310000MA1K000006，虚构省甲市",
+            evidence_locator="虚构测试第 1 页",
+        )
     identity_provider = _write_provider(
         tmp_path,
         "identity.json",
-        _official_payload(query_text=legal_name, legal_name=official_legal_name),
+        identity_payload,
         ManualOfficialIdentityImportProvider,
     )
     assert isinstance(manual_provider, ManualResearchImportProvider)
@@ -202,6 +224,12 @@ def test_identity_selection_reroutes_original_record_without_external_call(
     with migrated_app.state.session_factory() as session:
         user = session.get(User, ALPHA_USER_ID)
         assert user is not None
+        if basis == "exchange_disclosure":
+            role = session.scalar(select(Role).where(Role.code == "platform_admin"))
+            assignment = UserRoleAssignment(user_id=user.id, role_id=role.id)
+            session.add(assignment)
+            session.flush()
+            platform_assignment_id = assignment.id
         company = session.scalar(select(Company).where(Company.legal_name == legal_name))
         assert company is not None
         company.credit_code = "91310000MA1K000006"
@@ -243,7 +271,23 @@ def test_identity_selection_reroutes_original_record_without_external_call(
         assert candidate["verification_id"] == str(verification_id)
         assert candidate["credit_code"] == "91310000MA1K000006"
         assert candidate["verification_status"] == "conflict"
-        assert candidate["verification_basis"] == "official_government"
+        assert candidate["verification_basis"] == basis
+
+        if basis == "exchange_disclosure":
+            with migrated_app.state.session_factory() as session:
+                assignment = session.get(UserRoleAssignment, platform_assignment_id)
+                assignment.valid_until = datetime.now(UTC) - timedelta(days=1)
+                session.commit()
+            denied = client.post(
+                f"/api/v1/reviews/{review_id}/identity-resolution",
+                headers={"X-Demo-User-Id": str(ALPHA_USER_ID)},
+                json={"verification_id": str(verification_id), "reason": "无有效平台授权"},
+            )
+            assert denied.status_code == 403
+            with migrated_app.state.session_factory() as session:
+                assignment = session.get(UserRoleAssignment, platform_assignment_id)
+                assignment.valid_until = None
+                session.commit()
 
         resolved = client.post(
             f"/api/v1/reviews/{review_id}/identity-resolution",
@@ -310,6 +354,7 @@ def test_identity_selection_reroutes_original_record_without_external_call(
         assert mention.resolution_status == "verified"
         assert mention.candidate_company_id is not None
         assert company is not None and company.legal_name == official_legal_name
+        assert company.identity_verification_basis == basis
         assert former_name is not None and former_name.alias == legal_name
         assert former_name.verification_status == "verified"
         assert former_name.visibility_scope == PLATFORM_SHARED_SCOPE
