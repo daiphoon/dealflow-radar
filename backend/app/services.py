@@ -36,6 +36,7 @@ from backend.app.models import (
     CandidateDocument,
     Company,
     CompanyAlias,
+    CompanyResearchJob,
     CompanySnapshot,
     EntityMention,
     Event,
@@ -49,6 +50,7 @@ from backend.app.models import (
     Investment,
     InvestorChangeAnalysis,
     OfficialIdentityVerification,
+    PersonalCompanyRequest,
     RawDocument,
     RefreshJob,
     ResearchImport,
@@ -75,6 +77,7 @@ from backend.app.providers import (
     OfficialIdentityProvider,
     OfficialIdentityRecord,
 )
+from backend.app.research_outcome import research_result
 from backend.app.schemas import (
     AtomicFactOut,
     CompanyDetail,
@@ -3159,6 +3162,21 @@ def get_company_detail(
             .order_by(Event.observed_at.desc())
         )
     )
+    own_job = session.scalar(
+        select(CompanyResearchJob)
+        .join(
+            PersonalCompanyRequest, PersonalCompanyRequest.research_job_id == CompanyResearchJob.id
+        )
+        .where(
+            PersonalCompanyRequest.owner_user_id == user.id,
+            PersonalCompanyRequest.company_id == company_id,
+            CompanyResearchJob.company_id == company_id,
+            PersonalCompanyRequest.status == "completed",
+            CompanyResearchJob.status == "completed",
+        )
+        .order_by(PersonalCompanyRequest.created_at.desc(), PersonalCompanyRequest.id.desc())
+        .limit(1)
+    )
     detail = CompanyDetail(
         id=company.id,
         is_platform_shared=shared_company,
@@ -3168,6 +3186,7 @@ def get_company_detail(
         official_website=company.official_website,
         identity_status=company.identity_status,
         identity_verification_basis=company.identity_verification_basis,
+        personal_research_result=research_result(own_job),
         data_as_of=snapshot.data_as_of if snapshot else None,
         last_checked_at=snapshot.last_checked_at if snapshot else None,
         freshness_status=freshness_status,

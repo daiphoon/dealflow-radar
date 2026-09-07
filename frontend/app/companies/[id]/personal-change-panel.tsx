@@ -266,7 +266,7 @@ export function PersonalChangePanel({
         : `上次查看 ${formatDate(view.previous_viewed_at)}`,
       intro:
         !view.first_view && newMaterialChanges.length === 0
-          ? "自上次查看以来没有新的重要变化；以下保留最近的重要变化，方便回顾。"
+          ? "自上次查看以来，平台暂无新增的已核实重要变化记录；这不代表公司没有变化。以下保留已有记录，方便回顾。"
           : "只呈现已经发生变化、并可能影响投资判断的内容。",
       active,
       additional,

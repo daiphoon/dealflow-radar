@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -401,10 +402,13 @@ class _ContentQualityDecision:
     source_published_at: datetime | None
     observed_at: datetime
     recency_cutoff_at: datetime
+    occurred_at: datetime | None = None
+    event_date_status: str = "unknown"
 
     def to_dict(self) -> dict[str, object]:
         return {
             "version": CONTENT_QUALITY_GATE_VERSION,
+            "change_recognition_version": "explicit-change-v2",
             "status": "eligible" if self.eligible else "internal_only",
             "event_type": self.event_type,
             "supporting_excerpt_hash": (
@@ -417,6 +421,8 @@ class _ContentQualityDecision:
             ),
             "observed_at": self.observed_at.isoformat(),
             "recency_cutoff_at": self.recency_cutoff_at.isoformat(),
+            "event_date_status": self.event_date_status,
+            "occurred_at": self.occurred_at.isoformat() if self.occurred_at else None,
         }
 
 
@@ -1485,6 +1491,14 @@ def _event_classification(title: str, excerpt: str) -> str | None:
             re.search(pattern, content, flags=re.IGNORECASE)
             for pattern in EVENT_CHANGE_PATTERNS.get(event_type, ())
         )
+        if event_type == "exit_liquidity" and not has_change:
+            # Only completed-listing wording; plans and failed attempts are not completion.
+            has_change = bool(
+                re.search(r"成功(?:赴港|(?:在|于)\s*[\u4e00-\u9fff ]{0,16})?\s*上市", content)
+                and not re.search(
+                    r"拟|计划|预计|有望|争取|尚未|未能|没有|未成功|不曾|将|如果|若|目标", content
+                )
+            )
         if has_category and has_change:
             return event_type
     return None
@@ -1511,6 +1525,27 @@ def _body_identity_match(company: Company, value: str) -> bool:
     return _normalized_identity_for_match(company.legal_name) in normalized or bool(
         company.credit_code and _normalized_identity_for_match(company.credit_code) in normalized
     )
+
+
+def _explicit_event_date(company: Company, passage: str) -> tuple[datetime | None, str]:
+    # A date must lead the supporting sentence. Do not borrow years from publication
+    # metadata or dates describing a company's founding/history later in the passage.
+    match = re.match(r"^\s*(\d{4})年(\d{1,2})月(\d{1,2})日[，,\s]", passage)
+    if match:
+        remainder = passage[match.end() :]
+        if not _normalized_identity_for_match(remainder).startswith(
+            _normalized_identity_for_match(company.legal_name)
+        ) or re.search(r"\d{1,2}月\d{1,2}日", remainder):
+            return None, "body_date_ambiguous"
+        try:
+            return datetime(
+                *map(int, match.groups()), tzinfo=ZoneInfo("Asia/Shanghai")
+            ), "explicit_body_date"
+        except ValueError:
+            return None, "invalid_body_date"
+    if re.match(r"^\s*\d{1,2}月\d{1,2}日[，,\s]", passage):
+        return None, "body_date_year_unknown"
+    return None, "unknown"
 
 
 def _content_quality_decision(
@@ -1541,6 +1576,8 @@ def _content_quality_decision(
 
     matched_type: str | None = None
     supporting_excerpt: str | None = None
+    occurred_at: datetime | None = None
+    event_date_status = "unknown"
     for passage in identity_passages:
         # The subject and the change must be supported by the same body passage.
         # A headline keyword must not combine with an unrelated company profile
@@ -1550,6 +1587,11 @@ def _content_quality_decision(
             continue
         matched_type = event_type
         supporting_excerpt = f"{title}。{passage}"[:1000]
+        occurred_at, event_date_status = _explicit_event_date(company, passage)
+        if occurred_at is not None and occurred_at > observed:
+            occurred_at = None
+            event_date_status = "future_body_date"
+            reasons.append("event_date_in_future")
         break
     if matched_type is None:
         unrelated_change = any(_event_classification("", item) for item in passages)
@@ -1567,6 +1609,8 @@ def _content_quality_decision(
             source_published_at=published,
             observed_at=observed,
             recency_cutoff_at=recency_cutoff,
+            occurred_at=occurred_at,
+            event_date_status=event_date_status,
         )
     return _ContentQualityDecision(
         eligible=True,
@@ -1576,6 +1620,8 @@ def _content_quality_decision(
         source_published_at=published,
         observed_at=observed,
         recency_cutoff_at=recency_cutoff,
+        occurred_at=occurred_at,
+        event_date_status=event_date_status,
     )
 
 
@@ -1724,9 +1770,13 @@ def _candidate_event(
         facts=[{"name": "公开页面标题", "value": document.title, "unit": None}],
         uncertainties=[
             "该内容由程序发现并完成主体核对，尚未经过人工事实复核。",
-            "来源发布时间已经记录，事件实际发生时间尚未独立核验。",
+            (
+                "事件日期取自支持正文，尚未独立核验；来源发布时间不是事件发生时间。"
+                if quality.occurred_at is not None
+                else "事件日期尚不完整或未知，不以来源发布时间代替，也不代表近期新变化。"
+            ),
         ],
-        occurred_at=None,
+        occurred_at=quality.occurred_at,
         published_at=document.published_at,
         published_on=document.published_on,
         observed_at=document.observed_at,
@@ -1740,6 +1790,8 @@ def _candidate_event(
             "content_quality_gate_passed",
             "source_published_within_recent_window",
             "event_time_not_independently_verified",
+            f"event_date:{quality.event_date_status}",
+            "change_recognition:explicit-change-v2",
             "human_fact_review_not_completed",
             *(["new_evidence_content"] if new_document else ["reused_evidence_content"]),
             *(["serious_negative_requires_review"] if severe else []),
@@ -1768,7 +1820,11 @@ def _candidate_event(
             display_observed_at=document.observed_at,
             display_url_health_status=str(verification.get("status") or "healthy"),
             display_url_http_status=verification.get("http_status"),
-            display_url_checked_at=utc_now(),
+            display_url_checked_at=(
+                _search_result_datetime(verification["checked_at"])
+                if isinstance(verification.get("checked_at"), str)
+                else None
+            ),
             display_final_url=document.canonical_url,
             display_license_status="public",
             display_allowed=True,

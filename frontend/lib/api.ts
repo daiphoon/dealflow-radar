@@ -242,6 +242,13 @@ export type Investment = {
   visibility_scope: string;
 };
 
+export type ResearchResult = {
+  outcome: "no_usable_evidence" | "candidates_available";
+  finished_at: string | null;
+  message: string;
+  limitations: string[];
+};
+
 export type CompanyDetail = {
   id: string;
   is_platform_shared: boolean;
@@ -260,6 +267,7 @@ export type CompanyDetail = {
   platform_unconfirmed_leads: Event[];
   private_events: Event[];
   unconfirmed_leads: Event[];
+  personal_research_result: ResearchResult | null;
 };
 
 export type PersonalWatchlistItem = {
@@ -275,6 +283,7 @@ export type PersonalWatchlistItem = {
 };
 
 export type PersonalCompanyRequest = {
+  research_result: ResearchResult | null;
   id: string;
   owner_user_id: string;
   request_type: "inclusion" | "refresh";

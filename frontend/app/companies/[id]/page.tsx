@@ -71,10 +71,11 @@ const factSupportLabels: Record<string, string> = {
   unsupported: "现有证据未支持",
 };
 
-function formatDate(value: string | null): string {
+function formatDate(value: string | null, includeTime = false): string {
   if (!value) return "未知";
   return new Intl.DateTimeFormat("zh-CN", {
     dateStyle: "medium",
+    timeStyle: includeTime ? "short" : undefined,
     timeZone: "Asia/Shanghai",
   }).format(new Date(value));
 }
@@ -158,7 +159,13 @@ function EventCard({
     <article className="event-card">
       <div className="event-meta">
         <span>{eventTypeLabels[event.event_type] ?? event.event_type}</span>
-        <span>{formatDate(eventDate)}</span>
+        <span>
+          {unconfirmed
+            ? event.occurred_at
+              ? `正文所述事件日期：${formatDate(event.occurred_at)}（待核实）`
+              : `事件日期待核实 · 来源发布：${formatDate(eventDate)}（不代表近期发生）`
+            : formatDate(eventDate)}
+        </span>
         <span
           className={`risk ${isLicensedSourceRecord ? "risk-unknown" : `risk-${event.risk_severity}`}`}
         >
@@ -236,8 +243,8 @@ function EventCard({
         <p className="privacy-note">
           该信息由系统自动保留，尚未升级为已确认事实，也不会进入公司风险结论或快照。
           {event.publication_reasons.length > 0
-            ? ` 原因：${event.publication_reasons
-                .map((reason) => publicationReasonLabels[reason] ?? "仍需进一步核实")
+            ? ` 原因：${Array.from(new Set(event.publication_reasons
+                .map((reason) => publicationReasonLabels[reason] ?? "仍需进一步核实")))
                 .join("、")}。`
             : ""}
         </p>
@@ -461,7 +468,8 @@ export default async function CompanyDetailPage({
             <p>
               工商主体身份：
               {identityLabel(company.identity_status, company.identity_verification_basis)} · 数据基准日
-              {formatDate(company.data_as_of)} · 最后检查 {formatDate(company.last_checked_at)}
+              {formatDate(company.data_as_of)} · 已发布资料检查：
+              {company.last_checked_at ? formatDate(company.last_checked_at) : "尚无已发布资料"}
             </p>
             <p>统一社会信用代码：{company.credit_code ?? "暂未收录"}</p>
             {company.official_website ? (
@@ -510,6 +518,19 @@ export default async function CompanyDetailPage({
             )}
           </div>
         </section>
+
+        {company.personal_research_result ? (
+          <section className="panel" aria-label="我的最近一次研究结果">
+            <h2>我的最近一次查询结果</h2>
+            <p>本轮结束时间：{formatDate(company.personal_research_result.finished_at, true)}</p>
+            <p>{company.personal_research_result.message}</p>
+            {company.personal_research_result.limitations.length > 0 ? (
+              <ul>
+                {company.personal_research_result.limitations.map((item) => <li key={item}>{item}</li>)}
+              </ul>
+            ) : null}
+          </section>
+        ) : null}
 
         {company.is_platform_shared ? (
           <PersonalChangePanel companyId={company.id} materialChanges={materialChanges} />

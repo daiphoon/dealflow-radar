@@ -17,6 +17,7 @@ from backend.app.auth import AuthTokenSet, VerificationChallenge, VerifiedIdenti
 from backend.app.config import (
     CloudBaseAuthPolicy,
     InvestorAnalysisPolicy,
+    RefreshPolicy,
     Settings,
     WebResearchPolicy,
 )
@@ -39,9 +40,16 @@ from backend.app.investor_analysis_schema import (
     LLMProviderResult,
 )
 from backend.app.main import create_app
-from backend.app.models import Company, OfficialIdentityVerification, RawDocument, User
+from backend.app.models import (
+    Company,
+    CompanyResearchJob,
+    OfficialIdentityVerification,
+    PersonalCompanyRequest,
+    RawDocument,
+    User,
+)
 from backend.app.providers import ManualOfficialIdentityImportProvider
-from backend.app.services import import_official_identities
+from backend.app.services import get_company_detail, import_official_identities
 from backend.app.web_research_service import SEARCH_GROUPS, run_web_research_worker_once
 from backend.app.web_search import MockSearchProvider
 
@@ -2601,6 +2609,69 @@ def test_personal_retention_rls_is_owner_private_and_requests_are_explicitly_adm
         transaction.rollback()
         connection.close()
         engine.dispose()
+
+
+def test_company_research_result_remains_owner_only_with_postgres_rls() -> None:
+    if not DATABASE_ADMIN_URL:
+        pytest.skip("set DATABASE_ADMIN_URL to prepare fixtures")
+    admin_engine = create_engine(DATABASE_ADMIN_URL)
+    app_engine = create_engine(POSTGRES_RLS_DATABASE_URL)
+    job_id, request_id = uuid4(), uuid4()
+    company_id = demo_uuid("company-示例星河科技一号有限公司")
+    try:
+        with Session(admin_engine) as session:
+            session.add(
+                CompanyResearchJob(
+                    id=job_id,
+                    company_id=company_id,
+                    created_by_user_id=NO_ACCESS_USER_ID,
+                    status="completed",
+                    current_stage="completed",
+                    policy_version="bounded-web-v3",
+                    coverage={
+                        "completed_at": "2026-09-06T02:53:33+00:00",
+                        "stats": {"quality_gate_passed": 0},
+                    },
+                )
+            )
+            session.flush()
+            session.add(
+                PersonalCompanyRequest(
+                    id=request_id,
+                    owner_user_id=NO_ACCESS_USER_ID,
+                    request_type="refresh",
+                    company_id=company_id,
+                    target_key=f"rls-outcome-{request_id}",
+                    status="completed",
+                    research_job_id=job_id,
+                )
+            )
+            session.commit()
+        for user_id, tenant_id in (
+            (NO_ACCESS_USER_ID, ALPHA_TENANT_ID),
+            (ALPHA_USER_ID, ALPHA_TENANT_ID),
+            (BETA_USER_ID, BETA_TENANT_ID),
+        ):
+            with Session(app_engine) as session:
+                set_request_context(session, user_id, tenant_id)
+                user = session.get(User, user_id)
+                result = get_company_detail(
+                    session, user, company_id, RefreshPolicy(), auto_refresh_enabled=False
+                )
+                if user_id == NO_ACCESS_USER_ID:
+                    assert result.personal_research_result.outcome == "no_usable_evidence"
+                else:
+                    assert result.personal_research_result is None
+    finally:
+        with admin_engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM personal_company_requests WHERE id=:id"), {"id": str(request_id)}
+            )
+            connection.execute(
+                text("DELETE FROM company_research_jobs WHERE id=:id"), {"id": str(job_id)}
+            )
+        app_engine.dispose()
+        admin_engine.dispose()
 
 
 def test_retired_provider_specific_rls_policies_are_absent() -> None:

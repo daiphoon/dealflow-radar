@@ -27,6 +27,7 @@ from backend.app.models import (
     utc_now,
 )
 from backend.app.providers import validate_unified_credit_code
+from backend.app.research_outcome import research_result
 from backend.app.schemas import (
     EventOut,
     PersonalCompanyReportOut,
@@ -539,6 +540,9 @@ def _request_out(
             or 0
         )
     status_message = _REQUEST_STATUS_MESSAGES[request.status]
+    result = research_result(research_job) if request.status == "completed" else None
+    if result is not None:
+        status_message = result.message
     last_error_code = request.last_error_code
     retired_provider_result = request.last_error_code == "legacy_provider_retired"
     if retired_provider_result:
@@ -560,6 +564,7 @@ def _request_out(
         research_job_id=request.research_job_id,
         research_job_status=research_job.status if research_job is not None else None,
         research_modules=research_modules,
+        research_result=result,
         queue_position=queue_position,
         resolved_legal_name=None if retired_provider_result else request.resolved_legal_name,
         resolved_credit_code=None if retired_provider_result else request.resolved_credit_code,
