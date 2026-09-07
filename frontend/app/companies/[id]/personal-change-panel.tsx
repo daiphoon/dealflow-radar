@@ -200,9 +200,11 @@ function InvestorChangeCard({ event }: { event: Event }) {
 export function PersonalChangePanel({
   companyId,
   materialChanges,
+  baselineEventIds,
 }: {
   companyId: string;
   materialChanges: Event[];
+  baselineEventIds: string[];
 }) {
   const requestedCompanyId = useRef<string | null>(null);
   const [view, setView] = useState<PersonalCompanyView | null>(null);
@@ -239,7 +241,9 @@ export function PersonalChangePanel({
       };
     }
 
-    const newMaterialChanges = sortChanges(view.new_events.filter(isMaterialChange));
+    // 查看水位仅决定时间范围，实际内容始终来自本页同一份已授权列表。
+    const newEventIds = new Set(view.new_events.map((event) => event.id));
+    const newMaterialChanges = allChanges.filter((event) => newEventIds.has(event.id));
     const recentNinetyDayChanges = allChanges.filter((event) =>
       withinDays(event, view.viewed_at, FIRST_VIEW_LOOKBACK_DAYS),
     );
@@ -270,15 +274,15 @@ export function PersonalChangePanel({
           : "只呈现已经发生变化、并可能影响投资判断的内容。",
       active,
       additional,
-      newReferenceCount: view.new_events.filter((event) => !isMaterialChange(event)).length,
+      newReferenceCount: baselineEventIds.filter((id) => newEventIds.has(id)).length,
       loading: false,
     };
-  }, [failed, materialChanges, view]);
+  }, [baselineEventIds, failed, materialChanges, view]);
 
   const primaryChanges = presentation.active.slice(0, PRIMARY_CHANGE_LIMIT);
 
   return (
-    <section className="panel investor-priority-panel">
+    <section className="panel investor-priority-panel" id="company-current-changes">
       <div className="panel-heading investor-priority-heading">
         <div>
           <p className="eyebrow">{presentation.eyebrow}</p>

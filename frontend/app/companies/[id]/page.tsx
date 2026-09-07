@@ -519,25 +519,44 @@ export default async function CompanyDetailPage({
           </div>
         </section>
 
-        {company.personal_research_result ? (
-          <section className="panel" aria-label="我的最近一次研究结果">
-            <h2>我的最近一次查询结果</h2>
-            <p>本轮结束时间：{formatDate(company.personal_research_result.finished_at, true)}</p>
-            <p>{company.personal_research_result.message}</p>
-            {company.personal_research_result.limitations.length > 0 ? (
-              <ul>
-                {company.personal_research_result.limitations.map((item) => <li key={item}>{item}</li>)}
-              </ul>
+        {company.is_platform_shared ? (
+          <PersonalChangePanel
+            companyId={company.id}
+            materialChanges={materialChanges}
+            baselineEventIds={baselineEvents.map((event) => event.id)}
+          />
+        ) : null}
+
+        {company.is_platform_shared ? (
+          <section className="panel" aria-label="当前可查看内容">
+            <h2>当前可查看内容</h2>
+            <p className="section-intro">
+              汇总本页当前可见的平台共享内容，包含此前积累和后续补充的记录，不仅限于最近一次查询。
+              私有信息另列，不计入这里。
+            </p>
+            <ul>
+              <li>
+                <a href="#company-current-changes">已核实变化（含历史）：{materialChanges.length} 条</a>
+              </li>
+              <li>
+                <a href="#company-records">已核实基础资料：{baselineEvents.length} 条</a>
+              </li>
+              <li>
+                {company.platform_unconfirmed_leads.length > 0 ? (
+                  <a href="#company-current-leads">待核实线索：{company.platform_unconfirmed_leads.length} 条（不属于已确认事实）</a>
+                ) : "待核实线索：0 条"}
+              </li>
+            </ul>
+            {company.events.length === 0 && company.platform_unconfirmed_leads.length === 0 ? (
+              <p>当前暂无可展示的共享事实或线索，不代表公司没有重要变化。</p>
+            ) : company.events.length === 0 ? (
+              <p>目前可查看待核实线索，尚无已核实事实；请结合证据与不确定性阅读。</p>
             ) : null}
           </section>
         ) : null}
 
-        {company.is_platform_shared ? (
-          <PersonalChangePanel companyId={company.id} materialChanges={materialChanges} />
-        ) : null}
-
         {company.platform_unconfirmed_leads.length > 0 ? (
-          <section className="panel attention-panel">
+          <section className="panel attention-panel" id="company-current-leads">
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">单独隔离，不与已核实事实混在一起</p>
@@ -647,12 +666,32 @@ export default async function CompanyDetailPage({
 
         <section className="gap-panel">
           <p className="eyebrow">信息缺口</p>
+          <p>数据覆盖与检查时间不因缓存重新处理而自动更新；各条证据的检查时间请展开查看。</p>
           <ul>
             {company.information_gaps.map((gap) => (
               <li key={gap}>{gap}</li>
             ))}
           </ul>
         </section>
+
+        {company.personal_research_result ? (
+          <section className="panel" aria-label="我的历史查询过程">
+            <details>
+              <summary>查看我的最近一次查询过程（历史记录）</summary>
+              <p className="privacy-note">
+                以下仅记录那次任务结束时的情况，不代表当前全部可查看内容。
+                后续补充或重新处理的结果请以上方列表为准；任务结束时间不是来源重新检查时间。
+              </p>
+              <p>当次任务结束时间：{formatDate(company.personal_research_result.finished_at, true)}</p>
+              <p>{company.personal_research_result.message}</p>
+              {company.personal_research_result.limitations.length > 0 ? (
+                <ul>
+                  {company.personal_research_result.limitations.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              ) : null}
+            </details>
+          </section>
+        ) : null}
       </main>
     );
   } catch (error) {
