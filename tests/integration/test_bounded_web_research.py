@@ -35,6 +35,7 @@ from backend.app.models import (
     PersonalCompanyRequest,
     RawDocument,
     Role,
+    Source,
     UsageLedger,
     User,
     UserRoleAssignment,
@@ -48,6 +49,7 @@ from backend.app.personal_features import (
 from backend.app.source_fetcher import TrustedSourceFetcher
 from backend.app.web_research_service import (
     SEARCH_GROUPS,
+    _candidate_event,
     _event_classification,
     _gap_follow_up_query,
     _identity_fingerprint,
@@ -288,6 +290,106 @@ def _providers() -> tuple[MockSearchProvider, MockSearchProvider]:
         },
     )
     return primary, MockSearchProvider("bocha")
+
+
+def test_ended_research_result_is_owner_only_and_persists(migrated_app, client):
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        request = create_refresh_request(
+            session, owner, PersonalEntitlementPolicy(), SHARED_COMPANY_ID
+        )
+        request_id = request.id
+        worker = session.get(User, ALPHA_USER_ID)
+        prepare_pending_research_requests(session, worker, WebResearchPolicy())
+        row = session.get(PersonalCompanyRequest, request_id)
+        job = session.get(CompanyResearchJob, row.research_job_id)
+        job.status = row.status = "completed"
+        job.current_stage = "completed"
+        job.coverage = {
+            "stats": {"quality_gate_passed": 0},
+            "completed_at": RECENT_TIMESTAMP,
+            "documents": [
+                {
+                    "status": "failed",
+                    "error_code": "robots_disallowed",
+                    "url": "https://private.invalid/research",
+                }
+            ],
+        }
+        session.commit()
+    headers = {"X-Demo-User-Id": str(NO_ACCESS_USER_ID)}
+    for _ in range(2):
+        result = client.get(f"/api/v1/companies/{SHARED_COMPANY_ID}", headers=headers).json()
+        assert result["personal_research_result"]["outcome"] == "no_usable_evidence"
+        assert result["personal_research_result"]["finished_at"] is not None
+        assert "不允许自动读取" in str(result["personal_research_result"]["limitations"])
+        assert "private.invalid" not in str(result)
+        assert result["investments"] == []
+    requests = client.get("/api/v1/me/company-requests", headers=headers).json()
+    own = next(item for item in requests if item["id"] == str(request_id))
+    assert own["status"] == "completed"
+    assert "不代表公司没有" in own["status_message"]
+    assert own["research_result"] == result["personal_research_result"]
+    for user_id in (ALPHA_USER_ID, BETA_USER_ID):
+        other = client.get(
+            f"/api/v1/companies/{SHARED_COMPANY_ID}", headers={"X-Demo-User-Id": str(user_id)}
+        )
+        assert other.status_code == 200
+        assert other.json()["personal_research_result"] is None
+    with migrated_app.state.session_factory() as session:
+        assert session.scalar(select(func.coalesce(func.sum(UsageLedger.external_calls), 0))) == 0
+
+
+def test_cached_listing_reprocess_is_idempotent_and_not_a_recent_confirmed_change(
+    migrated_app, client
+):
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), SHARED_COMPANY_ID)
+    primary, fallback = _providers()
+    factory = RecordingFetcherFactory()
+    _drain(migrated_app, {"baidu": primary, "bocha": fallback}, factory)
+    with migrated_app.state.session_factory() as session:
+        company = session.get(Company, SHARED_COMPANY_ID)
+        document = session.scalar(
+            select(RawDocument).where(
+                RawDocument.canonical_url == "https://news.example.com/article-1"
+            )
+        )
+        # Synthetic cached body reproduces the observed wording, not real company data.
+        document.payload = {
+            **document.payload,
+            "excerpt": f"2020年4月16日，{SHARED_COMPANY_NAME}成功在 港交所主板 上市。",
+        }
+        document.title = "示例上市历史转载"
+        source = session.get(Source, document.source_id)
+        event, created, quality = _candidate_event(
+            session, company, document, source, WebResearchPolicy(), new_document=False
+        )
+        assert created and quality.eligible
+        assert event.occurred_at.year == 2020
+        assert event.status == "candidate" and event.publication_route == "unconfirmed_lead"
+        event_id = event.id
+        original_owner = document.owner_tenant_id
+        session.commit()
+        replayed, created_again, _ = _candidate_event(
+            session, company, document, source, WebResearchPolicy(), new_document=False
+        )
+        assert replayed.id == event_id and not created_again
+        assert document.visibility_scope == "system_restricted"
+        assert document.owner_tenant_id == original_owner
+        session.commit()
+    assert len(primary.calls) == 2 and fallback.calls == [] and len(factory.requests) == 4
+    headers = {"X-Demo-User-Id": str(NO_ACCESS_USER_ID)}
+    detail = client.get(f"/api/v1/companies/{SHARED_COMPANY_ID}", headers=headers).json()
+    event = next(
+        item for item in detail["platform_unconfirmed_leads"] if item["id"] == str(event_id)
+    )
+    assert event["occurred_at"].startswith("2020-04-16")
+    assert event["evidence"] and detail["investments"] == []
+    assert all(item["id"] != str(event_id) for item in detail["events"])
 
 
 def test_identity_matching_normalizes_unicode_without_changing_cache_fingerprint() -> None:

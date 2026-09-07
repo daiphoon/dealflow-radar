@@ -170,6 +170,13 @@ class CompanySuggestion(BaseModel):
     registered_region: str | None
 
 
+class ResearchResultOut(BaseModel):
+    outcome: Literal["no_usable_evidence", "candidates_available"]
+    finished_at: datetime | None
+    message: str
+    limitations: list[str]
+
+
 class CompanyDetail(BaseModel):
     id: UUID
     is_platform_shared: bool
@@ -188,6 +195,7 @@ class CompanyDetail(BaseModel):
     platform_unconfirmed_leads: list[EventOut]
     private_events: list[EventOut]
     unconfirmed_leads: list[EventOut]
+    personal_research_result: ResearchResultOut | None = None
 
 
 class PersonalWatchlistItemOut(BaseModel):
@@ -264,6 +272,7 @@ class PersonalCompanyRequestOut(BaseModel):
     research_job_id: UUID | None
     research_job_status: str | None
     research_modules: dict[str, str]
+    research_result: ResearchResultOut | None = None
     queue_position: int | None
     resolved_legal_name: str | None
     resolved_credit_code: str | None

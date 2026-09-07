@@ -37,7 +37,7 @@ const requestStatusLabels: Record<string, string> = {
   budget_deferred: "额度暂缓",
   cancel_requested: "正在安全取消",
   cancelled: "已取消",
-  completed: "已完成",
+  completed: "本轮已结束",
   rejected: "未受理",
   failed: "处理失败",
 };
@@ -71,7 +71,7 @@ const researchModuleStatusLabels: Record<string, string> = {
   running: "正在检查",
   search_completed: "已发现候选，正在核对原网页",
   completed: "已取得资料",
-  no_data: "暂无可靠公开数据",
+  no_data: "本轮未取得可展示证据",
   failed: "本次检查未完成",
 };
 
@@ -238,6 +238,16 @@ export default async function WatchlistPage({
                     <span className="muted">提交于 {formatDate(request.created_at)}</span>
                   </div>
                   <p>{request.status_message}</p>
+                  {request.research_result ? (
+                    <div>
+                      <p className="muted">本轮结束时间：{formatDate(request.research_result.finished_at)}</p>
+                      {request.research_result.limitations.length > 0 ? (
+                        <ul>
+                          {request.research_result.limitations.map((item) => <li key={item}>{item}</li>)}
+                        </ul>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {Object.keys(request.research_modules).length > 0 ? (
                     <ul className="research-module-list" aria-label="研究模块进度">
                       {Object.entries(request.research_modules).map(([module, status]) => (
