@@ -143,6 +143,7 @@ jobs:
       - name: Check and build frontend
         working-directory: frontend
         run: |
+          npm test
           npm run typecheck
           npm run build
 
