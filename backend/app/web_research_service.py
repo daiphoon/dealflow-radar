@@ -779,6 +779,18 @@ def _search_result_datetime(value: str | None) -> datetime | None:
     return _aware(parsed)
 
 
+def _evidence_checked_at(value: object) -> datetime | None:
+    # Check timestamps need an explicit time and timezone; do not use the
+    # search-date parser, which intentionally reduces input to a calendar date.
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
 def _search_date_status(
     result: SearchResult,
     policy: WebResearchPolicy,
@@ -1820,11 +1832,7 @@ def _candidate_event(
             display_observed_at=document.observed_at,
             display_url_health_status=str(verification.get("status") or "healthy"),
             display_url_http_status=verification.get("http_status"),
-            display_url_checked_at=(
-                _search_result_datetime(verification["checked_at"])
-                if isinstance(verification.get("checked_at"), str)
-                else None
-            ),
+            display_url_checked_at=_evidence_checked_at(verification.get("checked_at")),
             display_final_url=document.canonical_url,
             display_license_status="public",
             display_allowed=True,

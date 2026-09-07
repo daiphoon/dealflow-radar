@@ -5,10 +5,40 @@ import pytest
 from backend.app.config import WebResearchPolicy
 from backend.app.models import Company, CompanyResearchJob
 from backend.app.research_outcome import research_result
-from backend.app.web_research_service import _content_quality_decision, _event_classification
+from backend.app.web_research_service import (
+    _content_quality_decision,
+    _event_classification,
+    _evidence_checked_at,
+    _search_result_datetime,
+)
 
 NAME = "示例星河科技一号有限公司"
 NOW = datetime(2026, 9, 6, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-09-06T02:53:31.618272+00:00",
+        "2026-09-06T10:53:31.618272+08:00",
+        "2026-09-06T02:53:31.618272Z",
+        "2026-09-06T02:53:31+00:00",
+    ],
+)
+def test_evidence_check_time_preserves_time_precision_and_offset(value):
+    expected = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    result = _evidence_checked_at(value)
+    assert result == expected
+    assert result.isoformat() == expected.isoformat()
+    # Source-publication search semantics are intentionally unchanged.
+    assert _search_result_datetime(value) == NOW
+
+
+@pytest.mark.parametrize(
+    "value", [None, "", "invalid", "2026-02-30T01:02:03Z", "2026-09-06", "2026-09-06T02:53:31", 123]
+)
+def test_missing_or_invalid_check_time_stays_unknown(value):
+    assert _evidence_checked_at(value) is None
 
 
 @pytest.mark.parametrize(

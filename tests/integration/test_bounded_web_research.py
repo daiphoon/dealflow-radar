@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import httpx
 import pytest
@@ -32,6 +32,7 @@ from backend.app.models import (
     Company,
     CompanyResearchJob,
     Event,
+    EventEvidence,
     PersonalCompanyRequest,
     RawDocument,
     Role,
@@ -362,7 +363,12 @@ def test_cached_listing_reprocess_is_idempotent_and_not_a_recent_confirmed_chang
         document.payload = {
             **document.payload,
             "excerpt": f"2020年4月16日，{SHARED_COMPANY_NAME}成功在 港交所主板 上市。",
+            "_source_verification": {
+                **document.payload["_source_verification"],
+                "checked_at": "2026-09-06T02:53:31.618272+00:00",
+            },
         }
+        original_payload = dict(document.payload)
         document.title = "示例上市历史转载"
         source = session.get(Source, document.source_id)
         event, created, quality = _candidate_event(
@@ -371,6 +377,12 @@ def test_cached_listing_reprocess_is_idempotent_and_not_a_recent_confirmed_chang
         assert created and quality.eligible
         assert event.occurred_at.year == 2020
         assert event.status == "candidate" and event.publication_route == "unconfirmed_lead"
+        evidence = session.scalar(select(EventEvidence).where(EventEvidence.event_id == event.id))
+        expected_check_time = datetime.fromisoformat("2026-09-06T02:53:31.618272+00:00")
+        if session.get_bind().dialect.name == "sqlite":
+            # SQLite DateTime does not retain timezone metadata; preserve every time digit.
+            expected_check_time = expected_check_time.replace(tzinfo=None)
+        assert evidence.display_url_checked_at == expected_check_time
         event_id = event.id
         original_owner = document.owner_tenant_id
         session.commit()
@@ -380,6 +392,8 @@ def test_cached_listing_reprocess_is_idempotent_and_not_a_recent_confirmed_chang
         assert replayed.id == event_id and not created_again
         assert document.visibility_scope == "system_restricted"
         assert document.owner_tenant_id == original_owner
+        assert document.payload == original_payload
+        assert evidence.display_url_checked_at == expected_check_time
         session.commit()
     assert len(primary.calls) == 2 and fallback.calls == [] and len(factory.requests) == 4
     headers = {"X-Demo-User-Id": str(NO_ACCESS_USER_ID)}
@@ -389,6 +403,7 @@ def test_cached_listing_reprocess_is_idempotent_and_not_a_recent_confirmed_chang
     )
     assert event["occurred_at"].startswith("2020-04-16")
     assert event["evidence"] and detail["investments"] == []
+    assert event["evidence"][0]["url_checked_at"].startswith("2026-09-06T02:53:31.618272")
     assert all(item["id"] != str(event_id) for item in detail["events"])
 
 
