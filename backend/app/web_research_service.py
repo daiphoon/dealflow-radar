@@ -40,6 +40,7 @@ from backend.app.source_fetcher import (
     TrustedSourceFetcher,
     UrlSafetyError,
     canonicalize_source_url,
+    normalized_robots_rule_cache,
 )
 from backend.app.web_search import (
     SearchProvider,
@@ -603,6 +604,9 @@ def _active_linked_requests(session: Session, job_id: UUID) -> list[PersonalComp
 
 def _cancel_job(session: Session, job: CompanyResearchJob) -> WebResearchWorkerResult:
     now = utc_now()
+    coverage = dict(job.coverage)
+    coverage.pop("_robots_rule_cache", None)
+    job.coverage = coverage
     job.status = "cancelled"
     job.current_stage = "cancelled"
     job.cancelled_at = now
@@ -2325,6 +2329,10 @@ def _fetch_candidate(
     fetcher_factory: Callable[[SourceMonitoringPolicy], TrustedSourceFetcher],
 ) -> WebResearchWorkerResult:
     coverage = dict(job.coverage)
+    robots_cache = normalized_robots_rule_cache(
+        coverage.get("_robots_rule_cache"),
+        policy.user_agent,
+    )
     candidates = [item for item in coverage.get("candidates", []) if isinstance(item, dict)]
     index = int(coverage.get("candidate_index", 0))
     documents = [item for item in coverage.get("documents", []) if isinstance(item, dict)]
@@ -2455,6 +2463,7 @@ def _fetch_candidate(
                     remaining_bytes=policy.max_download_bytes_per_job - previous_downloaded_bytes,
                 )
             )
+            fetcher.bind_job_robots_cache(robots_cache)
             try:
                 result = fetcher.check(
                     source_type="single_page",
@@ -2585,6 +2594,10 @@ def _fetch_candidate(
     coverage["documents"] = documents
     coverage["candidates"] = candidates
     coverage["stats"] = stats
+    coverage["_robots_rule_cache"] = normalized_robots_rule_cache(
+        robots_cache,
+        policy.user_agent,
+    )
     job.coverage = coverage
     job.status = "partial"
     job.current_stage = "fetch"
@@ -2614,6 +2627,7 @@ def _fetch_candidate(
 
 def _finalize(session: Session, job: CompanyResearchJob) -> WebResearchWorkerResult:
     coverage = dict(job.coverage)
+    coverage.pop("_robots_rule_cache", None)
     follow_up = dict(coverage.get("gap_follow_up", {}))
     if follow_up.get("status") in {"not_requested", "pending"}:
         follow_up.update(

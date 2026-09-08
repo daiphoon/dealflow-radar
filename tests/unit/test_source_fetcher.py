@@ -193,6 +193,87 @@ def test_robots_denial_stops_before_page_request() -> None:
     assert paths == ["/robots.txt"]
 
 
+def test_distinct_fetchers_reuse_job_robots_rules_and_still_check_each_path() -> None:
+    paths: list[str] = []
+    shared_cache = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/plain"},
+                text="User-agent: *\nAllow: /news/\nDisallow: /private/\n",
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text="<title>公开动态</title><main>公开页面正文。</main>",
+        )
+
+    first = _fetcher(handler)
+    first.bind_job_robots_cache(shared_cache)
+    result = first.check(
+        source_type="single_page",
+        root_domain="example.com",
+        start_url="https://example.com/news/1",
+        retention_policy="minimal_excerpt",
+        conditional_state={},
+    )
+    first.close()
+
+    second = _fetcher(handler)
+    second.bind_job_robots_cache(shared_cache)
+    with pytest.raises(SourceFetchError) as caught:
+        second.check(
+            source_type="single_page",
+            root_domain="example.com",
+            start_url="https://example.com/private/report",
+            retention_policy="metadata_only",
+            conditional_state={},
+        )
+    second.close()
+
+    assert result.request_count == 2
+    assert caught.value.code == "robots_disallowed"
+    assert paths == ["/robots.txt", "/news/1"]
+
+
+def test_expired_job_robots_rules_are_not_reused() -> None:
+    paths: list[str] = []
+    policy = _policy()
+    expired_cache = {
+        "https://example.com": {
+            "status": "not_found_allow",
+            "user_agent": policy.user_agent,
+            "checked_at": "2000-01-01T00:00:00+00:00",
+        }
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404, headers={"content-type": "text/plain"})
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text="<title>公开动态</title><main>公开页面正文。</main>",
+        )
+
+    fetcher = _fetcher(handler, policy=policy)
+    fetcher.bind_job_robots_cache(expired_cache)
+    fetcher.check(
+        source_type="single_page",
+        root_domain="example.com",
+        start_url="https://example.com/news/1",
+        retention_policy="minimal_excerpt",
+        conditional_state={},
+    )
+    fetcher.close()
+
+    assert paths == ["/robots.txt", "/news/1"]
+
+
 def test_robots_redirected_to_html_fails_closed() -> None:
     paths: list[str] = []
 
