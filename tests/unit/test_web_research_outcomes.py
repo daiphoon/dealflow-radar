@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import UTC, datetime
 
 import pytest
@@ -154,3 +155,40 @@ def test_outcome_allowlists_gaps_without_urls_or_private_metadata():
     job.status = "completed"
     job.policy_version = "legacy"
     assert research_result(job) is None
+
+
+def test_coverage_summary_describes_reading_not_exhaustive_category_results():
+    coverage = {
+        "stats": {"search_calls": 2, "quality_gate_passed": 0},
+        "modules": {"financing_cap_table": "no_data", "information_quality": "completed"},
+        "documents": [
+            {"status": "created", "quality_gate": {"status": "internal_only"}},
+            {"status": "failed", "error_code": "robots_disallowed"},
+            {"status": "failed", "error_code": "blocked_scheme"},
+            {"status": "failed", "error_code": "request_limit_exceeded"},
+        ],
+    }
+    original = deepcopy(coverage)
+    job = CompanyResearchJob(status="completed", policy_version="bounded-web-v3", coverage=coverage)
+    result = research_result(job)
+    assert "2 次搜索" in result.coverage_summary[0]
+    assert "1 份正文" in result.coverage_summary[1]
+    assert "检查情况未完整记录" in result.coverage_summary[2]
+    assert any("规则文件不可用" in item for item in result.limitations)
+    assert any("安全访问" in item for item in result.limitations)
+    assert any("尚有资料未检查" in item for item in result.limitations)
+    assert any("证据要求" in item for item in result.limitations)
+    assert job.coverage == original
+
+
+@pytest.mark.parametrize("stats", [{}, {"search_calls": True}, {"search_calls": -1}, None])
+def test_legacy_missing_coverage_is_unknown_not_zero(stats):
+    result = research_result(
+        CompanyResearchJob(
+            status="completed",
+            policy_version="bounded-web-v3",
+            coverage={"stats": stats},
+        )
+    )
+    assert len(result.coverage_summary) == 1
+    assert "检查情况未完整记录" in result.coverage_summary[0]

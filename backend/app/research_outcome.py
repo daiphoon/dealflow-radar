@@ -22,7 +22,9 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
     errors = {item.get("error_code") for item in documents}
     limitations: list[str] = []
     if "robots_disallowed" in errors:
-        limitations.append("部分来源不允许自动读取，未取得这些页面的正文。")
+        limitations.append(
+            "部分来源未通过自动读取规则检查，可能为网站限制或规则文件不可用，未取得正文。"
+        )
     if errors & {"blocked_scheme", "blocked_host", "blocked_address"}:
         limitations.append("部分来源未通过安全访问检查，未继续读取。")
     if "request_limit_exceeded" in errors or any(
@@ -42,6 +44,14 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
         for item in documents
     ):
         limitations.append("部分正文未达到主体、时间或重要变化的证据要求，未作为事实展示。")
+    coverage_summary: list[str] = []
+    search_calls = stats.get("search_calls") if isinstance(stats, dict) else None
+    if type(search_calls) is int and search_calls >= 0:
+        coverage_summary.append(f"记录了 {search_calls} 次搜索调用；不代表各类信息已经逐项查全。")
+    if isinstance(coverage.get("documents"), list):
+        readable = sum(item.get("status") in {"created", "reused"} for item in documents)
+        coverage_summary.append(f"当时取得或复用了 {readable} 份正文；取得正文不等于事实已核实。")
+    coverage_summary.append("各类信息的检查情况未完整记录，不能据此判断某类信息不存在。")
     finished_at = None
     value = coverage.get("completed_at")
     if isinstance(value, str):
@@ -58,4 +68,5 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
             else "本轮查询已结束，暂未取得可展示的变化证据；不代表公司没有重要变化。"
         ),
         limitations=limitations,
+        coverage_summary=coverage_summary,
     )

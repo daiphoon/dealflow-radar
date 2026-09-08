@@ -43,11 +43,13 @@ from backend.app.main import create_app
 from backend.app.models import (
     Company,
     CompanyResearchJob,
+    Event,
     OfficialIdentityVerification,
     PersonalCompanyRequest,
     RawDocument,
     User,
 )
+from backend.app.personal_features import list_personal_company_requests
 from backend.app.providers import ManualOfficialIdentityImportProvider
 from backend.app.services import get_company_detail, import_official_identities
 from backend.app.web_research_service import SEARCH_GROUPS, run_web_research_worker_once
@@ -2618,6 +2620,7 @@ def test_company_research_result_remains_owner_only_with_postgres_rls() -> None:
     app_engine = create_engine(POSTGRES_RLS_DATABASE_URL)
     job_id, request_id = uuid4(), uuid4()
     company_id = demo_uuid("company-示例星河科技一号有限公司")
+    event_ids = []
     try:
         with Session(admin_engine) as session:
             session.add(
@@ -2646,6 +2649,35 @@ def test_company_research_result_remains_owner_only_with_postgres_rls() -> None:
                     research_job_id=job_id,
                 )
             )
+            for scope, owner in (
+                ("platform_shared", {}),
+                ("personal_private", {"owner_user_id": NO_ACCESS_USER_ID}),
+                ("personal_private", {"owner_user_id": BETA_USER_ID}),
+                ("organization_private", {"owner_tenant_id": ALPHA_TENANT_ID}),
+                ("organization_private", {"owner_tenant_id": BETA_TENANT_ID}),
+            ):
+                event_id = uuid4()
+                event_ids.append(event_id)
+                session.add(
+                    Event(
+                        id=event_id,
+                        company_id=company_id,
+                        visibility_scope=scope,
+                        event_type="product_technology",
+                        event_subtype="test",
+                        status="candidate",
+                        publication_route="unconfirmed_lead",
+                        direction="neutral",
+                        materiality_score=60,
+                        risk_severity="low",
+                        confidence_score="0.8",
+                        source_quality="A",
+                        title="虚构权限测试线索",
+                        summary="仅用于计数隔离测试",
+                        event_fingerprint=event_id.hex,
+                        **owner,
+                    )
+                )
             session.commit()
         for user_id, tenant_id in (
             (NO_ACCESS_USER_ID, ALPHA_TENANT_ID),
@@ -2658,12 +2690,23 @@ def test_company_research_result_remains_owner_only_with_postgres_rls() -> None:
                 result = get_company_detail(
                     session, user, company_id, RefreshPolicy(), auto_refresh_enabled=False
                 )
+                requests = list_personal_company_requests(session, user)
+                own_request = next((item for item in requests if item.id == request_id), None)
                 if user_id == NO_ACCESS_USER_ID:
                     assert result.personal_research_result.outcome == "no_usable_evidence"
+                    assert own_request is not None
+                    current = own_request.current_company_content
+                    assert current.unconfirmed_leads == len(result.platform_unconfirmed_leads)
+                    assert current.unconfirmed_leads >= 1
+                    assert current.confirmed_changes + current.baseline_facts == len(result.events)
+                    assert "虚构权限测试线索" not in own_request.model_dump_json()
                 else:
                     assert result.personal_research_result is None
+                    assert own_request is None
     finally:
         with admin_engine.begin() as connection:
+            for event_id in event_ids:
+                connection.execute(text("DELETE FROM events WHERE id=:id"), {"id": str(event_id)})
             connection.execute(
                 text("DELETE FROM personal_company_requests WHERE id=:id"), {"id": str(request_id)}
             )

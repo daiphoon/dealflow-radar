@@ -14,6 +14,7 @@ import {
 import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
 
 import { RequestStatusRefresher } from "./request-status-refresher";
+import { RequestResearchResult } from "./request-research-result";
 
 export const dynamic = "force-dynamic";
 
@@ -53,27 +54,6 @@ const activeRequestStatuses = new Set([
   "budget_deferred",
   "cancel_requested",
 ]);
-
-const researchModuleLabels: Record<string, string> = {
-  financial_operation: "财务与经营",
-  financing_cap_table: "融资与股权",
-  contract_commercial: "合同与商业进展",
-  product_technology: "产品与技术",
-  governance_people: "治理与人员",
-  legal_compliance: "司法与合规",
-  capacity_assets: "产能与资产",
-  exit_liquidity: "退出与流动性",
-  information_quality: "信息质量",
-};
-
-const researchModuleStatusLabels: Record<string, string> = {
-  pending: "等待检查",
-  running: "正在检查",
-  search_completed: "已发现候选，正在核对原网页",
-  completed: "已取得资料",
-  no_data: "本轮未取得可展示证据",
-  failed: "本次检查未完成",
-};
 
 function formatDate(value: string | null): string {
   if (!value) return "尚未记录";
@@ -237,27 +217,7 @@ export default async function WatchlistPage({
                     </span>
                     <span className="muted">提交于 {formatDate(request.created_at)}</span>
                   </div>
-                  <p>{request.status_message}</p>
-                  {request.research_result ? (
-                    <div>
-                      <p className="muted">本轮结束时间：{formatDate(request.research_result.finished_at)}</p>
-                      {request.research_result.limitations.length > 0 ? (
-                        <ul>
-                          {request.research_result.limitations.map((item) => <li key={item}>{item}</li>)}
-                        </ul>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {Object.keys(request.research_modules).length > 0 ? (
-                    <ul className="research-module-list" aria-label="研究模块进度">
-                      {Object.entries(request.research_modules).map(([module, status]) => (
-                        <li key={module}>
-                          <span>{researchModuleLabels[module] ?? module}</span>
-                          <strong>{researchModuleStatusLabels[status] ?? status}</strong>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
+                  <RequestResearchResult request={request} />
                   {request.queue_position ? (
                     <p>当前可见队列位置：第 {request.queue_position} 位。</p>
                   ) : null}
@@ -285,8 +245,8 @@ export default async function WatchlistPage({
                     </section>
                   ) : null}
                   <div className="request-card-footer">
-                    <span className="muted">最近更新 {formatDate(request.updated_at)}</span>
-                    {request.company_id ? (
+                    <span className="muted">申请状态更新于 {formatDate(request.updated_at)}</span>
+                    {request.company_id && !request.current_company_content ? (
                       <Link href={`/companies/${request.company_id}`}>查看公司档案</Link>
                     ) : null}
                   </div>

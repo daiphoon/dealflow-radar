@@ -84,6 +84,7 @@ from backend.app.schemas import (
     CompanyListItem,
     CompanySearchResult,
     CompanySuggestion,
+    CurrentCompanyContentOut,
     EventOut,
     EvidenceDetailFieldOut,
     EvidenceDetailOut,
@@ -3073,6 +3074,52 @@ def suggest_companies(
     ]
 
 
+def _shared_event_filter(company_ids: set[UUID], *, leads: bool = False):
+    return and_(
+        Event.company_id.in_(company_ids),
+        Event.status == ("candidate" if leads else "published"),
+        Event.publication_route == "unconfirmed_lead" if leads else True,
+        Event.visibility_scope == PLATFORM_SHARED_SCOPE,
+        Event.owner_user_id.is_(None),
+        Event.owner_tenant_id.is_(None),
+    )
+
+
+def current_shared_company_content(
+    session: Session, company_ids: set[UUID]
+) -> dict[UUID, CurrentCompanyContentOut]:
+    """Batch counts from the same shared scope as company details; no private overlays."""
+    if not company_ids:
+        return {}
+    companies = session.scalars(select(Company).where(Company.id.in_(company_ids)))
+    results = {
+        company.id: CurrentCompanyContentOut(
+            confirmed_changes=0, baseline_facts=0, unconfirmed_leads=0
+        )
+        for company in companies
+        if _is_platform_shared_company(company)
+    }
+    if not results:
+        return results
+    visible_ids = set(results)
+    rows = session.execute(
+        select(Event.company_id, Event.status, Event.publication_route, func.count())
+        .where(
+            or_(_shared_event_filter(visible_ids), _shared_event_filter(visible_ids, leads=True))
+        )
+        .group_by(Event.company_id, Event.status, Event.publication_route)
+    )
+    for company_id, status, route, count in rows:
+        result = results[company_id]
+        if status == "candidate":
+            result.unconfirmed_leads += count
+        elif route == "deterministic_change":
+            result.confirmed_changes += count
+        else:
+            result.baseline_facts += count
+    return results
+
+
 def get_company_detail(
     session: Session,
     user: User,
@@ -3108,13 +3155,7 @@ def get_company_detail(
     events = list(
         session.scalars(
             select(Event)
-            .where(
-                Event.company_id == company_id,
-                Event.status == "published",
-                Event.visibility_scope == PLATFORM_SHARED_SCOPE,
-                Event.owner_user_id.is_(None),
-                Event.owner_tenant_id.is_(None),
-            )
+            .where(_shared_event_filter({company_id}))
             .order_by(Event.occurred_at.desc())
         )
     )
@@ -3138,14 +3179,7 @@ def get_company_detail(
     platform_unconfirmed_leads = list(
         session.scalars(
             select(Event)
-            .where(
-                Event.company_id == company_id,
-                Event.status == "candidate",
-                Event.publication_route == "unconfirmed_lead",
-                Event.visibility_scope == PLATFORM_SHARED_SCOPE,
-                Event.owner_user_id.is_(None),
-                Event.owner_tenant_id.is_(None),
-            )
+            .where(_shared_event_filter({company_id}, leads=True))
             .order_by(Event.observed_at.desc())
         )
     )
