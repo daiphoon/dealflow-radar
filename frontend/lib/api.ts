@@ -247,6 +247,7 @@ export type ResearchResult = {
   finished_at: string | null;
   message: string;
   limitations: string[];
+  coverage_summary?: string[];
 };
 
 export type CompanyDetail = {
@@ -284,6 +285,11 @@ export type PersonalWatchlistItem = {
 
 export type PersonalCompanyRequest = {
   research_result: ResearchResult | null;
+  current_company_content?: {
+    confirmed_changes: number;
+    baseline_facts: number;
+    unconfirmed_leads: number;
+  } | null;
   id: string;
   owner_user_id: string;
   request_type: "inclusion" | "refresh";

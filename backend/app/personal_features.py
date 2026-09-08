@@ -39,7 +39,11 @@ from backend.app.schemas import (
     PersonalUsageSummaryOut,
     PersonalWatchlistItemOut,
 )
-from backend.app.services import platform_shared_event_out, user_has_role
+from backend.app.services import (
+    current_shared_company_content,
+    platform_shared_event_out,
+    user_has_role,
+)
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _REPORT_VERSION = "personal-company-v2"
@@ -607,7 +611,13 @@ def list_personal_company_requests(
         .where(PersonalCompanyRequest.owner_user_id == user.id)
         .order_by(PersonalCompanyRequest.created_at.desc())
     )
-    return [_request_out(session, request) for request in requests]
+    outputs = [_request_out(session, request) for request in requests]
+    current = current_shared_company_content(
+        session, {request.company_id for request in outputs if request.company_id is not None}
+    )
+    for output in outputs:
+        output.current_company_content = current.get(output.company_id)
+    return outputs
 
 
 def list_platform_company_requests(

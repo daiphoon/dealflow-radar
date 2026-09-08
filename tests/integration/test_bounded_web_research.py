@@ -324,7 +324,8 @@ def test_ended_research_result_is_owner_only_and_persists(migrated_app, client):
         result = client.get(f"/api/v1/companies/{SHARED_COMPANY_ID}", headers=headers).json()
         assert result["personal_research_result"]["outcome"] == "no_usable_evidence"
         assert result["personal_research_result"]["finished_at"] is not None
-        assert "不允许自动读取" in str(result["personal_research_result"]["limitations"])
+        assert "未通过自动读取规则检查" in str(result["personal_research_result"]["limitations"])
+        assert "规则文件不可用" in str(result["personal_research_result"]["limitations"])
         assert "private.invalid" not in str(result)
         assert result["investments"] == []
     requests = client.get("/api/v1/me/company-requests", headers=headers).json()

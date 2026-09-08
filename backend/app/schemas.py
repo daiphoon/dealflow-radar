@@ -175,6 +175,13 @@ class ResearchResultOut(BaseModel):
     finished_at: datetime | None
     message: str
     limitations: list[str]
+    coverage_summary: list[str] = Field(default_factory=list)
+
+
+class CurrentCompanyContentOut(BaseModel):
+    confirmed_changes: int = Field(ge=0)
+    baseline_facts: int = Field(ge=0)
+    unconfirmed_leads: int = Field(ge=0)
 
 
 class CompanyDetail(BaseModel):
@@ -273,6 +280,7 @@ class PersonalCompanyRequestOut(BaseModel):
     research_job_status: str | None
     research_modules: dict[str, str]
     research_result: ResearchResultOut | None = None
+    current_company_content: CurrentCompanyContentOut | None = None
     queue_position: int | None
     resolved_legal_name: str | None
     resolved_credit_code: str | None
