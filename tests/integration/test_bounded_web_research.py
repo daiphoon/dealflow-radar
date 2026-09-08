@@ -516,6 +516,63 @@ def _drain(
     return statuses
 
 
+def test_one_job_reuses_robots_rules_for_multiple_pages_on_the_same_origin(
+    migrated_app: FastAPI,
+) -> None:
+    _grant_platform_admin(migrated_app)
+    first_query = _query(SEARCH_GROUPS[0][1])
+    second_query = _query(SEARCH_GROUPS[1][1])
+    primary = MockSearchProvider(
+        "baidu",
+        {
+            first_query: [
+                _result(
+                    "https://news.example.com/article-1",
+                    f"{SHARED_COMPANY_NAME}完成融资",
+                    f"{SHARED_COMPANY_NAME}披露融资进展。",
+                ),
+                _result(
+                    "https://news.example.com/article-2",
+                    f"{SHARED_COMPANY_NAME}中标",
+                    f"{SHARED_COMPANY_NAME}披露中标进展。",
+                ),
+            ],
+            second_query: [],
+        },
+    )
+    fallback = MockSearchProvider("bocha")
+    with migrated_app.state.session_factory() as session:
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        assert owner is not None
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), SHARED_COMPANY_ID)
+
+    fetcher = RecordingFetcherFactory()
+    statuses = _drain(
+        migrated_app,
+        {"baidu": primary, "bocha": fallback},
+        fetcher,
+        policy=WebResearchPolicy(
+            max_fetch_requests_per_job=3,
+            max_documents_per_job=2,
+        ),
+    )
+
+    assert statuses[-1] == "idle"
+    assert fetcher.requests[0] == "https://news.example.com/robots.txt"
+    assert set(fetcher.requests[1:]) == {
+        "https://news.example.com/article-1",
+        "https://news.example.com/article-2",
+    }
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        assert job is not None
+        assert job.coverage["stats"]["fetch_calls"] == 3
+        assert (
+            sum(item["status"] in {"created", "reused"} for item in job.coverage["documents"]) == 2
+        )
+        assert "_robots_rule_cache" not in job.coverage
+
+
 def test_shared_job_cache_replay_and_evidence_are_deduplicated(
     migrated_app: FastAPI,
     client: TestClient,

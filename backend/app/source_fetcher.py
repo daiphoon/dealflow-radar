@@ -7,9 +7,9 @@ import re
 import socket
 import time
 import urllib.robotparser
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit, urlunsplit
@@ -50,6 +50,74 @@ BLOCKED_FILE_SUFFIXES = {
 }
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_NAMES = {"from", "spm"}
+ROBOTS_CACHE_STATUSES = {
+    "checked",
+    "denied",
+    "invalid_content_type_deny",
+    "not_found_allow",
+    "unavailable_deny",
+}
+MAX_ROBOTS_CACHE_ORIGINS = 32
+MAX_PERSISTED_ROBOTS_RULE_CHARS = 64_000
+MAX_PERSISTED_ROBOTS_TOTAL_CHARS = 128_000
+ROBOTS_CACHE_TTL = timedelta(minutes=15)
+RobotsRuleCache = MutableMapping[str, dict[str, str]]
+
+
+def normalized_robots_rule_cache(value: object, user_agent: str) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, dict[str, str]] = {}
+    persisted_rule_chars = 0
+    for origin, raw_entry in value.items():
+        if len(normalized) >= MAX_ROBOTS_CACHE_ORIGINS:
+            break
+        if not isinstance(origin, str) or not isinstance(raw_entry, dict):
+            continue
+        parsed = urlsplit(origin)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            continue
+        status = raw_entry.get("status")
+        cached_user_agent = raw_entry.get("user_agent")
+        if status not in ROBOTS_CACHE_STATUSES or cached_user_agent != user_agent:
+            continue
+        checked_at = raw_entry.get("checked_at")
+        if not isinstance(checked_at, str):
+            continue
+        try:
+            checked_at_value = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if checked_at_value.tzinfo is None:
+            continue
+        age = datetime.now(UTC) - checked_at_value.astimezone(UTC)
+        if age < timedelta(0) or age > ROBOTS_CACHE_TTL:
+            continue
+        entry = {
+            "status": status,
+            "user_agent": user_agent,
+            "checked_at": checked_at_value.astimezone(UTC).isoformat(),
+        }
+        if status == "checked":
+            rules = raw_entry.get("rules")
+            if not isinstance(rules, str) or len(rules) > MAX_PERSISTED_ROBOTS_RULE_CHARS:
+                continue
+            if persisted_rule_chars + len(rules) > MAX_PERSISTED_ROBOTS_TOTAL_CHARS:
+                continue
+            entry["rules"] = rules
+            persisted_rule_chars += len(rules)
+        normalized[origin.rstrip("/")] = entry
+    return normalized
+
+
 HTML_IGNORED_TAGS = {"script", "style", "noscript", "svg", "template"}
 HTML_SUPPRESSED_TAGS = {"aside", "footer", "form", "nav"}
 HTML_BLOCK_TAGS = {
@@ -598,7 +666,16 @@ class TrustedSourceFetcher:
         self.request_count = 0
         self.downloaded_bytes = 0
         self._last_request_at: dict[str, float] = {}
-        self._robots: dict[str, tuple[str, urllib.robotparser.RobotFileParser | None]] = {}
+        self._robots: RobotsRuleCache = {}
+
+    def bind_job_robots_cache(self, cache: RobotsRuleCache) -> None:
+        """Reuse robots rules only across fresh fetchers for the same research job."""
+        if self.request_count or self._robots:
+            raise RuntimeError("robots cache must be bound before the fetcher is used")
+        normalized = normalized_robots_rule_cache(cache, self.policy.user_agent)
+        cache.clear()
+        cache.update(normalized)
+        self._robots = cache
 
     def close(self) -> None:
         if self._owns_client:
@@ -881,28 +958,54 @@ class TrustedSourceFetcher:
         parsed = urlsplit(target_url)
         origin = f"{parsed.scheme}://{parsed.netloc}"
         cached = self._robots.get(origin)
+        if cached is not None and cached.get("user_agent") != self.policy.user_agent:
+            cached = None
         if cached is None:
             robots_url = f"{origin}/robots.txt"
+            checked_at = datetime.now(UTC).isoformat()
             response = self._fetch_following_redirects(
                 robots_url,
                 root_domain,
                 allow_plain_text=True,
             )
             if response.status_code == 404:
-                cached = ("not_found_allow", None)
+                cached = {
+                    "status": "not_found_allow",
+                    "user_agent": self.policy.user_agent,
+                    "checked_at": checked_at,
+                }
             elif response.status_code in {401, 403}:
-                cached = ("denied", None)
+                cached = {
+                    "status": "denied",
+                    "user_agent": self.policy.user_agent,
+                    "checked_at": checked_at,
+                }
             elif response.status_code >= 400:
-                cached = ("unavailable_deny", None)
+                cached = {
+                    "status": "unavailable_deny",
+                    "user_agent": self.policy.user_agent,
+                    "checked_at": checked_at,
+                }
             elif (response.content_type or "").split(";", 1)[0].strip().lower() != "text/plain":
-                cached = ("invalid_content_type_deny", None)
+                cached = {
+                    "status": "invalid_content_type_deny",
+                    "user_agent": self.policy.user_agent,
+                    "checked_at": checked_at,
+                }
             else:
-                parser = urllib.robotparser.RobotFileParser()
-                parser.set_url(robots_url)
-                parser.parse(_decode_body(response.body, response.content_type).splitlines())
-                cached = ("checked", parser)
+                cached = {
+                    "status": "checked",
+                    "user_agent": self.policy.user_agent,
+                    "checked_at": checked_at,
+                    "rules": _decode_body(response.body, response.content_type),
+                }
             self._robots[origin] = cached
-        status, parser = cached
+        status = cached["status"]
+        parser = None
+        if status == "checked":
+            parser = urllib.robotparser.RobotFileParser()
+            parser.set_url(f"{origin}/robots.txt")
+            parser.parse(cached.get("rules", "").splitlines())
         allowed = status == "not_found_allow" or (
             status == "checked"
             and parser is not None
