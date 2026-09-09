@@ -719,6 +719,7 @@ class TrustedSourceFetcher:
     def _enable_tls_compatibility(self, host: str) -> None:
         if self._tls_compatibility_client is None:
             context = ssl.create_default_context()
+            context.minimum_version = max(context.minimum_version, ssl.TLSVersion.TLSv1_2)
             # Keep certificate/hostname verification and modern TLS; change only ECDH group.
             context.set_ecdh_curve("prime256v1")
             self._tls_compatibility_client = httpx.Client(
