@@ -44,9 +44,11 @@ from backend.app.models import (
     Company,
     CompanyResearchJob,
     Event,
+    IdentityResearchState,
     OfficialIdentityVerification,
     PersonalCompanyRequest,
     RawDocument,
+    UsageLedger,
     User,
 )
 from backend.app.personal_features import list_personal_company_requests
@@ -65,6 +67,93 @@ pytestmark = [
         reason="set POSTGRES_RLS_DATABASE_URL to run live PostgreSQL RLS tests",
     ),
 ]
+
+
+def test_public_identity_state_is_platform_only_and_company_insert_is_narrow():
+    engine = create_engine(POSTGRES_RLS_DATABASE_URL)
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            session = Session(bind=connection)
+            set_request_context(session, ALPHA_USER_ID, ALPHA_TENANT_ID)
+            connection.execute(
+                text("""
+                INSERT INTO user_role_assignments (id, user_id, role_id, created_at, updated_at)
+                SELECT :id, :user_id, id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM roles WHERE code = 'platform_admin'
+            """),
+                {"id": str(uuid4()), "user_id": str(ALPHA_USER_ID)},
+            )
+            request = PersonalCompanyRequest(
+                owner_user_id=ALPHA_USER_ID,
+                request_type="inclusion",
+                requested_name="示例主体隔离有限公司",
+                target_key=f"identity-rls:{uuid4()}",
+                status="pending",
+            )
+            session.add(request)
+            session.flush()
+            state = IdentityResearchState(request_id=request.id, progress={"evidence": "private"})
+            session.add(state)
+            usage = UsageLedger(
+                tenant_id=ALPHA_TENANT_ID,
+                provider="public_identity_fetch",
+                idempotency_key=f"identity-rls-{uuid4()}",
+                operation="identity_document",
+                metrics={"stage": "identity", "request_id": str(request.id)},
+                external_calls=0,
+                input_tokens=0,
+                output_tokens=0,
+                estimated_cost=Decimal("0"),
+            )
+            session.add(usage)
+            company = Company(
+                legal_name="示例自动主体有限公司",
+                tenant_id=None,
+                visibility_scope="public",
+                identity_status="verified",
+                identity_verification_basis="public_crosscheck",
+            )
+            session.add(company)
+            session.flush()
+            assert (
+                connection.scalar(
+                    text("SELECT count(*) FROM identity_research_states WHERE request_id=:id"),
+                    {"id": str(request.id)},
+                )
+                == 1
+            )
+            for user_id, tenant_id in (
+                (NO_ACCESS_USER_ID, ALPHA_TENANT_ID),
+                (BETA_USER_ID, BETA_TENANT_ID),
+            ):
+                set_request_context(session, user_id, tenant_id)
+                assert (
+                    connection.scalar(
+                        text("SELECT count(*) FROM identity_research_states WHERE request_id=:id"),
+                        {"id": str(request.id)},
+                    )
+                    == 0
+                )
+                assert (
+                    connection.scalar(
+                        text("SELECT count(*) FROM usage_ledger WHERE id=:id"),
+                        {"id": str(usage.id)},
+                    )
+                    == 0
+                )
+                assert (
+                    connection.execute(
+                        text(
+                            "UPDATE identity_research_states SET progress='{}' WHERE request_id=:id"
+                        ),
+                        {"id": str(request.id)},
+                    ).rowcount
+                    == 0
+                )
+        finally:
+            transaction.rollback()
+    engine.dispose()
 
 
 class _PostgresCloudBaseProvider:

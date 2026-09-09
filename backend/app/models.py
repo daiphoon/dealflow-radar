@@ -179,7 +179,8 @@ class Company(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint(
             "identity_verification_basis IS NULL OR identity_verification_basis IN "
-            "('official_government', 'licensed_business_data', 'exchange_disclosure')",
+            "('official_government', 'licensed_business_data', 'exchange_disclosure', "
+            "'public_crosscheck')",
             name="ck_company_identity_verification_basis",
         ),
     )
@@ -370,6 +371,17 @@ class PersonalCompanyRequest(TimestampMixin, Base):
     reviewed_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     decision_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class IdentityResearchState(TimestampMixin, Base):
+    """Platform-only evidence and resumable progress; never serialized to request owners."""
+
+    __tablename__ = "identity_research_states"
+
+    request_id: Mapped[UUID] = mapped_column(
+        ForeignKey("personal_company_requests.id", ondelete="CASCADE"), primary_key=True
+    )
+    progress: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
 class PersonalUsageRecord(Base):

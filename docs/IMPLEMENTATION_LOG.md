@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-09-09：系统后台主体查证与研究衔接
+
+- 任务：按 ADR-0020，由系统基于用户提供的全称/信用代码查找并交叉核对公开资料，不要求营业执照扫描件；通过后接原研究队列，冲突或缺证保守停止。
+- 关键文件：`identity_research.py`、`0027_public_identity_research.py`、原 Worker/申请服务、公司身份标签、迁移/请求/RLS 测试及 ADR-0020/阶段看板。新底稿与身份用量只允许平台管理员读取，身份查证和后续研究共用预算，不修改历史迁移或真实数据。
+- 实际命令：Ruff/格式与 `git diff --check`；完整 Pytest（隔离 PostgreSQL 16）；SQLite 升降级/Schema 检查；一次性 PostgreSQL `0026 → 0027 → 0026 → 0027`；前端 `npm test`、`npm run typecheck`、`npm run build`。
+- 测试结果：完整回归 444 项通过；追加账本隔离和详情检查后，身份/RLS 定向 14 项通过；前端 12 项测试、类型检查、生产构建通过。修正旧迁移测试对 PostgreSQL 整事务回滚版本的固定断言；复用旧测试库造成的残留数量失败通过全新隔离测试库复核。仅保留既有 Starlette TestClient 弃用警告。
+- 未验证边界：尚未部署香港、未运行真实公司搜索或真实账号视觉验收；实际公开来源可达性/覆盖率仍待合并后的原样本验证。当前抓取器只保留有限正文摘录，目标身份不在摘录内时可能无法交叉核对，不能把缺证当作主体不存在。业务搜索/网页外部调用、模型 Token、付费调用、自动发布均为 0；测试容器不包含真实数据。
+
 ## 2026-09-09：前端依赖安全补丁
 
 - 任务：解除 PR #71 的既有依赖审计阻塞；仅升级 Next.js `16.3.0 → 16.3.4`、sharp `0.35.3 → 0.35.4`、baseline-browser-mapping `2.10.43 → 2.11.21` 及 Next/sharp 必需配套依赖。不升级 React/TypeScript、不降低 CI 审计阈值、不修改业务代码或数据库。
@@ -7,6 +15,8 @@
 - 实际验证：`npm ci`、`npm ls next sharp baseline-browser-mapping`、`npm audit --audit-level=moderate`；12 项前端测试、TypeScript 检查及生产构建通过，审计为 0 个已知漏洞。standalone 本地启动后 CloudBase 模式登录页返回 200（未发送验证码）；未授权远程图片 URL 返回 400，sharp 正常 PNG 处理和异常输入拒绝通过。完整 Linux CI 随独立 PR 验证，未用 Mac 构建替代 Linux 原生依赖验证，也未把接口检查称为真实账号视觉验收；临时服务已停止。
 - 安全依据：[Next 图片优化公告](https://github.com/advisories/GHSA-2xp9-vwfh-vxw4)、[sharp 修复公告](https://github.com/advisories/GHSA-rgj7-g3m4-5g8c)、[浏览器映射依赖公告](https://github.com/advisories/GHSA-w5vr-8v7q-w6rv)。Windows 专属风险不适用于仓库定义的 Linux 部署，但不能因页面未使用图片组件就断言优化接口不可达。本次通过已修复版本与审计验证，不执行漏洞利用，也不证明生产曾遭攻击或不存在其他风险。
 - 交付边界：独立 PR 待审查，不合并、不部署，不修改 PR #71；研究搜索、网页采集、产品模型 Token、自动发布及生产写入均为 0。依赖下载、GitHub 与开发工具访问不计入业务调用。
+
+- 后续状态：PR #72 的 Verify 全部通过（430 项后端、12 项前端测试及 Linux 生产镜像），经批准 Squash 合并为 `e0104e4`。同步 main 到 PR #71 时仅两份文档的同位置新增发生冲突，保留双方记录并更新当前闸门；业务文件没有冲突。不部署、不运行迁移或真实查询。
 
 ## 2026-09-08：同任务 robots 规则复用与读取预算效率
 

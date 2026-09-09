@@ -19,7 +19,7 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     command.upgrade(config, "head")
     command.check(config)
     engine = create_engine(database_url)
-    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 38
+    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 39
     user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
     assert {"auth_provider", "auth_subject"} <= user_columns
     assert "uq_users_auth_identity" in {
