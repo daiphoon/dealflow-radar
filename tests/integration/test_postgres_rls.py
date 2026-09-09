@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Connection, create_engine, text
+from sqlalchemy import Connection, create_engine, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
@@ -48,8 +48,10 @@ from backend.app.models import (
     OfficialIdentityVerification,
     PersonalCompanyRequest,
     RawDocument,
+    Role,
     UsageLedger,
     User,
+    UserRoleAssignment,
 )
 from backend.app.personal_features import list_personal_company_requests
 from backend.app.providers import ManualOfficialIdentityImportProvider
@@ -67,6 +69,102 @@ pytestmark = [
         reason="set POSTGRES_RLS_DATABASE_URL to run live PostgreSQL RLS tests",
     ),
 ]
+
+
+@pytest.mark.parametrize("expire_on_commit", [True, False])
+def test_identity_worker_restores_context_after_empty_job_commit(expire_on_commit):
+    if not DATABASE_ADMIN_URL:
+        pytest.skip("set DATABASE_ADMIN_URL to prepare committed identity fixtures")
+    admin_engine = create_engine(DATABASE_ADMIN_URL)
+    app_engine = create_engine(POSTGRES_RLS_DATABASE_URL)
+    request_id, assignment_id = uuid4(), uuid4()
+    name = "示例事务衔接主体有限公司"
+    # Checksum-valid fixture, not a real company identity.
+    code = "91310000999999999J"
+    providers = {key: MockSearchProvider(key) for key in ("baidu", "bocha")}
+    try:
+        with Session(admin_engine) as session:
+            role_id = session.scalar(select(Role.id).where(Role.code == "platform_admin"))
+            if not session.scalar(
+                select(UserRoleAssignment.id).where(
+                    UserRoleAssignment.user_id == ALPHA_USER_ID,
+                    UserRoleAssignment.role_id == role_id,
+                )
+            ):
+                session.add(
+                    UserRoleAssignment(id=assignment_id, user_id=ALPHA_USER_ID, role_id=role_id)
+                )
+            session.add(
+                PersonalCompanyRequest(
+                    id=request_id,
+                    owner_user_id=BETA_USER_ID,
+                    request_type="inclusion",
+                    requested_name=name,
+                    requested_credit_code=code,
+                    target_key=f"identity-context:{request_id}",
+                    status="pending",
+                )
+            )
+            session.commit()
+        # No enclosing test transaction: the worker must really commit and clear SET LOCAL.
+        with Session(app_engine, expire_on_commit=expire_on_commit) as session:
+            assert session.scalar(
+                text(
+                    "SELECT NOT rolsuper AND NOT rolbypassrls "
+                    "FROM pg_roles WHERE rolname=current_user"
+                )
+            )
+            set_request_context(session, ALPHA_USER_ID, ALPHA_TENANT_ID)
+            user = session.get(User, ALPHA_USER_ID)
+            result = run_web_research_worker_once(session, user, providers, WebResearchPolicy())
+        assert result.status == "partial"
+        assert result.stage == "identity"
+        assert len(providers["baidu"].calls) == 1
+        assert providers["baidu"].calls[0].query == f'"{name}" {code}'
+        assert not providers["bocha"].calls
+        with Session(admin_engine) as session:
+            request = session.get(PersonalCompanyRequest, request_id)
+            assert request.status == "identity_queued"
+            assert request.company_id is None
+            assert request.external_calls == 1
+            state = session.get(IdentityResearchState, request_id)
+            assert state.progress["search_calls"] == 1
+            assert "in_flight" not in state.progress
+            usage = list(
+                session.scalars(
+                    select(UsageLedger).where(
+                        UsageLedger.metrics["request_id"].as_string() == str(request_id)
+                    )
+                )
+            )
+            assert len(usage) == 1
+            assert usage[0].external_calls == 1
+            assert usage[0].input_tokens == usage[0].output_tokens == 0
+            usage_id = usage[0].id
+        # Reconnect as the applicant and an unrelated user: no platform-only evidence/usage.
+        for uid, tid in ((BETA_USER_ID, BETA_TENANT_ID), (NO_ACCESS_USER_ID, ALPHA_TENANT_ID)):
+            with Session(app_engine) as session:
+                set_request_context(session, uid, tid)
+                assert session.get(IdentityResearchState, request_id) is None
+                assert session.get(UsageLedger, usage_id) is None
+                request = session.get(PersonalCompanyRequest, request_id)
+                assert (request is not None) == (uid == BETA_USER_ID)
+                if request:
+                    assert request.status == "identity_queued"
+    finally:
+        with admin_engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM usage_ledger WHERE metrics->>'request_id'=:id"),
+                {"id": str(request_id)},
+            )
+            connection.execute(
+                text("DELETE FROM personal_company_requests WHERE id=:id"), {"id": str(request_id)}
+            )
+            connection.execute(
+                text("DELETE FROM user_role_assignments WHERE id=:id"), {"id": str(assignment_id)}
+            )
+        app_engine.dispose()
+        admin_engine.dispose()
 
 
 def test_public_identity_state_is_platform_only_and_company_insert_is_narrow():

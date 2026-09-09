@@ -2731,6 +2731,8 @@ def run_web_research_worker_once(
     prepare_pending_research_requests(session, user, policy)
     _restore_worker_context(session, user)
     job = _lease_job(session, user, policy)
+    # Leasing commits even when no research job exists, clearing transaction-local RLS context.
+    _restore_worker_context(session, user)
     if job is None:
         from backend.app.identity_research import run_identity_step
 
@@ -2738,7 +2740,6 @@ def run_web_research_worker_once(
         if identity_result is not None:
             return identity_result
         return WebResearchWorkerResult(status="idle")
-    _restore_worker_context(session, user)
     company = session.get(Company, job.company_id)
     if not _public_company(company):
         job.status = "failed"
