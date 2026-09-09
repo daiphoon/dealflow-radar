@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-09-09：前端依赖安全补丁
+
+- 任务：解除 PR #71 的既有依赖审计阻塞；仅升级 Next.js `16.3.0 → 16.3.4`、sharp `0.35.3 → 0.35.4`、baseline-browser-mapping `2.10.43 → 2.11.21` 及 Next/sharp 必需配套依赖。不升级 React/TypeScript、不降低 CI 审计阈值、不修改业务代码或数据库。
+- 关键文件：`frontend/package.json`、`frontend/package-lock.json`、实施计划及本记录。
+- 实际验证：`npm ci`、`npm ls next sharp baseline-browser-mapping`、`npm audit --audit-level=moderate`；12 项前端测试、TypeScript 检查及生产构建通过，审计为 0 个已知漏洞。standalone 本地启动后 CloudBase 模式登录页返回 200（未发送验证码）；未授权远程图片 URL 返回 400，sharp 正常 PNG 处理和异常输入拒绝通过。完整 Linux CI 随独立 PR 验证，未用 Mac 构建替代 Linux 原生依赖验证，也未把接口检查称为真实账号视觉验收；临时服务已停止。
+- 安全依据：[Next 图片优化公告](https://github.com/advisories/GHSA-2xp9-vwfh-vxw4)、[sharp 修复公告](https://github.com/advisories/GHSA-rgj7-g3m4-5g8c)、[浏览器映射依赖公告](https://github.com/advisories/GHSA-w5vr-8v7q-w6rv)。Windows 专属风险不适用于仓库定义的 Linux 部署，但不能因页面未使用图片组件就断言优化接口不可达。本次通过已修复版本与审计验证，不执行漏洞利用，也不证明生产曾遭攻击或不存在其他风险。
+- 交付边界：独立 PR 待审查，不合并、不部署，不修改 PR #71；研究搜索、网页采集、产品模型 Token、自动发布及生产写入均为 0。依赖下载、GitHub 与开发工具访问不计入业务调用。
+
 ## 2026-09-08：同任务 robots 规则复用与读取预算效率
 
 - 任务：在受限公开网络研究的单个任务生命周期内，为同一站点复用已经取得的 `robots.txt` 规则；每个候选 URL 仍按自身路径重新判断是否允许访问。临时规则随任务进度保存，使单步 Worker 退出后仍可继续复用；任务完成或取消时删除，不跨任务或公司复用。
