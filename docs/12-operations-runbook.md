@@ -288,6 +288,8 @@ R3 只在独立 `web-research-worker` 容器中联网。API 和前端不读取�
 
 零网络 dry-run 不要求 Provider 密钥，也不写库：
 
+ADR-0020 主体查证 V2：新公司由后台独立核对名称/代码后才能进入研究，仍不接受搜索摘要作为证据。`--dry-run` 同时输出身份与业务研究预算，默认身份 6 次搜索/24 次 HTTP/4 MB，业务仍为 4 次搜索/8 次 HTTP/2 MB；平台日/月限额共同约束。运维提高身份预算时不清空已消耗计数，不直接修改请求为核验通过；在途旧版本可保留审计进度续做，已终止请求不能靠常驻重试恢复。后台只保存最小定位摘录，不保存完整网页正文。该条替代上文早期 R3 必须人工关联公司才能研究的限制，不改变正式官方核验与 `public_crosscheck` 的语义区别。
+
 ```bash
 docker compose -f compose.production.yml -f deploy/compose.single-host.yml \
   --env-file deploy/single-host.env --profile web-research \

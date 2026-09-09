@@ -26,7 +26,10 @@ from backend.app.models import (
     UserRoleAssignment,
 )
 from backend.app.source_fetcher import TrustedSourceFetcher
-from backend.app.web_research_service import prepare_pending_research_requests
+from backend.app.web_research_service import (
+    inspect_web_research_queue,
+    prepare_pending_research_requests,
+)
 from backend.app.web_search import (
     BaiduSearchProvider,
     MockSearchProvider,
@@ -296,6 +299,23 @@ def test_cancel_before_start_has_zero_calls(migrated_app):
     assert status == "cancelled"
     assert company_id is None
     assert not searches["baidu"].calls
+
+
+def test_identity_dry_run_discloses_both_budgets_without_mutation(migrated_app):
+    request_id = setup_request(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        result = inspect_web_research_queue(
+            session, session.get(User, ALPHA_USER_ID), WebResearchPolicy()
+        )
+        assert result["identity_budget"] == {
+            "max_search_calls": 6,
+            "max_fetch_requests": 24,
+            "max_download_bytes": 4_000_000,
+        }
+        assert result["new_company_max_search_calls"] == 10
+        assert result["external_calls"] == 0
+        assert session.get(IdentityResearchState, request_id) is None
+        assert session.get(PersonalCompanyRequest, request_id).status == "pending"
 
 
 def test_cancel_during_search_preserves_evidence_and_stops(migrated_app):

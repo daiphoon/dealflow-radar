@@ -2866,6 +2866,13 @@ def inspect_web_research_queue(
         "fallback_provider": policy.fallback_provider,
         "max_search_calls_per_job": policy.max_search_calls_per_job,
         "max_documents_per_job": policy.max_documents_per_job,
+        "identity_budget": {
+            "max_search_calls": min(6, policy.identity_max_search_calls),
+            "max_fetch_requests": policy.identity_max_fetch_requests,
+            "max_download_bytes": policy.identity_max_download_bytes,
+        },
+        "new_company_max_search_calls": min(6, policy.identity_max_search_calls)
+        + policy.max_search_calls_per_job,
         "external_calls": 0,
         "input_tokens": 0,
         "output_tokens": 0,
