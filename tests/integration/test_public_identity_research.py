@@ -124,7 +124,123 @@ def test_identity_search_does_not_limit_registration_evidence_to_last_year():
     assert provider._request_payload(SearchRequest(NAME))["search_recency_filter"] == "year"
 
 
-def test_resumable_identity_then_research_shares_budget(migrated_app):
+def test_identity_locates_later_labelled_fields_and_does_not_hide_conflict():
+    prefix = NAME + " 网站导航 " * 1000
+    pair = f"{NAME} 统一社会信用代码：{CODE}"
+    result = identity_evidence(NAME, CODE, prefix + pair, PAIR_URL)
+    assert result["pair_match"] and len(result["excerpt"]) < 1500
+    assert CODE.lower() in result["excerpt"]
+    conflict = identity_evidence(
+        NAME,
+        CODE,
+        prefix + pair + " 无关段落 " * 300 + NAME + " 统一社会信用代码：91310000MABNKADB72",
+        PAIR_URL,
+    )
+    assert conflict["pair_match"] and conflict["conflict"]
+    distant = identity_evidence(NAME, CODE, prefix + "统一社会信用代码：" + CODE, PAIR_URL)
+    assert not distant["pair_match"]
+
+
+def test_identity_reads_beyond_first_excerpt_and_through_safe_redirect(migrated_app):
+    request_id = setup_request(migrated_app)
+    searches = providers()
+    observed = []
+
+    def factory(policy):
+        def respond(request):
+            observed.append(str(request.url))
+            if request.url.path == "/robots.txt":
+                return httpx.Response(
+                    200, text="User-agent: *\nAllow: /", headers={"content-type": "text/plain"}
+                )
+            if request.url.host.endswith("gov.cn"):
+                body = "其他公示资料 " * 800 + NAME
+            elif request.url.path == "/company":
+                return httpx.Response(302, headers={"location": "/registry"})
+            else:
+                body = NAME + "<main>导航内容 " * 400 + "</main>" * 400
+                body += f"<footer>{NAME} 统一社会信用代码：{CODE}</footer>"
+            return httpx.Response(200, text=body, headers={"content-type": "text/html"})
+
+        return TrustedSourceFetcher(
+            policy,
+            client=httpx.Client(transport=httpx.MockTransport(respond)),
+            resolver=lambda host, port: ["93.184.216.34"],
+        )
+
+    for _ in range(4):
+        _, status, company_id = step(migrated_app, request_id, searches, factory)
+    assert status == "research_queued" and company_id
+    assert "https://registry.example.org/registry" in observed
+    with migrated_app.state.session_factory() as session:
+        progress = session.get(IdentityResearchState, request_id).progress
+        assert progress["fetch_calls"] == 5
+        assert all(len(item["excerpt"]) < 1500 for item in progress["evidence"])
+        assert sum(item["pair_match"] for item in progress["evidence"]) == 1
+
+
+def test_complementary_searches_and_quality_fallback_are_bounded(migrated_app):
+    request_id = setup_request(migrated_app)
+    searches = {code: MockSearchProvider(code) for code in ("baidu", "bocha")}
+    # Nonempty unusable discovery must still permit a different provider/query.
+    records = [SearchResult(None, "无主体正文", "https://noise.example.org/page", "", "", None)]
+    searches["baidu"] = MockSearchProvider("baidu", {f'"{NAME}" {CODE}': records})
+    for _ in range(10):
+        _, status, _ = step(migrated_app, request_id, searches)
+        if status == "in_review":
+            break
+    assert status == "in_review"
+    calls = searches["baidu"].calls + searches["bocha"].calls
+    assert 4 <= len(calls) <= 6
+    assert all(
+        len({call.query for call in provider.calls}) == len(provider.calls)
+        for provider in searches.values()
+    )
+    assert any(call.query == f'"{NAME}" site:gov.cn' for call in calls)
+    assert any(call.query == f'"{CODE}"' for call in calls)
+    assert searches["bocha"].calls
+
+
+def test_exhausted_fetch_budget_never_buys_another_search(migrated_app):
+    request_id = setup_request(migrated_app)
+    searches = providers()
+    step(migrated_app, request_id, searches)
+    with migrated_app.state.session_factory() as session:
+        state = session.get(IdentityResearchState, request_id)
+        state.progress = {**state.progress, "candidates": [], "fetch_calls": 24}
+        session.commit()
+    _, status, company_id = step(migrated_app, request_id, searches)
+    assert status == "in_review" and company_id is None
+    assert len(searches["baidu"].calls) == 1
+
+
+def test_legacy_inflight_request_continues_without_resetting_spent_budget(migrated_app):
+    request_id = setup_request(migrated_app)
+    searches = providers()
+    step(migrated_app, request_id, searches)
+    with migrated_app.state.session_factory() as session:
+        state = session.get(IdentityResearchState, request_id)
+        state.progress = {
+            **state.progress,
+            "policy_version": "public-identity-v1",
+            "candidates": [],
+            "fetch_calls": 8,
+            "downloaded_bytes": 10000,
+        }
+        session.commit()
+    _, status, _ = step(migrated_app, request_id, searches)
+    assert status == "identity_queued"
+    assert searches["baidu"].calls[-1].query == f'"{NAME}" site:gov.cn'
+    with migrated_app.state.session_factory() as session:
+        progress = session.get(IdentityResearchState, request_id).progress
+        assert progress["search_calls"] == 2
+        assert progress["fetch_calls"] == 8
+        assert progress["downloaded_bytes"] == 10000
+        assert progress["policy_version"] == "public-identity-v2"
+        assert progress["previous_policy_versions"] == ["public-identity-v1"]
+
+
+def test_resumable_identity_reserves_business_budget_and_preserves_usage(migrated_app):
     request_id = setup_request(migrated_app)
     searches = providers()
     for _ in range(4):
@@ -150,8 +266,10 @@ def test_resumable_identity_then_research_shares_budget(migrated_app):
         job = session.scalar(
             select(CompanyResearchJob).where(CompanyResearchJob.company_id == company_id)
         )
-        assert job.coverage["stats"]["search_calls"] == 1
-        assert job.coverage["stats"]["fetch_calls"] == 4
+        assert job.coverage["stats"]["search_calls"] == 0
+        assert job.coverage["stats"]["fetch_calls"] == 0
+        assert job.coverage["identity_usage"]["search_calls"] == 1
+        assert job.coverage["identity_usage"]["fetch_calls"] == 4
         assert session.scalar(select(func.count()).select_from(Event)) == before
         assert session.scalar(select(func.sum(UsageLedger.input_tokens))) == 0
         assert session.scalar(select(func.sum(UsageLedger.external_calls))) == 5
@@ -268,11 +386,11 @@ def test_no_evidence_or_conflict_never_creates_company(migrated_app, mode):
     request_id = setup_request(migrated_app)
     with migrated_app.state.session_factory() as session:
         request = session.get(PersonalCompanyRequest, request_id)
-        progress = {"input_hash": hashlib.sha256(f"{NAME}|{CODE}".casefold().encode()).hexdigest()}
+        progress = {"input_hash": hashlib.sha256(f"{NAME.casefold()}|{CODE}".encode()).hexdigest()}
         if mode == "invalid":
             request.requested_credit_code = "123"
         elif mode == "missing":
-            progress["search_calls"] = 2
+            progress["search_calls"] = 6
         elif mode == "interrupted":
             progress["in_flight"] = "search:0"
         else:

@@ -218,8 +218,9 @@ class _FetchedResponse:
 
 
 class _HtmlMetadataParser(HTMLParser):
-    def __init__(self) -> None:
+    def __init__(self, *, preserve_identity_fields: bool = False) -> None:
         super().__init__(convert_charrefs=True)
+        self.preserve_identity_fields = preserve_identity_fields
         self.title_parts: list[str] = []
         self.text_parts: list[str] = []
         self.main_text_parts: list[str] = []
@@ -335,6 +336,8 @@ class _HtmlMetadataParser(HTMLParser):
         tag: str,
         attributes: dict[str, str],
     ) -> bool:
+        if self.preserve_identity_fields:
+            return False
         if tag in HTML_SUPPRESSED_TAGS or (tag == "header" and not self._main_depth):
             return True
         descriptor = " ".join(
@@ -508,14 +511,19 @@ def _html_document(
     keep_excerpt: bool,
     allow_test_http: bool,
     allow_private_test_hosts: bool,
+    excerpt_selector: Callable[[str], str] | None = None,
 ) -> tuple[DiscoveredDocument, _HtmlMetadataParser]:
     text = _decode_body(response.body, response.content_type)
-    parser = _HtmlMetadataParser()
+    parser = _HtmlMetadataParser(preserve_identity_fields=excerpt_selector is not None)
     parser.feed(text)
     body_text = _normalize_document_text(parser.text_parts)
     main_text = _normalize_document_text(parser.main_text_parts)
     use_main = parser.found_main_content and len(main_text) >= 10
     visible_text = main_text if use_main else body_text
+    if excerpt_selector is not None:
+        # Identity labels may be outside <main>. Inspect bounded decoded text
+        # in memory, persisting only the selector's minimal excerpt.
+        visible_text = body_text
     title = _normalize_text(" ".join(parser.title_parts)) or response.final_url
     canonical_url = response.final_url
     if parser.canonical_href:
@@ -534,14 +542,18 @@ def _html_document(
         title=title[:500],
         published_at=_parse_datetime(parser.published_value),
         content_hash=_sha256(hash_input),
-        excerpt=visible_text[:1500] if keep_excerpt and visible_text else None,
+        excerpt=(excerpt_selector(visible_text) if excerpt_selector else visible_text)[:1500]
+        if keep_excerpt and visible_text
+        else None,
         http_status=response.status_code,
         etag=response.etag,
         last_modified=response.last_modified,
         link_health_status="healthy",
         metadata={
             "content_type": response.content_type or "unknown",
-            "extraction_method": "main_content" if use_main else "clean_body",
+            "extraction_method": "identity_body"
+            if excerpt_selector is not None
+            else ("main_content" if use_main else "clean_body"),
             "extracted_text_length": len(visible_text),
         },
     )
@@ -567,6 +579,7 @@ def _pdf_document(
     *,
     keep_excerpt: bool,
     policy: SourceMonitoringPolicy,
+    excerpt_selector: Callable[[str], str] | None = None,
 ) -> DiscoveredDocument:
     try:
         extracted = extract_pdf_safely(
@@ -585,7 +598,9 @@ def _pdf_document(
         title=title[:500],
         published_at=published_at,
         content_hash=_sha256(extracted.text),
-        excerpt=extracted.text[:1500] if keep_excerpt else None,
+        excerpt=(excerpt_selector(extracted.text) if excerpt_selector else extracted.text)[:1500]
+        if keep_excerpt
+        else None,
         http_status=response.status_code,
         etag=response.etag,
         last_modified=response.last_modified,
@@ -611,16 +626,20 @@ def _document_from_response(
     policy: SourceMonitoringPolicy,
     allow_test_http: bool,
     allow_private_test_hosts: bool,
+    excerpt_selector: Callable[[str], str] | None = None,
 ) -> tuple[DiscoveredDocument, _HtmlMetadataParser | None]:
     content_type = (response.content_type or "").split(";", 1)[0].strip().lower()
     if content_type == "application/pdf":
-        return _pdf_document(response, keep_excerpt=keep_excerpt, policy=policy), None
+        return _pdf_document(
+            response, keep_excerpt=keep_excerpt, policy=policy, excerpt_selector=excerpt_selector
+        ), None
     return _html_document(
         response,
         root_domain,
         keep_excerpt=keep_excerpt,
         allow_test_http=allow_test_http,
         allow_private_test_hosts=allow_private_test_hosts,
+        excerpt_selector=excerpt_selector,
     )
 
 
@@ -1065,6 +1084,7 @@ class TrustedSourceFetcher:
         list_path_prefix: str | None = None,
         retention_policy: str,
         conditional_state: dict[str, dict[str, str | None]],
+        excerpt_selector: Callable[[str], str] | None = None,
     ) -> FetchBatchResult:
         keep_excerpt = retention_policy == "minimal_excerpt"
         documents: list[DiscoveredDocument] = []
@@ -1110,6 +1130,7 @@ class TrustedSourceFetcher:
                 policy=self.policy,
                 allow_test_http=self.allow_test_http,
                 allow_private_test_hosts=self.allow_private_test_hosts,
+                excerpt_selector=excerpt_selector,
             )
             documents.append(document)
         elif source_type == "list_page":

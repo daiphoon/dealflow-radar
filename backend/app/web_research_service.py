@@ -572,8 +572,12 @@ def prepare_pending_research_requests(
             coverage = _initial_coverage(policy)
             identity = session.get(IdentityResearchState, request.id)
             if identity:
-                for metric in ("search_calls", "fetch_calls", "downloaded_bytes"):
-                    coverage["stats"][metric] = int(identity.progress.get(metric, 0))
+                # Identity and business research have separate task caps. Preserve
+                # the former for audit, but do not exhaust business discovery before it starts.
+                coverage["identity_usage"] = {
+                    metric: int(identity.progress.get(metric, 0))
+                    for metric in ("search_calls", "fetch_calls", "downloaded_bytes")
+                }
             job = CompanyResearchJob(
                 company_id=company.id,
                 created_by_user_id=request.owner_user_id,
