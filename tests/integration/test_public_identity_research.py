@@ -66,7 +66,7 @@ def setup_request(app):
 
 def providers():
     records = [
-        SearchResult(None, "主体信息", url, "搜索摘要不是证据", "示例来源", None)
+        SearchResult(None, f"{NAME} 主体信息", url, "搜索摘要不是证据", "示例来源", None)
         for url in (PAIR_URL, GOV_URL)
     ]
     return {
@@ -241,6 +241,55 @@ def test_legacy_inflight_request_continues_without_resetting_spent_budget(migrat
         assert progress["downloaded_bytes"] == 10000
         assert progress["policy_version"] == "public-identity-v2"
         assert progress["previous_policy_versions"] == ["public-identity-v1"]
+
+
+def test_other_company_search_results_are_not_fetched(migrated_app):
+    request_id = setup_request(migrated_app)
+    searches = {
+        "baidu": MockSearchProvider(
+            "baidu",
+            {
+                f'"{NAME}" {CODE}': [
+                    SearchResult(
+                        None,
+                        "91310000MABNKADB72",
+                        "https://other.example.org",
+                        "另一家公司",
+                        "",
+                        None,
+                    )
+                ]
+            },
+        ),
+        "bocha": MockSearchProvider("bocha"),
+    }
+    step(migrated_app, request_id, searches)
+    with migrated_app.state.session_factory() as session:
+        progress = session.get(IdentityResearchState, request_id).progress
+        assert progress["candidates"] == []
+        assert progress["responses"][0]["rejected_subject_results"] == 1
+        assert progress.get("fetch_calls", 0) == 0
+        assert progress["primary_failed"] is True
+
+
+def test_legacy_other_credit_code_candidate_is_skipped_at_zero_cost(migrated_app):
+    request_id = setup_request(migrated_app)
+    searches = providers()
+    step(migrated_app, request_id, searches)
+    with migrated_app.state.session_factory() as session:
+        state = session.get(IdentityResearchState, request_id)
+        state.progress = {
+            **state.progress,
+            "candidates": [{"title": "91310000MABNKADB72", "url": "https://other.example.org"}],
+        }
+        session.commit()
+    result, status, company_id = step(migrated_app, request_id, searches)
+    assert result.external_calls == 0 and status == "identity_queued" and company_id is None
+    with migrated_app.state.session_factory() as session:
+        progress = session.get(IdentityResearchState, request_id).progress
+        assert progress["candidate_index"] == 1
+        assert progress["failures"][-1]["code"] == "discovery_subject_mismatch"
+        assert len(searches["baidu"].calls) == 1
 
 
 def test_resumable_identity_reserves_business_budget_and_preserves_usage(migrated_app):
