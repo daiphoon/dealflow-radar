@@ -88,6 +88,11 @@ def _candidate_rank(candidate):
     )
 
 
+def _discovery_subject_match(name, code, result):
+    text = normalized(f"{result.title} {result.snippet}")
+    return normalized(name) in text or code.lower() in text
+
+
 def corroborated(evidence: list[dict]) -> bool:
     if any(item.get("conflict") for item in evidence):
         return False
@@ -373,14 +378,19 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
             )
             actual_calls = response.external_calls
             usage.metrics = {**usage.metrics, "status": "completed"}
-            if not response.results:
+            qualified_results = [
+                result
+                for result in response.results
+                if _discovery_subject_match(name, code, result)
+            ]
+            if not qualified_results and provider_code == policy.primary_provider:
                 progress["primary_failed"] = True
             seen = {item["url"] for item in candidates}
             pending = candidates[index:]
-            for result in response.results:
+            for result in qualified_results:
                 url = research._canonical_candidate_url(result.url)
                 if url and url not in seen:
-                    pending.append({"url": url, "title": result.title})
+                    pending.append({"url": url, "title": result.title, "subject_match": True})
                     seen.add(url)
             candidates = (
                 candidates[:index]
@@ -394,6 +404,8 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
                     "request_id": response.request_id,
                     "response_hash": response.response_hash,
                     "results": len(response.results),
+                    "subject_results": len(qualified_results),
+                    "rejected_subject_results": len(response.results) - len(qualified_results),
                     "checked_at": utc_now().isoformat(),
                 }
             )
@@ -415,6 +427,18 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
             status="partial", stage="identity", external_calls=actual_calls
         )
     candidate = candidates[index]
+    title_code = normalized(candidate.get("title", ""))
+    if candidate.get("subject_match") is False or (
+        re.fullmatch(r"[0-9abcdefghjklmnpqrtuwxy]{18}", title_code) and title_code != code.lower()
+    ):
+        # Legacy queues may contain exact-code queries that the engine fuzzy-matched
+        # to another company. Reject those deterministically without another HTTP call.
+        progress["candidate_index"] = index + 1
+        progress.setdefault("failures", []).append(
+            {"url": candidate["url"], "code": "discovery_subject_mismatch"}
+        )
+        _save(session, request, state, progress)
+        return research.WebResearchWorkerResult(status="partial", stage="identity")
     token = f"fetch:{index}"
     # robots + page + up to three permitted same-domain redirects.
     reserved = min(5, policy.identity_max_fetch_requests - fetch_calls)
