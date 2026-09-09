@@ -5,6 +5,7 @@ import ipaddress
 import posixpath
 import re
 import socket
+import ssl
 import time
 import urllib.robotparser
 from collections.abc import Callable, MutableMapping
@@ -175,6 +176,17 @@ class SourceFetchError(Exception):
 
 class UrlSafetyError(SourceFetchError):
     pass
+
+
+def _is_bad_ecpoint(error: BaseException) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLError) and getattr(current, "reason", None) == "BAD_ECPOINT":
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 @dataclass(frozen=True)
@@ -676,6 +688,8 @@ class TrustedSourceFetcher:
             trust_env=False,
         )
         self._owns_client = client is None
+        self._tls_compatibility_client: httpx.Client | None = None
+        self._tls_compatibility_hosts: set[str] = set()
         self.resolver = resolver
         self.sleep = sleep
         self.monotonic = monotonic
@@ -699,6 +713,22 @@ class TrustedSourceFetcher:
     def close(self) -> None:
         if self._owns_client:
             self.client.close()
+        if self._tls_compatibility_client is not None:
+            self._tls_compatibility_client.close()
+
+    def _enable_tls_compatibility(self, host: str) -> None:
+        if self._tls_compatibility_client is None:
+            context = ssl.create_default_context()
+            context.minimum_version = max(context.minimum_version, ssl.TLSVersion.TLSv1_2)
+            # Keep certificate/hostname verification and modern TLS; change only ECDH group.
+            context.set_ecdh_curve("prime256v1")
+            self._tls_compatibility_client = httpx.Client(
+                verify=context,
+                timeout=self.policy.timeout_seconds,
+                follow_redirects=False,
+                trust_env=False,
+            )
+        self._tls_compatibility_hosts.add(host)
 
     def __enter__(self) -> TrustedSourceFetcher:
         return self
@@ -759,7 +789,11 @@ class TrustedSourceFetcher:
             raise SourceFetchError("request_limit_exceeded", "run request limit reached")
         allowed_addresses = self._check_dns(url)
         self._rate_limit(url)
-        self.client.cookies.clear()
+        client = self.client
+        if urlsplit(url).hostname in self._tls_compatibility_hosts:
+            assert self._tls_compatibility_client is not None
+            client = self._tls_compatibility_client
+        client.cookies.clear()
         request_headers = {
             "User-Agent": self.policy.user_agent,
             "Accept": (
@@ -772,8 +806,8 @@ class TrustedSourceFetcher:
         }
         started = self.monotonic()
         try:
-            request = self.client.build_request("GET", url, headers=request_headers)
-            response = self.client.send(request, stream=True, follow_redirects=False)
+            request = client.build_request("GET", url, headers=request_headers)
+            response = client.send(request, stream=True, follow_redirects=False)
         except httpx.TimeoutException as error:
             self.request_count += 1
             self.request_log.append(
@@ -789,6 +823,7 @@ class TrustedSourceFetcher:
             )
             raise SourceFetchError("timeout", "source request timed out") from error
         except httpx.TransportError as error:
+            error_code = "tls_ecpoint_error" if _is_bad_ecpoint(error) else "network_error"
             self.request_count += 1
             self.request_log.append(
                 {
@@ -798,10 +833,10 @@ class TrustedSourceFetcher:
                     "elapsed_ms": max(0, round((self.monotonic() - started) * 1000)),
                     "content_type": None,
                     "location": None,
-                    "error_code": "network_error",
+                    "error_code": error_code,
                 }
             )
-            raise SourceFetchError("network_error", "source request failed") from error
+            raise SourceFetchError(error_code, "source request failed") from error
         self.request_count += 1
         status_code = response.status_code
         content_type_header = response.headers.get("content-type")
@@ -901,7 +936,7 @@ class TrustedSourceFetcher:
             raise
         finally:
             response.close()
-            self.client.cookies.clear()
+            client.cookies.clear()
 
     def _request_with_retries(
         self,
@@ -919,6 +954,17 @@ class TrustedSourceFetcher:
                     allow_plain_text=allow_plain_text,
                 )
             except SourceFetchError as error:
+                host = urlsplit(url).hostname
+                if (
+                    error.code == "tls_ecpoint_error"
+                    and self._owns_client
+                    and host is not None
+                    and host not in self._tls_compatibility_hosts
+                    and self.request_count < self.policy.max_requests_per_run
+                ):
+                    # One separately metered compatibility attempt per host, even if retry=0.
+                    self._enable_tls_compatibility(host)
+                    continue
                 if (
                     error.code not in {"timeout", "network_error"}
                     or attempt >= self.policy.retry_limit
