@@ -26,6 +26,7 @@ from backend.app.models import (
     EntityMention,
     Event,
     EventEvidence,
+    IdentityResearchState,
     PersonalCompanyRequest,
     RawDocument,
     Source,
@@ -568,13 +569,18 @@ def prepare_pending_research_requests(
             continue
         job = _active_job(session, company.id)
         if job is None:
+            coverage = _initial_coverage(policy)
+            identity = session.get(IdentityResearchState, request.id)
+            if identity:
+                for metric in ("search_calls", "fetch_calls", "downloaded_bytes"):
+                    coverage["stats"][metric] = int(identity.progress.get(metric, 0))
             job = CompanyResearchJob(
                 company_id=company.id,
                 created_by_user_id=request.owner_user_id,
                 status="queued",
                 current_stage=f"search:{SEARCH_GROUPS[0][0]}",
                 policy_version=policy.version,
-                coverage=_initial_coverage(policy),
+                coverage=coverage,
             )
             session.add(job)
             session.flush()
@@ -2726,6 +2732,11 @@ def run_web_research_worker_once(
     _restore_worker_context(session, user)
     job = _lease_job(session, user, policy)
     if job is None:
+        from backend.app.identity_research import run_identity_step
+
+        identity_result = run_identity_step(session, user, providers, policy, fetcher_factory)
+        if identity_result is not None:
+            return identity_result
         return WebResearchWorkerResult(status="idle")
     _restore_worker_context(session, user)
     company = session.get(Company, job.company_id)
@@ -2818,8 +2829,15 @@ def inspect_web_research_queue(
             select(func.count())
             .select_from(PersonalCompanyRequest)
             .where(
-                PersonalCompanyRequest.company_id.is_not(None),
-                PersonalCompanyRequest.status.in_(("pending", "research_queued")),
+                PersonalCompanyRequest.status.in_(
+                    (
+                        "pending",
+                        "research_queued",
+                        "identity_queued",
+                        "identity_checking",
+                        "cancel_requested",
+                    )
+                ),
             )
         )
         or 0

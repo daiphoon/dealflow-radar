@@ -21,5 +21,6 @@
 | [ADR-0017](ADR-0017-investor-material-change-layer.md) | 供应商模块只作为数据入口，投资者主层由版本化快照生成可验证的重要变化；模型只解释已有证据支持的变化 |
 | [ADR-0018](ADR-0018-provider-neutral-bounded-web-research.md) | 采用供应商中立、预算受限、证据优先的公开网络研究；天眼查进入安全退役，不引入无限自主 Agent |
 | [ADR-0019](ADR-0019-manually-reviewed-exchange-identity.md) | 以独立依据记录交易所披露资料人工主体核验，复用私有导入与身份工作台，不冒充政府来源或绕过研究闸门 |
+| [ADR-0020](ADR-0020-public-identity-research.md) | 用户提供名称和信用代码，系统受限查证；公开交叉核对独立于官方核验，资料不足保留候选而不要求执照扫描件 |
 
 当前有效决策适用于 `DEMO / VALIDATION`。ADR-0014 取代 ADR-0013 的短期地域与备案主体路线；ADR-0018 取代 ADR-0010，并部分取代 ADR-0015、ADR-0016 的供应商专用实现方向，仍保留其通用队列、缓存、取消恢复和证据分层原则。历史理由不回改。

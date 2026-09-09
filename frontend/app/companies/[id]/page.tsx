@@ -98,6 +98,7 @@ function identityLabel(status: string, basis: string | null): string {
   if (status !== "verified") return "待核验";
   if (basis === "official_government") return "已核验（政府官方来源）";
   if (basis === "exchange_disclosure") return "已核验（交易所披露·人工核验）";
+  if (basis === "public_crosscheck") return "主体已交叉核对（公开资料，非官方登记核验）";
   return "待核验";
 }
 

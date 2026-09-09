@@ -102,10 +102,10 @@ _ACTIVE_REQUEST_STATUSES = {
 }
 _CANCELLABLE_REQUEST_STATUSES = _ACTIVE_REQUEST_STATUSES | {"needs_input"}
 _REQUEST_STATUS_MESSAGES = {
-    "pending": "等待平台核验工商主体；核验后自动进入公开网络研究队列。",
+    "pending": "已受理，等待后台核对公司名称和信用代码；无需上传营业执照。",
     "in_review": "平台正在核对工商主体与共享目录归属。",
     "identity_queued": "工商主体核验排队中。",
-    "identity_checking": "正在核验工商主体。",
+    "identity_checking": "正在查找公开资料核对公司主体；关闭页面不会中断进度。",
     "awaiting_confirmation": "请确认本次查询对应的工商主体。",
     "needs_input": "名称或信用代码无法唯一一致定位，请核对后重新提交",
     "research_queued": "已进入受限公开网络研究队列；页面可关闭，进度会持续保存。",
@@ -548,6 +548,20 @@ def _request_out(
     if result is not None:
         status_message = result.message
     last_error_code = request.last_error_code
+    identity_messages = {
+        "identity_input_required": "请填写公司工商全称和有效的统一社会信用代码，无需上传营业执照。",
+        "identity_conflict": "公开资料中的主体信息存在冲突，请核对名称和信用代码；尚未绑定公司。",
+        "identity_evidence_missing": (
+            "已查找公开资料，但暂不足以可靠核对主体；平台保留进度待补证，无需上传营业执照。"
+        ),
+        "identity_interrupted": (
+            "查证步骤曾中断，已保存进度；平台确认调用结果后继续，避免重复消耗额度。"
+        ),
+        "identity_budget_deferred": "已保存主体查证进度，等待平台搜索预算恢复。",
+        "identity_review_required": "该申请需要进一步核对主体，尚未绑定公司；无需上传营业执照。",
+    }
+    if last_error_code in identity_messages:
+        status_message = identity_messages[last_error_code]
     retired_provider_result = request.last_error_code == "legacy_provider_retired"
     if retired_provider_result:
         status_message = "旧研究来源已停用，历史结果不再作为当前研究结果；可重新提交申请。"
@@ -1273,7 +1287,12 @@ def _report_markdown(
         f"- 工商全称：{_single_line(company.legal_name)}",
         f"- 统一社会信用代码：{company.credit_code or '暂无可靠公开数据'}",
         f"- 注册地区：{company.registered_region or '暂无可靠公开数据'}",
-        f"- 工商主体身份：{'已核验' if company.identity_status == 'verified' else '待核验'}",
+        "- 工商主体身份："
+        + (
+            "公开资料已交叉核对（非官方登记核验）"
+            if company.identity_verification_basis == "public_crosscheck"
+            else ("已核验" if company.identity_status == "verified" else "待核验")
+        ),
         f"- 报告生成时间：{as_of.astimezone(_SHANGHAI).strftime('%Y年%m月%d日 %H:%M')}",
         "",
         "## 已审核的重要信息",

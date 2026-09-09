@@ -272,7 +272,7 @@ def test_pending_request_can_be_cancelled_and_restored_without_provider_call(
     assert created.status_code == 200
     request_id = created.json()["id"]
     assert created.json()["status"] == "pending"
-    assert "等待平台核验工商主体" in created.json()["status_message"]
+    assert "等待后台核对公司名称和信用代码" in created.json()["status_message"]
 
     removed_confirmation = client.post(
         f"/api/v1/me/company-requests/{request_id}/confirm",

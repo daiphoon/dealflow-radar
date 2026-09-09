@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session
@@ -109,7 +110,14 @@ def test_exchange_migration_preserves_rows_and_refuses_lossy_downgrade(
     with pytest.raises(RuntimeError, match="Cannot downgrade 0026"):
         command.downgrade(config, "0025")
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0026"
+        # PostgreSQL rolls back the entire head-to-0025 transaction, while SQLite
+        # has already completed the preceding nontransactional revision downgrade.
+        expected = (
+            ScriptDirectory.from_config(config).get_current_head()
+            if engine.dialect.name == "postgresql"
+            else "0026"
+        )
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == expected
         assert (
             connection.scalar(
                 text(f"SELECT count(*) FROM {blocking_table} WHERE {column}='exchange_disclosure'")

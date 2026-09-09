@@ -34,6 +34,7 @@ class SearchProviderError(RuntimeError):
 class SearchRequest:
     query: str
     max_results: int = 10
+    recent_only: bool = True
 
     def __post_init__(self) -> None:
         if not self.query.strip() or len(self.query) > 500:
@@ -327,12 +328,14 @@ class BaiduSearchProvider(_JsonSearchProvider):
     endpoint = BAIDU_WEB_SEARCH_ENDPOINT
 
     def _request_payload(self, request: SearchRequest) -> dict[str, object]:
-        return {
+        payload = {
             "messages": [{"role": "user", "content": _bounded_baidu_query(request.query)}],
             "search_source": "baidu_search_v2",
             "resource_type_filter": [{"type": "web", "top_k": request.max_results}],
-            "search_recency_filter": BAIDU_RECENCY_FILTER,
         }
+        if request.recent_only:
+            payload["search_recency_filter"] = BAIDU_RECENCY_FILTER
+        return payload
 
     def _payload_error_code(self, payload: dict[str, Any]) -> str | None:
         value = payload.get("code")
