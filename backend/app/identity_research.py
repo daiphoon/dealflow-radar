@@ -23,7 +23,7 @@ from backend.app.providers import validate_unified_credit_code
 from backend.app.source_fetcher import SourceFetchError, TrustedSourceFetcher
 from backend.app.web_search import SearchProviderError, SearchRequest
 
-POLICY_VERSION = "public-identity-v1"
+POLICY_VERSION = "public-identity-v2"
 
 
 def normalized(value: str) -> str:
@@ -34,25 +34,58 @@ def identity_evidence(name: str, code: str, text: str, url: str) -> dict:
     """Require adjacent labelled identity fields, never a search snippet or brand inference."""
     body = normalized(text)
     expected = normalized(name)
-    position = body.find(expected)
-    window = body[max(0, position - 100) : position + len(expected) + 350] if position >= 0 else ""
-    codes = set(re.findall(r"(?<![a-z0-9])[0-9abcdefghjklmnpqrtuwxy]{18}(?![a-z0-9])", window))
-    # Chinese characters do not separate an ASCII token in \b expressions.
-    labelled = "统一社会信用代码" in window
-    pair = labelled and codes == {code.lower()}
-    conflict = labelled and bool(codes) and code.lower() not in codes
+    windows = [
+        body[max(0, match.start() - 100) : match.end() + 350]
+        for match in re.finditer(re.escape(expected), body)
+    ]
+    # Search every occurrence: the first may be navigation, while the labelled
+    # registry fields occur later. Never join distant fields across companies.
+    paired = []
+    conflict = False
+    for window in windows:
+        codes = set(re.findall(r"(?<![a-z0-9])[0-9abcdefghjklmnpqrtuwxy]{18}(?![a-z0-9])", window))
+        if "统一社会信用代码" in window and codes:
+            conflict = conflict or code.lower() not in codes
+            if codes == {code.lower()}:
+                paired.append(window)
+    window = (paired or windows or [body[:300]])[0]
     host = (urlsplit(url).hostname or "").lower()
     return {
         "url": url,
         "host": host,
         "government": host == "gov.cn" or host.endswith(".gov.cn"),
-        "name_match": position >= 0,
-        "pair_match": pair,
+        "name_match": bool(windows),
+        "pair_match": bool(paired),
         "conflict": conflict,
-        "excerpt": window if position >= 0 else body[:300],
+        "excerpt": window,
         "content_hash": hashlib.sha256(text.encode()).hexdigest(),
         "checked_at": utc_now().isoformat(),
     }
+
+
+def _identity_search(name, code, search_calls, evidence, policy):
+    """Bounded complementary queries; search snippets remain discovery-only."""
+    if search_calls == 0:
+        return policy.primary_provider, f'"{name}" {code}'
+    if search_calls == 1:
+        return policy.primary_provider, f'"{name}" site:gov.cn'
+    if search_calls == 2:
+        return policy.primary_provider, f'"{code}"'
+    missing_pair = not any(item.get("pair_match") for item in evidence)
+    query = f'"{code}"' if missing_pair else f'"{name}" site:gov.cn'
+    if search_calls == 3:
+        return policy.fallback_provider, query
+    query = f'"{name}" 统一社会信用代码' if missing_pair else f'"{name}" 政府 公示'
+    return (policy.primary_provider if search_calls == 4 else policy.fallback_provider), query
+
+
+def _candidate_rank(candidate):
+    url = candidate["url"]
+    host = urlsplit(url).hostname or ""
+    return (
+        not host.endswith(".gov.cn"),
+        any(part in url.lower() for part in ("/salary", "/wage", "/job/", "/zhaopin")),
+    )
 
 
 def corroborated(evidence: list[dict]) -> bool:
@@ -200,6 +233,14 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
             progress["reused_evidence"] = True
             request.cache_hits += 1
             session.flush()
+    if progress.get("policy_version") != POLICY_VERSION:
+        progress.setdefault("previous_policy_versions", []).append(progress.get("policy_version"))
+        progress["policy_version"] = POLICY_VERSION
+    progress["budget_limits"] = {
+        "search_calls": min(6, policy.identity_max_search_calls),
+        "fetch_calls": policy.identity_max_fetch_requests,
+        "downloaded_bytes": policy.identity_max_download_bytes,
+    }
     # Check known companies without revealing private existence to the requester.
     matches = list(
         session.scalars(
@@ -268,8 +309,27 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
     index = int(progress.get("candidate_index", 0))
     fetch_calls = int(progress.get("fetch_calls", 0))
     downloaded = int(progress.get("downloaded_bytes", 0))
-    if index >= len(candidates):
-        if search_calls >= min(2, policy.max_search_calls_per_job):
+    # No paid discovery when no capacity remains to read its results.
+    if (
+        fetch_calls >= policy.identity_max_fetch_requests
+        or downloaded >= policy.identity_max_download_bytes
+    ):
+        _save(session, request, state, progress, "in_review", "identity_evidence_missing")
+        return research.WebResearchWorkerResult(status="partial", stage="identity")
+    attempted = {(item["provider"], item["query"]) for item in progress.get("search_attempts", [])}
+    next_search = None
+    for plan_index in range(int(progress.get("search_plan_index", search_calls)), 6):
+        provider_code, query = _identity_search(name, code, plan_index, evidence, policy)
+        if progress.get("primary_failed") and provider_code == policy.primary_provider:
+            provider_code = policy.fallback_provider
+        if (provider_code, query) not in attempted:
+            next_search = (plan_index, provider_code, query)
+            break
+    can_search = search_calls < policy.identity_max_search_calls and next_search is not None
+    if index >= len(candidates) or (
+        can_search and index - int(progress.get("last_search_index", 0)) >= 2
+    ):
+        if not can_search:
             _save(session, request, state, progress, "in_review", "identity_evidence_missing")
             return research.WebResearchWorkerResult(status="partial", stage="identity")
         day = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -280,16 +340,17 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
         ):
             _save(session, request, state, progress, "identity_queued", "identity_budget_deferred")
             return research.WebResearchWorkerResult(status="budget_deferred", stage="identity")
-        provider_code = policy.primary_provider
-        if progress.get("primary_failed"):
-            provider_code = policy.fallback_provider
-        query = (
-            f'"{name}" {code}'
-            if search_calls == 0 or progress.get("primary_failed")
-            else f'"{name}" site:gov.cn'
-        )
+        plan_index, provider_code, query = next_search
         token = f"search:{search_calls}"
-        progress.update(in_flight=token, search_calls=search_calls + 1)
+        progress.update(
+            in_flight=token,
+            search_calls=search_calls + 1,
+            last_search_index=index,
+            search_plan_index=plan_index + 1,
+        )
+        progress.setdefault("search_attempts", []).append(
+            {"provider": provider_code, "query": query}
+        )
         request.external_calls += 1
         request.status = "identity_checking"
         request.leased_until = now + timedelta(seconds=policy.worker_lease_seconds)
@@ -302,7 +363,7 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
             "company_discovery",
             token,
             1,
-            {"stage": "identity", "status": "reserved"},
+            {"stage": "identity", "status": "reserved", "query": query},
         )
         session.commit()
         research._restore_worker_context(session, user)
@@ -315,19 +376,21 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
             if not response.results:
                 progress["primary_failed"] = True
             seen = {item["url"] for item in candidates}
-            results = sorted(
-                response.results,
-                key=lambda item: not ((urlsplit(item.url).hostname or "").endswith(".gov.cn")),
-            )
-            for result in results:
+            pending = candidates[index:]
+            for result in response.results:
                 url = research._canonical_candidate_url(result.url)
-                if url and url not in seen and len(candidates) < policy.max_candidate_urls:
-                    candidates.append({"url": url, "title": result.title})
+                if url and url not in seen:
+                    pending.append({"url": url, "title": result.title})
                     seen.add(url)
+            candidates = (
+                candidates[:index]
+                + sorted(pending, key=_candidate_rank)[: policy.max_candidate_urls]
+            )
             progress["candidates"] = candidates
             progress.setdefault("responses", []).append(
                 {
                     "provider": provider_code,
+                    "query": query,
                     "request_id": response.request_id,
                     "response_hash": response.response_hash,
                     "results": len(response.results),
@@ -351,15 +414,10 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
         return research.WebResearchWorkerResult(
             status="partial", stage="identity", external_calls=actual_calls
         )
-    if (
-        fetch_calls >= policy.max_fetch_requests_per_job
-        or downloaded >= policy.max_download_bytes_per_job
-    ):
-        _save(session, request, state, progress, "in_review", "identity_evidence_missing")
-        return research.WebResearchWorkerResult(status="partial", stage="identity")
     candidate = candidates[index]
     token = f"fetch:{index}"
-    reserved = min(2, policy.max_fetch_requests_per_job - fetch_calls)
+    # robots + page + up to three permitted same-domain redirects.
+    reserved = min(5, policy.identity_max_fetch_requests - fetch_calls)
     progress.update(in_flight=token, candidate_index=index + 1, fetch_calls=fetch_calls + reserved)
     state.progress = progress
     request.status = "identity_checking"
@@ -380,11 +438,18 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
     fetch_policy = research._fetch_policy(
         policy,
         remaining_requests=reserved,
-        remaining_bytes=policy.max_download_bytes_per_job - downloaded,
+        remaining_bytes=policy.identity_max_download_bytes - downloaded,
     )
     fetcher = (fetcher_factory or TrustedSourceFetcher)(fetch_policy)
     cache = research.normalized_robots_rule_cache(progress.get("robots"), policy.user_agent)
     fetcher.bind_job_robots_cache(cache)
+    located = []
+
+    def locate_identity(text):
+        item = identity_evidence(name, code, text, candidate["url"])
+        located.append(item)
+        return item["excerpt"]
+
     try:
         batch = fetcher.check(
             source_type="single_page",
@@ -392,12 +457,20 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
             start_url=candidate["url"],
             retention_policy="minimal_excerpt",
             conditional_state={},
+            excerpt_selector=locate_identity,
         )
         for document in batch.documents:
-            if document.excerpt:
-                evidence.append(
-                    identity_evidence(name, code, document.excerpt, document.canonical_url)
+            if located:
+                item = located.pop(0)
+                # Trust the fetched/canonical host, not an unverified redirect target.
+                host = (urlsplit(document.canonical_url).hostname or "").lower()
+                item.update(
+                    url=document.canonical_url,
+                    host=host,
+                    government=host == "gov.cn" or host.endswith(".gov.cn"),
+                    content_hash=document.content_hash,
                 )
+                evidence.append(item)
         progress["evidence"] = evidence
     except SourceFetchError as error:
         progress.setdefault("failures", []).append({"url": candidate["url"], "code": error.code})

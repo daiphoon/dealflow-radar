@@ -162,6 +162,9 @@ class WebResearchPolicy:
     max_candidate_urls: int = 12
     max_documents_per_job: int = 3
     max_fetch_requests_per_job: int = 8
+    identity_max_search_calls: int = 6
+    identity_max_fetch_requests: int = 24
+    identity_max_download_bytes: int = 4_000_000
     max_download_bytes_per_job: int = 2_000_000
     max_response_bytes: int = 500_000
     max_pdf_pages: int = 40
@@ -193,6 +196,9 @@ class WebResearchPolicy:
             ("WEB_RESEARCH_MAX_CANDIDATE_URLS", self.max_candidate_urls),
             ("WEB_RESEARCH_MAX_DOCUMENTS_PER_JOB", self.max_documents_per_job),
             ("WEB_RESEARCH_MAX_FETCH_REQUESTS_PER_JOB", self.max_fetch_requests_per_job),
+            ("IDENTITY_MAX_SEARCH_CALLS", self.identity_max_search_calls),
+            ("IDENTITY_MAX_FETCH_REQUESTS", self.identity_max_fetch_requests),
+            ("IDENTITY_MAX_DOWNLOAD_BYTES", self.identity_max_download_bytes),
             ("WEB_RESEARCH_MAX_DOWNLOAD_BYTES_PER_JOB", self.max_download_bytes_per_job),
             ("WEB_RESEARCH_MAX_RESPONSE_BYTES", self.max_response_bytes),
             ("WEB_RESEARCH_MAX_PDF_PAGES", self.max_pdf_pages),
@@ -461,6 +467,11 @@ class Settings:
                 max_documents_per_job=_as_positive_int("WEB_RESEARCH_MAX_DOCUMENTS_PER_JOB", 3),
                 max_fetch_requests_per_job=_as_positive_int(
                     "WEB_RESEARCH_MAX_FETCH_REQUESTS_PER_JOB", 8
+                ),
+                identity_max_search_calls=_as_positive_int("IDENTITY_MAX_SEARCH_CALLS", 6),
+                identity_max_fetch_requests=_as_positive_int("IDENTITY_MAX_FETCH_REQUESTS", 24),
+                identity_max_download_bytes=_as_positive_int(
+                    "IDENTITY_MAX_DOWNLOAD_BYTES", 4_000_000
                 ),
                 max_download_bytes_per_job=_as_positive_int(
                     "WEB_RESEARCH_MAX_DOWNLOAD_BYTES_PER_JOB", 2_000_000

@@ -572,8 +572,12 @@ def prepare_pending_research_requests(
             coverage = _initial_coverage(policy)
             identity = session.get(IdentityResearchState, request.id)
             if identity:
-                for metric in ("search_calls", "fetch_calls", "downloaded_bytes"):
-                    coverage["stats"][metric] = int(identity.progress.get(metric, 0))
+                # Identity and business research have separate task caps. Preserve
+                # the former for audit, but do not exhaust business discovery before it starts.
+                coverage["identity_usage"] = {
+                    metric: int(identity.progress.get(metric, 0))
+                    for metric in ("search_calls", "fetch_calls", "downloaded_bytes")
+                }
             job = CompanyResearchJob(
                 company_id=company.id,
                 created_by_user_id=request.owner_user_id,
@@ -2862,6 +2866,13 @@ def inspect_web_research_queue(
         "fallback_provider": policy.fallback_provider,
         "max_search_calls_per_job": policy.max_search_calls_per_job,
         "max_documents_per_job": policy.max_documents_per_job,
+        "identity_budget": {
+            "max_search_calls": min(6, policy.identity_max_search_calls),
+            "max_fetch_requests": policy.identity_max_fetch_requests,
+            "max_download_bytes": policy.identity_max_download_bytes,
+        },
+        "new_company_max_search_calls": min(6, policy.identity_max_search_calls)
+        + policy.max_search_calls_per_job,
         "external_calls": 0,
         "input_tokens": 0,
         "output_tokens": 0,

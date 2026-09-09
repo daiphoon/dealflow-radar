@@ -515,6 +515,37 @@ def test_official_pdf_is_parsed_with_signature_page_and_text_limits() -> None:
     assert document.metadata["published_at_basis"] == "single_explicit_document_date"
 
 
+def test_pdf_excerpt_selector_inspects_later_text_without_storing_full_text() -> None:
+    text = "Earlier unrelated disclosure. " * 100 + "Target identity fields."
+    body = _pdf_bytes(text)
+
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200, text="User-agent: *\nAllow: /", headers={"content-type": "text/plain"}
+            )
+        return httpx.Response(200, content=body, headers={"content-type": "application/pdf"})
+
+    inspected = []
+
+    def select_excerpt(value):
+        inspected.append(value)
+        return value[value.index("Target identity") :]
+
+    with _fetcher(handler) as fetcher:
+        batch = fetcher.check(
+            source_type="single_page",
+            root_domain="example.com",
+            start_url="https://example.com/identity.pdf",
+            retention_policy="minimal_excerpt",
+            conditional_state={},
+            excerpt_selector=select_excerpt,
+        )
+    assert len(inspected[0]) > 1500
+    assert batch.documents[0].excerpt.strip() == "Target identity fields."
+    assert batch.documents[0].metadata["extracted_text_length"] > 1500
+
+
 def test_pdf_page_limit_fails_before_text_extraction() -> None:
     body = _pdf_bytes("Official filing", pages=2)
 
