@@ -60,6 +60,11 @@ def _dry_run_result(
         "publication_policy_version": settings.publication_policy.version,
         "auto_publish_enabled": settings.publication_policy.enabled,
         "external_calls_enabled": settings.external_calls_enabled,
+        "tender_events_enabled": settings.tender_events_enabled,
+        "tender_records_planned": sum(
+            settings.tender_events_enabled and record.event_subtype == "tender_notice"
+            for record in loaded.batch.records
+        ),
         "source_url_checks_upper_bound": url_checks_planned,
         "verification_attempts_upper_bound": url_checks_planned * 2,
         "input_tokens": 0,
@@ -101,6 +106,7 @@ def main() -> None:
                 provider,
                 settings.publication_policy,
                 verifier,
+                tender_events_enabled=settings.tender_events_enabled,
             )
         print(
             json.dumps(

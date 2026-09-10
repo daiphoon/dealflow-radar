@@ -151,6 +151,71 @@ class SourceMonitoringPolicy:
 
 
 @dataclass(frozen=True)
+class WatchlistMonitorPolicy:
+    enabled: bool = False
+    version: str = "watchlist-v1"
+    interval_days: int = 7
+    max_companies_per_run: int = 5
+    cooldown_hours: int = 24
+    failure_backoff_max_days: int = 30
+    no_change_backoff_after: int = 3
+    max_interval_days: int = 30
+
+    def __post_init__(self) -> None:
+        if not self.version.strip():
+            raise ValueError("watchlist monitor version is required")
+        for name in (
+            "interval_days",
+            "max_companies_per_run",
+            "cooldown_hours",
+            "failure_backoff_max_days",
+            "no_change_backoff_after",
+            "max_interval_days",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"watchlist {name} must be positive")
+        if self.max_interval_days < self.interval_days:
+            raise ValueError("watchlist maximum interval must cover the base interval")
+
+
+@dataclass(frozen=True)
+class WebResearchCostPolicy:
+    version: str = "web-cost-v1"
+    baidu_price_per_call: Decimal | None = None
+    bocha_price_per_call: Decimal | None = None
+    unknown_price_upper_bound: Decimal | None = None
+    task_limit: Decimal = Decimal("0")
+    company_daily_limit: Decimal = Decimal("0")
+    company_weekly_limit: Decimal = Decimal("0")
+    system_weekly_limit: Decimal = Decimal("0")
+    system_monthly_limit: Decimal = Decimal("0")
+
+    def __post_init__(self) -> None:
+        if not self.version.strip():
+            raise ValueError("web research cost version is required")
+        for name in self.__dataclass_fields__:
+            value = getattr(self, name)
+            if name != "version" and value is not None:
+                if (
+                    not value.is_finite()
+                    or value < 0
+                    or value >= 10**12
+                    or value.as_tuple().exponent < -6
+                ):
+                    raise ValueError(f"{name} must be finite, non-negative and at most 6 decimals")
+
+
+def _optional_cost(name: str) -> Decimal | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return Decimal(raw)
+    except InvalidOperation as error:
+        raise ValueError(f"{name} must be a decimal or empty") from error
+
+
+@dataclass(frozen=True)
 class WebResearchPolicy:
     version: str = "bounded-web-v3"
     primary_provider: str = "baidu"
@@ -178,6 +243,8 @@ class WebResearchPolicy:
     fallback_min_subject_results: int = 1
     recent_change_window_days: int = 365
     user_agent: str = "DealflowRadarWebResearch/1.0 (bounded evidence research)"
+    cost: WebResearchCostPolicy = field(default_factory=WebResearchCostPolicy)
+    watchlist: WatchlistMonitorPolicy = field(default_factory=WatchlistMonitorPolicy)
 
     def __post_init__(self) -> None:
         if not self.version.strip():
@@ -351,6 +418,7 @@ class Settings:
     web_research_calls_enabled: bool = False
     investor_analysis_enabled: bool = False
     review_workbench_enabled: bool = False
+    tender_events_enabled: bool = False
     auth_provider: str = "demo"
     refresh_policy: RefreshPolicy = field(default_factory=RefreshPolicy)
     publication_policy: PublicationPolicy = field(default_factory=PublicationPolicy)
@@ -397,6 +465,7 @@ class Settings:
             web_research_calls_enabled=_as_bool(os.getenv("WEB_RESEARCH_CALLS_ENABLED", "false")),
             investor_analysis_enabled=_as_bool(os.getenv("INVESTOR_ANALYSIS_ENABLED", "false")),
             review_workbench_enabled=_as_bool(os.getenv("REVIEW_WORKBENCH_ENABLED", "false")),
+            tender_events_enabled=_as_bool(os.getenv("TENDER_EVENTS_ENABLED", "false")),
             auth_provider=os.getenv("AUTH_PROVIDER", "demo").strip().lower(),
             refresh_policy=RefreshPolicy(
                 version=os.getenv("REFRESH_POLICY_VERSION", "demo-v1"),
@@ -500,6 +569,39 @@ class Settings:
                 user_agent=os.getenv(
                     "WEB_RESEARCH_USER_AGENT",
                     "DealflowRadarWebResearch/1.0 (bounded evidence research)",
+                ),
+                watchlist=WatchlistMonitorPolicy(
+                    enabled=_as_bool(os.getenv("WATCHLIST_MONITOR_ENABLED", "false")),
+                    version=os.getenv("WATCHLIST_MONITOR_POLICY_VERSION", "watchlist-v1"),
+                    **{
+                        name: _as_positive_int(f"WATCHLIST_MONITOR_{name.upper()}", default)
+                        for name, default in (
+                            ("interval_days", 7),
+                            ("max_companies_per_run", 5),
+                            ("cooldown_hours", 24),
+                            ("failure_backoff_max_days", 30),
+                            ("no_change_backoff_after", 3),
+                            ("max_interval_days", 30),
+                        )
+                    },
+                ),
+                cost=WebResearchCostPolicy(
+                    version=os.getenv("WEB_RESEARCH_COST_VERSION", "web-cost-v1"),
+                    baidu_price_per_call=_optional_cost("WEB_RESEARCH_BAIDU_PRICE_PER_CALL"),
+                    bocha_price_per_call=_optional_cost("WEB_RESEARCH_BOCHA_PRICE_PER_CALL"),
+                    unknown_price_upper_bound=_optional_cost(
+                        "WEB_RESEARCH_UNKNOWN_PRICE_UPPER_BOUND"
+                    ),
+                    **{
+                        name: _as_non_negative_decimal(f"WEB_RESEARCH_{name.upper()}", "0")
+                        for name in (
+                            "task_limit",
+                            "company_daily_limit",
+                            "company_weekly_limit",
+                            "system_weekly_limit",
+                            "system_monthly_limit",
+                        )
+                    },
                 ),
             ),
             cloudbase_auth_policy=CloudBaseAuthPolicy(

@@ -1,5 +1,65 @@
 # 实施记录
 
+## 2026-09-10：E0—E3 集成提交与发布配置审查
+
+- 任务/关键文件：保留此前 E0—E3 全部已验证改动，整理集成 PR；补齐 `compose.production.yml` 及两份生产环境示例中的中标开关、关注策略与金额预算传递，首次部署预检增加两项关闭检查；新增 Compose 解析到 `Settings` 的实际配置回归，更新唯一看板的发布顺序和合并前检查点。
+- 实际命令：`git fetch origin main` 核对基线 `0a2344b`；新建 `codex/e0-e3-incremental-delivery`。运行 `.venv/bin/pytest tests/unit/test_production_compose_environment.py tests/unit/test_production_preflight.py -q --tb=short`、`ruff check backend migrations scripts tests`、`ruff format --check backend migrations scripts tests`。
+- 结果：发布配置/预检 **25 项通过**，Ruff 和 133 个 Python 文件格式检查通过；三份部署示例默认开关关闭、报价未知且金额上限为零，显式配置可以到达 API/Worker/工具容器。首轮测试因生产示例的身份占位值不能实例化而失败，替换为虚构测试环境 ID 后通过；未降低配置校验。此前完整后端 656 通过/13 个 SQLite 不适用分支跳过、前端 20 通过及浏览器验收保留为本地证据，完整远端 CI 以本分支 PR 最新提交为准。
+- 边界：仅解析 Compose，未启动生产服务或执行真实调用。新迁移 `0028`—`0031` 尚未在生产应用；有新历史时保留账本并关闭开关，不使用破坏性 downgrade。PR 合并按已同意的流程单列确认，部署前完成备份/恢复与状态核对；E4 仍待开始。
+
+## 2026-09-10：关注公司三类低频检查（E3）
+
+- 任务/关键文件：`watchlist_monitoring.py`、迁移 `0031`、默认只读 `queue_watchlist_checks.py`；接入现有研究 Worker、抓取器每请求关停检查、关注页有限 DTO/组件和配置。同步完整计划、唯一看板、架构/数据库/API/成本/测试/运维及 README；保留 E0—E2.2 改动。
+- 实际命令：本机 `docker run --pull=never --rm` 启动一次性 PostgreSQL 16；隔离库执行 `alembic upgrade head/check`、虚构 seed 与 `bootstrap_application_role`，非 owner/非 BypassRLS 角色验证。执行 EV13/迁移针对性 Pytest、最终全新库 `.venv/bin/pytest -q --tb=short --maxfail=2`，`ruff check backend scripts tests`、新增文件格式检查、`git diff --check`。前端 `npm test`、`npm run typecheck/build`；本地 API/Next 服务与 `agent-browser` 验证桌面、390px、详情/首页导航和取消关注。
+- 结果：最终后端 **656 通过、13 跳过**，跳过均为 SQLite 不适用分支，对应 PostgreSQL 权限/并发测试通过；前端 **20 通过**，类型/构建、浏览器、迁移漂移与代码检查通过。15 份受影响 Markdown 链接/围栏、封存看板正文一致性、历史迁移未改写和增量凭据模式检查通过。修复失败计数的时区幂等问题、调度与收尾的过期状态竞争；旧迁移测试改用当时的表结构，未改历史迁移。仅有既有 Starlette 弃用警告。
+- 边界/阻塞：真实搜索、模型、付费调用为 **0**；仅隔离库应用迁移。默认专用开关关闭，未安装真实 Cron，未执行旧 U01、附件命令、提交/推送/合并/部署。测试浏览器、服务、容器和临时连接配置用后清理；开发服务改动的类型引用已恢复。E3 无未解决工程阻塞，停在本地交付；下一阶段 E4 尚未开始，真实费用、来源召回和低频命中率仍未验证。
+
+
+## 2026-09-10：公开研究费用预占、结算与恢复（E2.2）
+
+- 任务/关键文件：新增 `web_research_budget.py`、迁移 `0030` 和默认只读的 `reconcile_web_research_usage.py`；接入 `web_research_service.py`、`identity_research.py`，配置金额状态、CNY 上限、平台/公司归属和审计。同步成本/架构/数据库/测试、完整计划、唯一看板与 README；保留 E0—E2.1 改动。
+- 实际命令：`docker run --pull=never --rm` 启动本机一次性 PostgreSQL 16，无现有卷；Alembic `upgrade head/check`、虚构 seed、`bootstrap_application_role` 准备非 owner/非 BypassRLS 测试角色。显式设置隔离库 `DATABASE_ADMIN_URL/DATABASE_URL/POSTGRES_RLS_DATABASE_URL` 和关闭开关后执行 `.venv/bin/pytest -q --tb=short --show-capture=no`；针对性 `test_web_research_budget.py`、`test_web_budget_delivery.py`、`test_web_usage_reconciliation_cli.py`、公开研究/主体/覆盖回归；后补 `-k 'identity_and_business or deferred_fallback'`。执行 `ruff check .`、`ruff format --check .`、`git diff --check`、文档链接/历史正文与增量敏感信息检查；前端 `npm test`、`npm run typecheck`。
+- 结果：全量后端 620 通过、11 个 SQLite 不适用分支跳过，对应 PostgreSQL 分支全部通过；随后补充两库恢复/归属 6 通过。新预占/费用/CLI/覆盖针对性 24 通过、6 个 SQLite 并发分支跳过；公开研究/主体回归 68 通过。前端 18 通过，类型、Ruff/格式、迁移漂移和文档检查通过。首次相关测试发现旧 Mock 未声明免费、账本新增字段和新迁移先行阻止费用历史降级三处断言需更新，修正后通过；未放宽费用、权限或保留历史要求。仅有既有 Starlette 上游弃用警告。
+- 边界/阻塞：真实搜索/模型/付费调用为 0，未运行附件命令、原申请或生产操作，未提交/推送/合并/部署。所有金额均为明确虚构测试值；默认价格未知、金额上限零。迁移仅在一次性测试库执行，测试容器及临时连接配置用后清理。E2.2 无工程阻塞，停在本地交付；E3 待独立开始，模型/机构来源/基础设施未纳入本次原子预算，不宣称真实费用或产品价值已验证。
+
+## 2026-09-10：类别来源路由与实际检查结果（E2.1）
+
+- 任务/关键文件：新增 `research_coverage.py`、覆盖 DTO 和前端 `research-coverage.tsx`；沿用 `web_research_service.py` 的原搜索分组、缓存及正文读取，在现有任务 JSON 保存版本化路由、分类、时间与失败原因。`research_outcome.py` 向本人历史查询提供有限覆盖摘要；同步完整计划、唯一看板、架构/数据库/来源/API/测试说明和 README。
+- 实际命令：`.venv/bin/pytest tests/unit/test_research_coverage.py tests/unit/test_web_research_outcomes.py tests/integration/test_bounded_web_research.py tests/integration/test_research_coverage_delivery.py -q --tb=short --show-capture=no` 及针对性子集；显式指定本机隔离库的 `DATABASE_ADMIN_URL/DATABASE_URL/POSTGRES_RLS_DATABASE_URL` 执行 `.venv/bin/pytest -q --tb=short --show-capture=no`。通过 `docker run --pull=never --rm`、Alembic `upgrade/check`、虚构 seed 和 `bootstrap_application_role` 准备 PostgreSQL 16 非 owner/非 BypassRLS 环境；无新迁移。执行 `ruff check .`、`ruff format --check .`、`git diff --check`；前端 `npm test`、`npm run typecheck`、`npm run build`，本机 `agent-browser` 检查详情→申请历史→首页、缓存时间展开与 390px 窄屏。
+- 结果：新增后端 24 个用例纳入全量 **598 通过、5 跳过**，跳过项为原有 SQLite 不适用的 PostgreSQL 专用分支；非 owner Worker→API 两库验证通过。前端 **18 通过**，类型/构建、Ruff/121 文件格式通过。浏览器无框架错误和横向溢出，五类结果与缓存原时间可辨；正文取得不增加已核实事实数。同任务缓存回放不增加搜索/网页调用，其他用户不可见，不返回底稿标识或改写任务历史。
+- 验证中修正：首次正文记录与缓存回放的时间字段出现微秒差异，统一使用原来源检查时间；失败 Mock 改用既有 `failures` 合约，前端断言对齐既有“含历史”文案；测试文件重名导致收集冲突，集成测试改为独立文件名；非 owner 测试补与真实请求一致的事务权限上下文。未改授权规则或放宽断言，最终仅保留原 Starlette TestClient 弃用警告。
+- 边界/阻塞：真实来源、模型和付费调用为 0；未提交、推送、部署或操作旧申请。14 份受影响 Markdown 的链接/围栏、封存历史一致性、历史迁移未改写及新增凭据模式检查通过；浏览器、本轮开发服务及一次性 PostgreSQL 已关闭，开发服务自动改动的类型引用已恢复。新路由复用原调用与预算，历史未知保持未知，机构私有来源不混入共享覆盖；无未解决工程阻塞。停止于 E2.1，下一唯一切片 E2.2 尚未开始；真实来源召回、实际费用及内容价值尚未验证。
+
+## 2026-09-10：中标事件页面、逐版本核实、异步解读和固定报告（E1.3）
+
+- 任务/关键文件：现有私有研究导入显式选择 `tender_notice`，默认关闭 `TENDER_EVENTS_ENABLED`；新增 `tender_presentation.py`、`tender_publication.py`，复用原共享审核、`investor_analysis.py`、`personal_features.py` 和公司/审核页面。兼容迁移 `0029` 为观测审核增加复合外键、保留旧来源唯一约束并补已核实中标的解读 RLS；原私有观测和已应用迁移不改写。同步完整计划、实施看板及架构/数据库/API/测试/README。
+- 实际命令：`.venv/bin/pytest -q --tb=short`（显式指定本机新建测试库的 `DATABASE_ADMIN_URL/DATABASE_URL/POSTGRES_RLS_DATABASE_URL`）；针对性执行 `test_tender_delivery.py`、`test_tender_storage.py`、`test_tender_events.py`、迁移/解读/个人详情/导入 CLI 回归。`docker run --pull=never --rm` 创建回环地址的一次性 PostgreSQL 16；`alembic upgrade head/check`、虚构 seed 和 `bootstrap_application_role` 验证非 owner/非 BypassRLS；`ruff check`、`ruff format --check`、`git diff --check`；前端 `npm test`、`npm run typecheck`、`npm run build`。缓存的 `agent-browser` 连接本机 API/Next 开发服务，检查公司详情→审核更正提交→详情版本/解读切换→首页，并检查 390px 窄屏、截图及页面错误。
+- 结果：全新隔离库后端 **574 通过、5 跳过**，五项为 SQLite 不适用的 PostgreSQL 专用分支，对应 PostgreSQL 分支通过；最终缓存按当前输入选择、撤证日期隐藏及导入 dry-run 补充回归 **33 通过、1 跳过**。前端 **15 通过**，类型/生产构建、Ruff 和 118 个 Python 文件格式检查通过。浏览器可提交具体更正版本，核实后金额从 12,345,000 变为 12,000,000 元，保留原版本，先隐藏旧解读，Mock Worker 完成后显示新解读；转载不追加调用或提醒，撤回不改旧报告。页面无框架错误或横向溢出。14 份受影响 Markdown 链接/围栏、旧看板封存正文、历史迁移未改写及新增内容凭据/临时文件检查通过。
+- 验证中修正：旧来源一次决定约束和解读 RLS 不接受新路径，补兼容迁移；SQLite 时间归一化、提交后读取导入结果、前端变化卡历史缺失、有基金授权用户的旧私有证据叠加均按失败回归修正。复用旧全量测试库时出现已提交 fixture 残留，改用全新隔离库通过，未放宽断言或修改权限。原文金额引用断言按含千分位的原始文本修正；文档检查按 E0 已改名的历史标题定位。仅保留既有 Starlette TestClient 上游弃用警告。
+- 边界/阻塞：真实搜索、模型和付费调用为 0；未提交、推送、创建 PR、部署或触及生产/旧申请。两条新迁移只在临时库执行，新写入开关默认关闭，必要证据不可用时隐藏依赖内容，历史有数据时拒绝破坏性降级。浏览器、开发服务和一次性 PostgreSQL 用后关闭。E1.3 无阻塞，E1 单类工程闭环本地交付；停止于此，下一唯一切片 E2.1，真实来源覆盖、费用和内容价值尚未验证。
+
+## 2026-09-09：中标候选归并、观测版本与逐字段证据落库（E1.2）
+
+- 任务/关键文件：新增 `tender_storage.py`、`EventObservation`、兼容迁移 `0028` 及 `test_tender_storage.py`；复用原事件/字段/证据表，按数据库原权限和许可重新抽取校验，在作用域内归并并追加修订。`services.py` 仅增加中标当前投影过滤；同步架构、数据库、测试说明和唯一实施看板，保留前轮所有改动。
+- 实际命令：安全开关均关闭，使用 `docker run --pull=never --rm` 启动本机一次性 PostgreSQL 16（仅回环地址、不挂现有卷）；通过 Alembic `upgrade/check`、`scripts.seed_demo` 与 `bootstrap_application_role` 准备隔离库。执行 `uv run --frozen --offline pytest tests/integration/test_tender_storage.py -q` 及针对性子集；配置该临时库的 `DATABASE_ADMIN_URL/DATABASE_URL/POSTGRES_RLS_DATABASE_URL` 后执行 `uv run --frozen --offline pytest -q`；随后新增冻结样本验收并执行 `pytest tests/integration/test_tender_storage.py -k frozen_candidate_corpus -q`。执行全库 `ruff check`、`ruff format --check`、Markdown 本地链接/历史正文检查和 `git diff --check`。
+- 结果：后端全量 551 通过，补充两库冻结样本 2 通过；4 个 PostgreSQL 专用用例的 SQLite 分支跳过，对应 PostgreSQL 分支通过。新文件共 50 个参数化用例，46 通过、4 按上述原因跳过。16 份候选归为 8 个事项/16 份来源观测，重放无新增；非 owner RLS、基金授权过期、并发去重、事务回滚、逐字段定位、迁移往返/漂移及拒绝有数据降级通过。首轮复现旧查询混入候选更正金额，补当前投影过滤后两库通过；Ruff 长行与测试辅助类收集警告已修复，最终仅保留既有 Starlette 弃用警告。
+- 边界/阻塞：入口默认关闭，未接活动 Worker；候选及冲突不自动发布、不生成快照/解读，不改历史迁移或真实数据。无真实来源、模型、付费调用、提交、合并或部署；未运行前端/浏览器或远端 CI。测试库/临时容器用后清理。E1.2 无阻塞，停在本地交付；唯一下一切片为 E1.3，真实来源覆盖及内容价值尚未验证。
+
+## 2026-09-09：单类中标公告候选契约与离线抽取（E1.1）
+
+- 任务/关键文件：新增 `backend/app/tender_events.py`、`data/sample/tender_notice_cases.json`、`tests/unit/test_tender_events.py`，更新看板/README。按现有材料选择中标公告；只完成离线候选和字段证据，活动 Worker、数据库、页面与旧历史保持原状。
+- 实际命令：在 `APP_MODE=demo EXTERNAL_CALLS_ENABLED=false PAID_API_CALLS_ENABLED=false AUTO_REFRESH_ENABLED=false` 下运行 `uv run --frozen --offline pytest tests/unit/test_tender_events.py tests/unit/test_event_schema.py tests/unit/test_change_detection.py -q`；另用同一离线环境的 `python` 对冻结样本调用旧质量函数与新抽取函数。执行 `uv run --frozen --offline ruff check backend/app/tender_events.py tests/unit/test_tender_events.py`、对应 `ruff format --check` 及 `git diff --check`。
+- 结果：新增 45 项、相关回归合计 55 项通过；21 份虚构样本产生 16 份候选/3 份身份未解析/2 份不支持，14 份可标识候选归为 6 个事项，160 个字段证据区间精确匹配。旧质量函数接受 21 份且网页指纹不同，仅为纯函数基线，不代表完整业务入口的身份/发布结果。金额精度和 UTC 日期边界已回归；一次 101 字符行的 Ruff/格式失败经定向格式化修正，最终检查通过。保留既有 Starlette 弃用警告。
+- 边界/阻塞：无外部搜索、模型、付费调用、数据库写入、迁移、部署或提交；上轮规划文档改动保留。E1.1 无阻塞；真实来源、完整事件落库/权限和产品价值尚未验证。候选标识不含权限授权，E1.2 必须从原数据库记录重新核验；当前支持格式、字段映射和唯一下一切片见看板。
+
+## 2026-09-09：增量交付与局部重构计划固化（E0）
+
+- 任务：依据已接受的仓库审查建议，固定保留范围、E1—E4 主线、条件后置的 E5、EV01—EV15 验收、迁移回退与逐轮停止规则；本轮只交付文档。
+- 关键文件：新增 [ADR-0021](DECISIONS/ADR-0021-incremental-event-delivery.md) 和 [完整计划](15-incremental-event-delivery-plan.md)；更新 [实施看板](10-implementation-plan.md)、`AGENTS.md`、README/ADR 索引及架构、来源、成本、测试、M6B 文档。旧看板正文完整保留并标为历史，原未通过验收未改记完成。
+- 实际验证：`git status --short`、`git diff --check`；`python3` 内联检查变更范围、Markdown 本地链接/标题/围栏、历史正文与 HEAD 一致、唯一下一切片、15 项验收编号及 16 个代码符号。检查通过；初次脚本误用 `backend/tests`，按实际 `tests` 路径修正后复验通过。人工核对阶段依赖与授权边界，修正架构文档中差分接入的阶段归属。
+- 交付边界：只改 Markdown；未运行应用测试、外部来源、模型、旧申请、数据库迁移或部署；产品搜索/模型/付费调用为 0。未提交或合并；E1.1 尚未启动。
+- 未解决事项：E0 无阻塞；首类材料可用性、真实来源覆盖和费用基线仍待对应阶段验证，不据文档检查宣称工程或内容价值通过。
+
 ## 2026-09-09：政府来源 TLS 密钥协商兼容
 
 - 真实诊断：已从公开正文取得全称和信用代码配对，政府来源连接却在 TLS 握手报 `BAD_ECPOINT`，不能表述为“没有公司资料”或 robots 明确禁止。原服务器证书校验保持开启，使用标准 P-256 协商后 TLS 1.2 / AES-GCM 握手成功；单独限制 TLS 1.2 并不能解决问题。

@@ -36,6 +36,8 @@ from backend.app.models import (
     EntityMention,
     Event,
     EventEvidence,
+    EventFact,
+    EventFactSupport,
     InvestorChangeAnalysis,
     RawDocument,
     UsageLedger,
@@ -44,6 +46,12 @@ from backend.app.models import (
 )
 from backend.app.providers import AnalysisLLMProvider, LLMProviderError
 from backend.app.services import user_has_role
+from backend.app.tender_presentation import (
+    current_tender_observation,
+    is_tender_event,
+    tender_observations,
+    usable_shared_evidence,
+)
 
 _NUMERIC_TOKEN = re.compile(r"(?<![A-Za-z0-9])\d+(?:\.\d+)?%?")
 _FORBIDDEN_ADVICE = ("建议买入", "建议卖出", "值得投资", "保证收益", "确定上涨")
@@ -97,6 +105,8 @@ def _event_fact(event: Event, name: str) -> str | None:
 
 
 def _analysis_request(session: Session, event: Event) -> InvestorChangeAnalysisRequest | None:
+    if is_tender_event(event):
+        return _tender_analysis_request(session, event)
     company = session.get(Company, event.company_id)
     if company is None:
         return None
@@ -151,9 +161,130 @@ def _event_is_eligible(event: Event, policy: InvestorAnalysisPolicy) -> bool:
         and event.owner_user_id is None
         and event.owner_tenant_id is None
         and event.status == "published"
-        and event.publication_route == "deterministic_change"
+        and (
+            event.publication_route == "deterministic_change"
+            or (is_tender_event(event) and event.publication_route == "human_promoted")
+        )
         and event.materiality_score >= policy.min_materiality_score
     )
+
+
+def _tender_analysis_request(
+    session: Session, event: Event
+) -> InvestorChangeAnalysisRequest | None:
+    if event.status != "published" or event.publication_route != "human_promoted":
+        return None
+    company = session.get(Company, event.company_id)
+    current = current_tender_observation(session, event)
+    if company is None or current is None:
+        return None
+    previous = [
+        item
+        for item in tender_observations(session, event)
+        if item.confirmed
+        and item.evidence_available
+        and not item.is_current
+        and (item.reviewed_at or item.observed_at) < (current.reviewed_at or current.observed_at)
+    ]
+
+    def facts_text(facts):
+        return "；".join(
+            f"{item['name']}：{item['value']}{item.get('unit') or ''}" for item in facts
+        )
+
+    prior = previous[-1] if previous else None
+    all_ids = set(current.evidence_ids) | (set(prior.evidence_ids) if prior else set())
+    support_rows = session.execute(
+        select(EventFact.name, EventFact.value, EventFact.unit, EventEvidence)
+        .join(EventFactSupport, EventFactSupport.event_fact_id == EventFact.id)
+        .join(EventEvidence, EventEvidence.id == EventFactSupport.event_evidence_id)
+        .where(
+            EventFact.event_id == event.id,
+            EventFactSupport.support_status == "supported",
+            EventEvidence.id.in_(all_ids),
+        )
+        .order_by(EventEvidence.created_at, EventEvidence.id)
+    ).all()
+
+    def supported_fields(observation):
+        if observation is None:
+            return {}
+        keys = {(fact["name"], fact["value"], fact.get("unit")) for fact in observation.facts}
+        return {
+            name: (fact, evidence)
+            for name, value, unit, evidence in support_rows
+            if (name, value, unit) in keys
+            and evidence.id in observation.evidence_ids
+            and usable_shared_evidence(evidence)
+            for fact in [{"name": name, "value": value, "unit": unit}]
+        }
+
+    current_fields, prior_fields = supported_fields(current), supported_fields(prior)
+    evidence_by_id, after_facts, before_facts = {}, [], []
+    # 沿用五条引用上限；只解读能同时提供前后版本证据的字段，完整事实仍在页面中。
+    focus = (
+        "中标金额",
+        "投标报价",
+        "公告阶段",
+        "项目编号",
+        "中标日期",
+        "公示日期",
+        "供应商全称",
+        "项目名称",
+        "采购人",
+        "标段编号",
+    )
+    for name in focus:
+        if name not in current_fields or (prior is not None and name not in prior_fields):
+            continue
+        fact, evidence = current_fields[name]
+        required = {evidence.id: evidence}
+        if prior is not None:
+            prior_fact, prior_evidence = prior_fields[name]
+            required[prior_evidence.id] = prior_evidence
+        if len(evidence_by_id.keys() | required.keys()) > 5:
+            continue
+        evidence_by_id.update(required)
+        after_facts.append(fact)
+        if prior is not None:
+            before_facts.append(prior_fact)
+    if not after_facts:
+        return None
+    evidence = list(evidence_by_id.values())
+    try:
+        return InvestorChangeAnalysisRequest(
+            event_id=event.id,
+            company_name=company.legal_name,
+            event_type=event.event_type,
+            field_label="招投标公告记录",
+            before_value=facts_text(before_facts)
+            if before_facts
+            else "暂无此前已核实记录（不表示此前未中标）",
+            after_value=facts_text(after_facts),
+            deterministic_summary="经人工核实的招投标公告所述字段；不代表已履约或确认收入。",
+            uncertainties=event.uncertainties,
+            evidence=[
+                InvestorEvidenceInput(
+                    evidence_id=item.id,
+                    source_name=item.display_source_name or "已核实来源",
+                    excerpt=item.evidence_excerpt,
+                    observed_at=(item.display_observed_at or event.observed_at).isoformat(),
+                )
+                for item in evidence
+            ],
+        )
+    except ValidationError:
+        return None
+
+
+def _analysis_input_hash(session: Session, event: Event, request: object) -> str:
+    payload = request.model_dump(mode="json")
+    if is_tender_event(event):
+        current = current_tender_observation(session, event)
+        return _sha256(
+            {"fact_version": current.fact_version if current else None, "request": payload}
+        )
+    return _sha256(payload)
 
 
 def _research_analysis_request(
@@ -295,7 +426,11 @@ def enqueue_pending_investor_analyses(
             Event.owner_user_id.is_(None),
             Event.owner_tenant_id.is_(None),
             Event.status == "published",
-            Event.publication_route == "deterministic_change",
+            or_(
+                Event.publication_route == "deterministic_change",
+                (Event.fingerprint_version == "tender-v1")
+                & (Event.publication_route == "human_promoted"),
+            ),
             Event.materiality_score >= policy.min_materiality_score,
         )
         .order_by(Event.created_at, Event.id)
@@ -308,7 +443,7 @@ def enqueue_pending_investor_analyses(
         request = _analysis_request(session, event)
         if request is None:
             continue
-        input_hash = _sha256(request.model_dump(mode="json"))
+        input_hash = _analysis_input_hash(session, event, request)
         existing = session.scalar(
             select(InvestorChangeAnalysis).where(
                 InvestorChangeAnalysis.event_id == event.id,
@@ -622,7 +757,7 @@ def run_investor_analysis_worker_once(
             event_id=event.id,
             outcome="event_no_longer_eligible",
         )
-    if request is None or _sha256(request.model_dump(mode="json")) != analysis.input_hash:
+    if request is None or _analysis_input_hash(session, event, request) != analysis.input_hash:
         analysis.status = "failed"
         analysis.last_error_code = "analysis_input_changed"
         analysis.leased_until = None

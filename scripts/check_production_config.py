@@ -20,6 +20,8 @@ INITIAL_DISABLED_SWITCHES = (
     "WEB_RESEARCH_CALLS_ENABLED",
     "INVESTOR_ANALYSIS_ENABLED",
     "REVIEW_WORKBENCH_ENABLED",
+    "TENDER_EVENTS_ENABLED",
+    "WATCHLIST_MONITOR_ENABLED",
 )
 PLACEHOLDER_MARKERS = ("replace_", "replace-", "changeme", "example.com", "example.invalid")
 SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")

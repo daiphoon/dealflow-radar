@@ -24,7 +24,11 @@ from backend.app.demo import (
     NO_ACCESS_USER_ID,
     demo_uuid,
 )
-from backend.app.fact_support import aggregate_support_status, materialize_event_fact_ledger
+from backend.app.fact_support import (
+    aggregate_support_status,
+    fact_key,
+    materialize_event_fact_ledger,
+)
 from backend.app.investor_analysis_schema import (
     INVESTOR_ANALYSIS_SCHEMA_VERSION,
     RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION,
@@ -104,6 +108,12 @@ from backend.app.schemas import (
     SharingActionOut,
     SharingCandidateOut,
     SharingDecisionOut,
+)
+from backend.app.tender_presentation import (
+    event_display_kind,
+    is_tender_event,
+    tender_observations,
+    usable_shared_evidence,
 )
 
 MANUAL_EVENT_FINGERPRINT_VERSION = "manual-v1"
@@ -1297,6 +1307,7 @@ def _ingest_manual_batch(
     *,
     candidate_document: CandidateDocument | None = None,
     verification_overrides: dict[str, DocumentVerification] | None = None,
+    tender_events_enabled: bool = False,
 ) -> ResearchImportResult:
     batch_payload = loaded.batch
     research_import = ResearchImport(
@@ -1402,7 +1413,13 @@ def _ingest_manual_batch(
             external_record_id=record.external_record_id,
             canonical_url=record.canonical_url,
             title=record.title,
-            published_at=record.source_published_at,
+            published_at=(
+                record.source_published_at.astimezone(UTC)
+                if tender_events_enabled
+                and record.event_subtype == "tender_notice"
+                and record.source_published_at is not None
+                else record.source_published_at
+            ),
             published_on=_record_published_on(record),
             observed_at=utc_now(),
             content_hash=content_hash,
@@ -1439,15 +1456,29 @@ def _ingest_manual_batch(
             research_import.identity_review_count += 1
             continue
 
-        routed_event, event_created, publication_route, snapshot_required = _route_manual_record(
-            session,
-            company,
-            record,
-            document,
-            verification,
-            publication_policy,
-            user.tenant_id,
-        )
+        if tender_events_enabled and record.event_subtype == "tender_notice":
+            from backend.app.tender_storage import persist_tender_candidate, stored_tender_candidate
+
+            session.flush()
+            candidate = stored_tender_candidate(company, document)
+            if candidate is None:
+                raise ImportConflictError("tender notice format or subject is unsupported")
+            result = persist_tender_candidate(session, user, candidate, enabled=True)
+            routed_event = session.get(Event, result.event_id)
+            event_created = result.event_created
+            publication_route, snapshot_required = "unconfirmed_lead", False
+        else:
+            routed_event, event_created, publication_route, snapshot_required = (
+                _route_manual_record(
+                    session,
+                    company,
+                    record,
+                    document,
+                    verification,
+                    publication_policy,
+                    user.tenant_id,
+                )
+            )
         if publication_route == "auto_published":
             research_import.auto_published_count += 1
         else:
@@ -1523,8 +1554,7 @@ def _ingest_manual_batch(
             idempotency_key=_sha256(f"manual-research-import:{research_import.id}"),
         )
     )
-    session.commit()
-    return ResearchImportResult(
+    result = ResearchImportResult(
         status=research_import.status,
         research_import_id=research_import.id,
         batch_id=research_import.batch_id,
@@ -1539,6 +1569,8 @@ def _ingest_manual_batch(
         identity_review_records=research_import.identity_review_count,
         external_calls=external_calls,
     )
+    session.commit()
+    return result
 
 
 def import_manual_research(
@@ -1550,6 +1582,7 @@ def import_manual_research(
     *,
     candidate_document: CandidateDocument | None = None,
     verification_overrides: dict[str, DocumentVerification] | None = None,
+    tender_events_enabled: bool = False,
 ) -> ResearchImportResult:
     if not user_has_role(session, user.id, "institution_admin"):
         session.rollback()
@@ -1590,6 +1623,7 @@ def import_manual_research(
             document_verifier or DisabledDocumentVerifier(),
             candidate_document=candidate_document,
             verification_overrides=verification_overrides,
+            tender_events_enabled=tender_events_enabled,
         )
     except Exception:
         session.rollback()
@@ -1781,6 +1815,9 @@ def _event_out(
     )
     evidence_items: list[EvidenceOut] = []
     for evidence in evidence_rows:
+        if is_tender_event(event) and event.visibility_scope == PLATFORM_SHARED_SCOPE:
+            if not usable_shared_evidence(evidence):
+                continue
         if event.visibility_scope != PLATFORM_SHARED_SCOPE and not _scope_owner_matches(
             evidence, event
         ):
@@ -1886,9 +1923,24 @@ def _event_out(
                 detail_available=False,
             )
         )
+    observations = tender_observations(session, event, {item.id for item in evidence_items})
+    current_observation = next(
+        (item for item in observations if item.is_current and item.evidence_available), None
+    )
+    display_kind = event_display_kind(session, event)
     analysis_output = None
     research_analysis_output = None
     if event.visibility_scope == PLATFORM_SHARED_SCOPE:
+        current_input_filter = True
+        if is_tender_event(event):
+            from backend.app.investor_analysis import _analysis_input_hash, _analysis_request
+
+            request = _analysis_request(session, event)
+            current_input_filter = (
+                InvestorChangeAnalysis.input_hash == _analysis_input_hash(session, event, request)
+                if display_kind == "confirmed_change" and request is not None
+                else False
+            )
         stored_analysis = session.scalar(
             select(InvestorChangeAnalysis)
             .where(
@@ -1896,6 +1948,7 @@ def _event_out(
                 InvestorChangeAnalysis.visibility_scope == PLATFORM_SHARED_SCOPE,
                 InvestorChangeAnalysis.status == "completed",
                 InvestorChangeAnalysis.schema_version == INVESTOR_ANALYSIS_SCHEMA_VERSION,
+                current_input_filter,
             )
             .order_by(InvestorChangeAnalysis.created_at.desc())
             .limit(1)
@@ -1947,6 +2000,12 @@ def _event_out(
             .order_by(EventFact.position, EventFact.fact_key)
         )
     )
+    if event.fingerprint_version == "tender-v1":
+        # 观测账本追加的更正字段不能自动成为当前事件的展示事实。
+        current_keys = {
+            fact_key(item["name"], item["value"], item.get("unit")) for item in event.facts
+        }
+        fact_rows = [fact for fact in fact_rows if fact.fact_key in current_keys]
     supports_by_fact: dict[UUID, list[FactEvidenceSupportOut]] = {}
     if visible_evidence_ids:
         support_rows = list(
@@ -1990,11 +2049,26 @@ def _event_out(
                 evidence_supports=fact_supports,
             )
         )
+    withdrawn_tender = (
+        is_tender_event(event)
+        and event.visibility_scope == PLATFORM_SHARED_SCOPE
+        and display_kind == "unconfirmed"
+    )
+    for observation in observations:
+        if not observation.evidence_available:
+            observation.facts = []
+            observation.evidence_ids = []
+            observation.occurred_on = None
+            observation.date_precision = "unknown"
     return EventOut(
         id=event.id,
         event_type=event.event_type,
         event_subtype=event.event_subtype,
         occurred_at=event.occurred_at,
+        occurred_on=current_observation.occurred_on if current_observation else None,
+        fact_version=current_observation.fact_version if current_observation else None,
+        display_kind=display_kind,
+        tender_observations=observations,
         published_at=event.published_at,
         published_on=event.published_on,
         direction=event.direction,
@@ -2003,8 +2077,12 @@ def _event_out(
         confidence_score=event.confidence_score,
         source_quality=event.source_quality,
         title=event.title,
-        summary=event.summary,
-        facts=event.facts,
+        summary=(
+            "该版本证据已撤回或不可用，暂不作为已核实事实展示。"
+            if withdrawn_tender
+            else event.summary
+        ),
+        facts=[] if withdrawn_tender else event.facts,
         uncertainties=event.uncertainties,
         status=event.status,
         publication_route=event.publication_route,
@@ -2012,7 +2090,7 @@ def _event_out(
         publication_reasons=event.publication_reasons,
         observed_at=event.observed_at,
         evidence=evidence_items,
-        fact_ledger=fact_ledger,
+        fact_ledger=[] if withdrawn_tender else fact_ledger,
         visibility_scope=event.visibility_scope,
         analysis=analysis_output,
         research_analysis=research_analysis_output,
@@ -2382,6 +2460,7 @@ def _shared_event_for_source(session: Session, event: Event) -> Event | None:
 
 def _sharing_decision_out(decision: EventSharingDecision) -> SharingDecisionOut:
     return SharingDecisionOut(
+        source_observation_id=decision.source_observation_id,
         id=decision.id,
         action=decision.action,
         reason=decision.reason,
@@ -2558,13 +2637,46 @@ def promote_private_event(
     confirm_evidence_support: bool,
     confirm_unchecked_links: bool,
     auto_publish_enabled: bool,
+    observation_id: UUID | None = None,
+    tender_events_enabled: bool = False,
 ) -> SharingActionOut:
     _require_platform_admin(session, user)
     if auto_publish_enabled:
         raise PromotionEligibilityError("automatic publication must remain disabled")
+    source_event = session.get(Event, source_event_id)
+    if source_event is None:
+        raise NotFoundError("source event not found")
+    tender_selection = None
+    decision_key = f"sharing:promote:{source_event_id}"
+    if is_tender_event(source_event):
+        if not tender_events_enabled:
+            raise PromotionEligibilityError("tender event path is disabled")
+        from backend.app.tender_publication import select_tender_observation
+
+        tender_selection = select_tender_observation(
+            session, source_event, observation_id, evidence_ids
+        )
+        # 重复审核请求仍复核当前许可、主体和链接，不沿用过去的授权状态。
+        _load_promotable_evidence(
+            session,
+            source_event,
+            evidence_ids,
+            confirm_unchecked_links=confirm_unchecked_links,
+        )
+        decision_key += f":{tender_selection[0].id}"
+        if session.get_bind().dialect.name == "postgresql":
+            from sqlalchemy import text
+
+            lock_key = int.from_bytes(
+                hashlib.sha256(
+                    f"tender-sharing:{source_event.company_id}:{source_event.event_fingerprint}".encode()
+                ).digest()[:8],
+                signed=True,
+            )
+            session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
     existing_decision = session.scalar(
         select(EventSharingDecision).where(
-            EventSharingDecision.idempotency_key == _sha256(f"sharing:promote:{source_event_id}")
+            EventSharingDecision.idempotency_key == _sha256(decision_key)
         )
     )
     if existing_decision is not None:
@@ -2607,6 +2719,8 @@ def promote_private_event(
         evidence_ids,
         confirm_unchecked_links=confirm_unchecked_links,
     )
+    if tender_selection and any(len(row[0].evidence_excerpt) > 1000 for row in loaded_evidence):
+        raise PromotionEligibilityError("tender evidence exceeds shared excerpt limit")
     shared_event = _shared_event_for_source(session, source_event)
     reused_shared_event = shared_event is not None
     if shared_event is not None and shared_event.status != "published":
@@ -2679,10 +2793,39 @@ def promote_private_event(
             session.flush()
         shared_evidence_by_source[evidence.id] = shared_evidence
 
-    materialize_event_fact_ledger(session, shared_event)
+    if tender_selection is not None:
+        from backend.app.tender_presentation import candidate_facts, same_facts, tender_snapshot
+        from backend.app.tender_publication import copy_tender_supports
+
+        observation, candidate = tender_selection
+        selected_facts = candidate_facts(candidate)
+        if (
+            reused_shared_event
+            and not same_facts(shared_event.facts, selected_facts)
+            and not candidate.is_correction
+        ):
+            raise PromotionEligibilityError(
+                "conflicting facts require an explicit correction notice"
+            )
+        if not same_facts(shared_event.facts, selected_facts):
+            shared_event.facts = selected_facts
+            shared_event.title = title.strip()
+            shared_event.summary = summary.strip()
+            shared_event.published_at = candidate.document.published_at
+            shared_event.observed_at = candidate.document.observed_at
+        required_evidence = copy_tender_supports(
+            session, shared_event, observation, shared_evidence_by_source
+        )
+        snapshot_payload = tender_snapshot(candidate, required_evidence, reviewed_at=utc_now())
+        for item in shared_evidence_by_source.values():
+            if item.display_detail_payload is None:
+                item.display_detail_payload = snapshot_payload
+    else:
+        materialize_event_fact_ledger(session, shared_event)
 
     decision = EventSharingDecision(
         source_event_id=source_event.id,
+        source_observation_id=tender_selection[0].id if tender_selection else None,
         shared_event_id=shared_event.id,
         actor_user_id=user.id,
         actor_tenant_id=user.tenant_id,
@@ -2691,7 +2834,7 @@ def promote_private_event(
         shared_title=title.strip(),
         shared_summary=summary.strip(),
         policy_version=SHARING_POLICY_VERSION,
-        idempotency_key=_sha256(f"sharing:promote:{source_event.id}"),
+        idempotency_key=_sha256(decision_key),
     )
     session.add(decision)
     session.flush()
@@ -3107,6 +3250,7 @@ def current_shared_company_content(
         .where(
             or_(_shared_event_filter(visible_ids), _shared_event_filter(visible_ids, leads=True))
         )
+        .where(Event.fingerprint_version != "tender-v1")
         .group_by(Event.company_id, Event.status, Event.publication_route)
     )
     for company_id, status, route, count in rows:
@@ -3117,6 +3261,20 @@ def current_shared_company_content(
             result.confirmed_changes += count
         else:
             result.baseline_facts += count
+    for event in session.scalars(
+        select(Event).where(
+            Event.fingerprint_version == "tender-v1",
+            or_(_shared_event_filter(visible_ids), _shared_event_filter(visible_ids, leads=True)),
+        )
+    ):
+        result = results[event.company_id]
+        kind = event_display_kind(session, event)
+        if kind == "confirmed_change":
+            result.confirmed_changes += 1
+        elif kind == "unconfirmed":
+            result.unconfirmed_leads += 1
+        else:
+            result.baseline_facts += 1
     return results
 
 
@@ -3211,6 +3369,11 @@ def get_company_detail(
         .order_by(PersonalCompanyRequest.created_at.desc(), PersonalCompanyRequest.id.desc())
         .limit(1)
     )
+    shared_outputs = [
+        _event_out(session, event, user, allow_organization_private=bool(investment_rows))
+        for event in events
+    ]
+    withdrawn_outputs = [item for item in shared_outputs if item.display_kind == "unconfirmed"]
     detail = CompanyDetail(
         id=company.id,
         is_platform_shared=shared_company,
@@ -3238,15 +3401,7 @@ def get_company_detail(
             )
             for investment, fund in investment_rows
         ],
-        events=[
-            _event_out(
-                session,
-                event,
-                user,
-                allow_organization_private=bool(investment_rows),
-            )
-            for event in events
-        ],
+        events=[item for item in shared_outputs if item.display_kind != "unconfirmed"],
         platform_unconfirmed_leads=[
             _event_out(
                 session,
@@ -3255,7 +3410,8 @@ def get_company_detail(
                 allow_organization_private=False,
             )
             for event in platform_unconfirmed_leads
-        ],
+        ]
+        + withdrawn_outputs,
         private_events=[
             _event_out(
                 session,

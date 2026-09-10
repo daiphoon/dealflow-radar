@@ -4,7 +4,7 @@
 
 PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；不修改已应用迁移。UUID 主键、UTC `timestamptz`、显式外键和状态约束为默认。原始事实追加保存，派生快照可重建。个人、机构与基金私有行必须通过应用授权和 PostgreSQL 行级安全（RLS）双重限制。
 
-本文件同时描述当前 `0024` Schema 和 ADR-0009 的后续目标边界。数据作用域安全基线、共享公司精确查询、受控共享事实晋升、受控可信来源监测、候选研究交接、CloudBase 身份映射、个人留存、受限公开网络研究、版本化变化检测、证据约束投资者解读队列和证据—事实逐条支持账本已经实现；标记为“目标”的 organization 和商业订阅权益仍未实现。当前 `tenant` 继续作为技术隔离边界，CloudBase 只提供外部身份，业务授权仍由本地用户、角色、基金授权和 RLS 决定。
+本文件同时描述已实现 Schema 和 ADR-0009 的后续目标边界。E1.2/E1.3 新增兼容迁移 `0028`、`0029`，仅在隔离测试库验证，不能据此推断部署版本；实际交付状态见[实施看板](10-implementation-plan.md)。数据作用域安全基线、共享公司精确查询、受控共享事实晋升、受控可信来源监测、候选研究交接、CloudBase 身份映射、个人留存、受限公开网络研究、版本化变化检测、证据约束投资者解读队列和证据—事实逐条支持账本已经实现；标记为“目标”的 organization 和商业订阅权益仍未实现。当前 `tenant` 继续作为技术隔离边界，CloudBase 只提供外部身份，业务授权仍由本地用户、角色、基金授权和 RLS 决定。
 
 ## 2. 表目录：身份、投资与权限
 
@@ -42,8 +42,9 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `entity_mentions` | 文档中的公司候选、命中依据、候选集合、置信度、解析状态 | 唯一 `(raw_document_id, mention_span_hash, candidate_company_id)`；待解析索引 |
 | `events` | 公司、类型/子类、业务状态、发布路由、作用域、所有者、审核/证据状态、五项评价、事实、时间和事件指纹 | 共享事件全局去重；私有候选在所有者范围内去重；业务状态不推断权限 |
 | `event_evidence` | 事件到文档或结构化记录的证据引用、最小片段、支撑类型、作用域和许可；共享展示引用保存许可允许的来源快照并关联原私有引用 | 私有引用必须关联原文档；共享展示引用不关联私有原文档，使用 `source_event_evidence_id` 保留血缘；不得因事件共享而暴露受限原文 |
-| `event_facts` | 把 `events.facts` 拆成带稳定 `fact_key` 的原子事实，保留名称、值、单位、顺序和重复出现次数 | 同事件同 `fact_key` 唯一；`(id, event_id)` 作为证据支持复合外键边界 |
+| `event_facts` | 带稳定 `fact_key` 的原子字段，保留名称、值、单位、顺序和重复出现次数；中标观测可追加不同版本的字段，当前展示仍由 `events.facts` 限定 | 同事件同 `fact_key` 唯一；`(id, event_id)` 作为证据支持复合外键边界 |
 | `event_fact_supports` | 一条原子事实与一条事件证据的确定性评估；保存支持状态、证据定位、检查项、理由、策略版本和评估时间 | 状态仅为 `supported/partial/conflicting/pending_review/unsupported`；复合外键禁止跨事件错接事实与证据；同事实/证据唯一 |
+| `event_observations` | E1.2 单类来源观测：事件/原文档、契约和事实版本、观测性质、日期与精度、候选及逐字段证据关联、创建人和时间 | 唯一 `(event_id, raw_document_id, schema_version)`；按事件/原文档索引；RLS 同时要求父事件和同作用域原文档可读，写入沿用事件授权且创建人必须为当前用户；应用角色只能追加 |
 | `metric_definitions` | 指标编码、类型、单位集合、周期和行业命名空间 | 唯一 `metric_code`; 行业索引 |
 | `metric_observations` | 公司指标历史值、单位、期间、`as_of_date`、来源性质、审核状态 | 观测幂等键唯一；公司/指标/基准日降序索引 |
 | `company_snapshots` | 派生状态、信息缺口、新鲜度、构建版本、可空的事实水位 | 唯一 `(company_id, snapshot_version)`；当前快照条件唯一；没有可靠事件/来源日期时 `data_as_of` 保持空 |
@@ -60,7 +61,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `refresh_policies` | TTL、升降频、冷却、预算和 Provider 规则的版本化配置 | 唯一 `(tenant_id, code, version)`；仅一个活动版本 |
 | `refresh_jobs` | company、原因、优先级、状态、幂等键、租约、预计成本 | 幂等键唯一；同公司/类型活跃任务部分唯一；领取索引 |
 | `refresh_runs` | 每次尝试、检查点、Provider 结果、错误、变化计数、起止时间 | FK job；job/attempt 唯一；状态/开始时间索引 |
-| `company_research_jobs` | 全局公司级研究队列、九类投资研究覆盖状态、租约、取消和调用/缓存/Token 计数；旧任务的历史模块状态继续兼容读取 | 同一公司仅一个活动任务；多个个人或机构请求可关联同一任务；模块状态保存在既有 `coverage` JSON |
+| `company_research_jobs` | 全局公司级研究队列、九类投资研究覆盖状态、租约、取消和调用/缓存/Token 计数；旧任务的历史模块状态继续兼容读取 | 同一公司仅一个活动任务；多个个人或机构请求可关联同一任务；E2.1 在既有 `coverage` JSON 追加 `category_coverage_version/source_routes` 和逐次搜索/正文的分类、时间、缓存及失败元数据，无新迁移；历史缺少记录时保持未知，不从事件数反推 |
 | `web_search_cache_entries` | Provider、规范查询、查询组、公司身份指纹、结果与响应哈希、取得/到期时间 | 全局公共搜索缓存；唯一 `(provider_code, query_hash, company_identity_fingerprint, policy_version)`；只允许平台管理员 Worker 通过 RLS 读写 |
 | `research_imports` | tenant、导入人、批次、格式、工具、原始文件哈希、许可、自动发布/未确认/身份审核计数与状态 | `(tenant_id, batch_id)` 和 `(tenant_id, file_hash, parser_version)` 唯一；机构管理员 RLS；状态索引 |
 | `official_identity_verifications` | tenant、公司候选、私有身份原文档、查询词、工商全称、信用代码、注册地、登记状态、`verification_basis`、核验结果/规则/时间 | 每份原文档唯一核验记录；当前入口为政府官方或 ADR-0019 交易所披露人工核验，旧商业依据仅留历史兼容；tenant/状态/时间及信用代码索引；原管理员写、审核员读 RLS 不扩张，交易所入口应用层额外要求平台管理员 |
@@ -68,7 +69,7 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `source_check_runs` | 来源检查队列、人工/定时触发与应检查时间、策略与资源上限快照、租约、请求/字节/变化/失败计数、robots 状态、请求审计和零费用字段 | 同来源仅一个活跃任务；定时幂等键包含 source 与 due time；tenant/company/source 复合血缘；RLS；运行记录不被后续配置静默改写 |
 | `candidate_documents` | 新增或变化页面的 URL、标题、日期、哈希、最小摘录、许可、链接状态、发现运行、前版本、人工处理状态和研究交接定位 | 同来源/URL/哈希唯一；tenant/company/source/run 复合外键；默认 `organization_private`；只能通过显式结构化交接生成同 tenant 的私有候选，不直接生成共享事实 |
 | `review_queue` | 事件或实体提及、触发规则、状态、分配人、决定和理由 | `event_id` 与 `entity_mention_id` 必须且只能存在一个；每个对象唯一；状态索引 |
-| `event_sharing_decisions` | 平台管理员的晋升、拒绝和撤回决定；操作者、理由、私有来源事件、目标共享事件、共享表述和策略版本 | 幂等键唯一；来源/共享事件和操作者索引；只追加，不允许应用角色更新或删除 |
+| `event_sharing_decisions` | 平台管理员的晋升、拒绝和撤回决定；操作者、理由、私有来源事件、目标共享事件、共享表述和策略版本；中标决定另绑定 `source_observation_id` | 观测 ID 唯一，`(source_observation_id, source_event_id)` 复合外键防错接；旧空观测行仍按来源事件限制一次晋升/拒绝；幂等键唯一；只追加，不允许应用角色更新或删除 |
 | `event_sharing_decision_evidence` | 每次共享决定采用的私有证据引用和当时展示快照 | 每个决定与来源证据唯一；只追加；不授予原文档共享权限 |
 | `authentication_audit_logs` | CloudBase 身份绑定、会话开始、刷新和结束的追加式审计；只保存 subject 哈希 | user/tenant 外键；事件/结果检查；用户自读自写、同 tenant 平台管理员只读 RLS；应用角色不能更新或删除 |
 | `usage_ledger` | task/run/company/tenant/provider、调用量、Token、估算/实际费用、有效产出 | 用量幂等键唯一；tenant/company/provider/日期索引 |
@@ -106,6 +107,8 @@ erDiagram
   COMPANIES ||--o{ EVENTS : concerns
   EVENTS ||--|{ EVENT_EVIDENCE : requires
   EVENTS ||--o{ EVENT_FACTS : decomposes
+  EVENTS ||--o{ EVENT_OBSERVATIONS : records
+  RAW_DOCUMENTS ||--o{ EVENT_OBSERVATIONS : originates
   EVENT_FACTS ||--o{ EVENT_FACT_SUPPORTS : assessed_by
   EVENT_EVIDENCE ||--o{ EVENT_FACT_SUPPORTS : supports
   EVENTS ||--o{ EVENT_SHARING_DECISIONS : source_or_target
@@ -124,6 +127,7 @@ erDiagram
 ## 6. 时间语义
 
 - `occurred_at`：事件实际发生时间；未知可空，不得用抓取时间填充。
+- `event_observations.occurred_on/date_precision`：中标材料只给日期时保存 `date + day`；不确定则为 `NULL + unknown`，原始时间措辞保留在候选与证据中，旧 `Event.occurred_at` 不补成午夜。
 - `published_at`：来源首次发布时间；未知可空并保留原因。
 - `published_on`：来源只提供日期而没有可靠时刻时使用；不得虚构为当天零点。
 - `observed_at`：系统首次看到该来源或观测的时间，必填。
@@ -141,6 +145,8 @@ erDiagram
 - 报告：模板版本、事实水位、受众范围和基准日组成幂等键；无事实变化不重建。
 
 ## 8. 发布、纠错和历史保留
+
+E1.2 的 `tender-v1` 事项按主体、采购人、项目、标段、公告阶段及原公告编号在原权限作用域内归并；标识不足时仅按当前文档保存，不跨文档猜测归并。`event_observations` 区分 `initial/same_facts/correction_candidate/conflicting/incomplete`，每份材料保留独立候选和证据，不能由 URL 数量推出独立确认。更正只追加，不覆盖首次私有候选投影或自动发布；E1.3 经逐版本人工核实后才更新独立共享事件的当前字段。共享证据的 `display_detail_payload` 使用 `tender-shared-snapshot-v1` 保存获准字段、日期精度、事实版本、审核时间和共享引用 ID；共享查询不读取私有观测。日期、原始措辞及未知值也随观测保留，事实版本不替代证据历史。观测存在时 `0028` 拒绝降级，有观测审核记录时 `0029` 拒绝降级；回退应关闭新入口并保留数据。`0029` 还为已发布且人工核实的 `tender-v1` 事件补解读 RLS 策略：仍由当前有效平台管理员写入，普通活跃用户只能读取已完成的共享解读；旧策略及候选/私有边界不改变。
 
 事件状态为 `candidate`、`in_review`、`published`、`rejected`、`retracted`、`corrected`；发布路径另存 `publication_route`、`publication_policy_version` 和 `publication_reasons`。`unconfirmed_lead` 当前是 `candidate` 的路由标签，不进入快照。受控晋升不会修改私有候选的作用域或所有者，而是创建独立 `platform_shared` 事件；共享指纹全局唯一，同一私有候选的决定键幂等，两个机构的相同事实可关联同一共享事件。驳回只追加决定记录并保留候选；撤回将共享事件标为 `retracted`，重建共享快照但不删除私有候选、原文档或审计记录。发布事件至少有一条允许展示的证据引用。当前四个外部和自动开关保持关闭，受控晋升只允许人工 `platform_admin` 路径。
 
@@ -169,3 +175,13 @@ flowchart LR
   U[用量与模型记录] -.解释.-> C
   A[审核与审计日志] -.解释.-> V
 ```
+
+### E3 公司关注计划（0031）
+
+E3 另以 `0031` 增加 `company_watch_schedules`：每公司一个计划，保存策略版本、到期/冷却、尝试/成功时间、连续失败/无新文档次数和最近任务；`company_research_jobs.trigger_type` 默认为历史兼容的 `manual`，新增 `watchlist`。管理员通过固定搜索路径的 `public.watchlist_monitor_targets()` 只读聚合符合条件的公开公司，不取得关注者 ID；原个人关注 RLS 保留，计划仅管理员可写、本人关注后可读。成功/失败收尾与计划状态同事务提交，防止结束后重复排队。存在计划历史或巡检任务时拒绝降级，停用应关闭开关并保留历史。
+
+### E2.2 公开研究账本（0030）
+
+`usage_ledger` 新增 `usage_state`、`cost_status`、`quota_scope/task_key/subject_key`、调用/金额预占、报价版本及派发/结算时间；`external_calls` 和金额允许 `NULL`，金额精度提升至 `Numeric(18,6)`。历史行默认 `legacy/unknown`，不推断免费、不改变来源与累计用量。预占、派发分别先提交，结算与结果/进度一起提交。
+
+平台研究费用跨执行 Worker 的租户归集：当前有效平台管理员可读取/核对平台研究账本及旧搜索费用，普通用户不能通过同租户策略读写新平台账本；机构和模型私有费用仍走原租户策略。新索引支持任务和公司窗口计量。迁移有数据降级保护、跨租户并发预算及非 owner RLS 由 `test_web_budget_delivery.py` 验证；状态和恢复操作见[成本说明](06-cost-control.md)。

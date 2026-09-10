@@ -90,6 +90,10 @@ export type Event = {
   event_type: string;
   event_subtype: string;
   occurred_at: string | null;
+  occurred_on?: string | null;
+  fact_version?: string | null;
+  display_kind?: "confirmed_change" | "baseline" | "unconfirmed";
+  tender_observations?: TenderObservation[];
   published_at: string | null;
   published_on: string | null;
   direction: string;
@@ -111,6 +115,22 @@ export type Event = {
   visibility_scope: string;
   analysis: InvestorChangeAnalysis | null;
   research_analysis: ResearchCandidateAnalysis | null;
+};
+
+export type TenderObservation = {
+  observation_id: string | null;
+  fact_version: string;
+  observation_kind: string;
+  occurred_on: string | null;
+  date_precision: "day" | "unknown";
+  observed_at: string;
+  reviewed_at: string | null;
+  facts: Array<{ name: string; value: string; unit: string | null }>;
+  evidence_ids: string[];
+  is_current: boolean;
+  confirmed: boolean;
+  evidence_available: boolean;
+  can_publish: boolean;
 };
 
 export type FactSupportStatus =
@@ -192,6 +212,7 @@ export type ReviewWorkbenchItem = {
 };
 
 export type SharingDecision = {
+  source_observation_id?: string | null;
   id: string;
   action: string;
   reason: string;
@@ -242,12 +263,28 @@ export type Investment = {
   visibility_scope: string;
 };
 
+export type CategoryCoverage = {
+  category: string;
+  status: "not_configured" | "not_checked" | "blocked" | "failed" | "no_records"
+    | "candidates_only" | "evidence_obtained" | "unknown";
+  route: "business_capital" | "technology_risk_exit" | null;
+  last_attempt_at: string | null;
+  search_checked_at: string | null;
+  evidence_checked_at: string | null;
+  cache_reused: boolean;
+  evidence_count: number | null;
+  blocked_count: number | null;
+  failed_count: number | null;
+  gaps: string[];
+};
+
 export type ResearchResult = {
   outcome: "no_usable_evidence" | "candidates_available";
   finished_at: string | null;
   message: string;
   limitations: string[];
   coverage_summary?: string[];
+  category_coverage?: CategoryCoverage[];
 };
 
 export type CompanyDetail = {
@@ -271,6 +308,14 @@ export type CompanyDetail = {
   personal_research_result: ResearchResult | null;
 };
 
+export type WatchlistMonitor = {
+  status: string;
+  categories: string[];
+  last_attempt_at: string | null;
+  last_successful_check_at: string | null;
+  next_check_at: string | null;
+};
+
 export type PersonalWatchlistItem = {
   id: string;
   company_id: string;
@@ -281,6 +326,7 @@ export type PersonalWatchlistItem = {
   freshness_status: string;
   last_checked_at: string | null;
   followed_at: string;
+  monitoring: WatchlistMonitor | null;
 };
 
 export type PersonalCompanyRequest = {
@@ -749,6 +795,7 @@ export function resolveIdentityReview(
 export function promoteSharingCandidate(
   sourceEventId: string,
   payload: {
+    observation_id?: string;
     title: string;
     summary: string;
     reason: string;

@@ -1,5 +1,7 @@
 # 08 API 与结构化事件 Schema
 
+E3 为 `GET /api/v1/me/watchlist` 的每条公司追加可空 `monitoring`：`status`、三类 `categories`、`last_attempt_at`、`last_successful_check_at`、`next_check_at`。只读本人关注公司的有限进度，不返回关注者、原始任务/缓存/URL 或内部错误。未启用、未安排、排队、检查中、成功、失败、部分完成、预算延后和取消分别显示；尝试时间不冒充成功时间。原公司快照与手动研究申请语义保持，页面读取不触发搜索或模型。
+
 ## 1. API 原则
 
 版本前缀 `/api/v1`；JSON 字段使用英文；写操作要求认证、授权、审计和幂等键。列表使用游标分页。同步读取不得调用外部搜索或模型。所有公司响应包含 `data_as_of`、`last_checked_at`、`freshness_status`、`information_gaps`；平台共享基础层与个人/机构私有叠加层分别授权，私密数据不能混入共享快照或共享缓存。
@@ -17,6 +19,8 @@
 前端仅通过 Next.js 服务端动作调用登录接口，token 保存为 `HttpOnly` Cookie；不能进入 URL、浏览器 JavaScript、数据库或日志。同步公司查询仍不调用任何外部公司信息 Provider、搜索或模型。
 
 ## 2. 端点草案
+
+E2.1 在现有公司详情的 `personal_research_result` 和本人申请列表的 `research_result` 中追加 `category_coverage`，不新增端点。每行包含九类之一的 `category`、覆盖 `status`、组合检索 `route`、`last_attempt_at/search_checked_at/evidence_checked_at`、`cache_reused`、正文/受阻/失败数量及中文 `gaps`。未知历史数量和时间为 `null`；`evidence_obtained` 只表示取得可归类正文。仅沿用本人已完成研究任务的可见范围，其他用户为 `null`；不返回原始 URL、私有文档、Provider 配置或底稿 ID。同步读取不调用外部服务、不写回历史任务，也不修改公司快照新鲜度。未完成/失败/取消的任务仍使用现有状态与原因；不伪装为已完成覆盖。
 
 | 方法与路径 | 用途 | 关键行为 |
 | --- | --- | --- |
@@ -82,6 +86,14 @@ R3 的个人申请状态通过既有 `GET /me/company-requests` 返回。`resear
 候选决定本身不创建文档或事件。只有管理员另行提交结构化研究表单后，才生成 `organization_private` 底稿和候选事件；该接口幂等，保留 `candidate_document_id` 血缘，不自动创建平台共享事实。来源为 `unclear/restricted`、身份未核验或链接失效时失败关闭；`public_access` 底稿不具备共享晋升资格。
 
 按需缓存 V1 的 `freshness_status` 由当前快照 `last_checked_at` 与配置 TTL 动态计算。首次过期详情请求返回 `stale` 并完成入队；已有活动任务时返回 `refreshing`。`AUTO_REFRESH_ENABLED=false` 时只返回状态，不创建任务；无论开关如何，同步请求都不调用 Provider。
+
+### E1.3 单类中标兼容字段
+
+- `EventOut` 增加 `display_kind=confirmed_change/baseline/unconfirmed`、`occurred_on`、`fact_version` 和 `tender_observations`；原时间字段和旧事件契约保留。日精度不补午夜，未知日期不借来源发布时间填充。重要变化使用已核实当前投影，私有候选与历史观测分开呈现。
+- `POST /events/{source_event_id}/sharing/promotion` 的中标请求增加 `observation_id`，只可选择同一来源事件的一份观测及其完整字段证据。多版本时必须显式选择；旧事件不需要此字段。重复审核幂等，重复请求也重新核验许可；缺字段、错证据、冲突、主体不明或风险闸门不通过时返回 `422`，权限不足仍拒绝。
+- 审核记录返回可选 `source_observation_id`。共享观测始终不返回私有观测 ID、原文档 ID 或 owner；只暴露获准字段和共享证据 ID。必要证据不可展示时隐藏相关字段、事件日期及解读，该事件转入未确认展示，新报告不纳入；历史已生成报告继续只读可追溯。
+- 同一已核实事项更正后，`POST /me/companies/{id}/view` 可再次返回该事项，后续查看不重复；同事实转载不算新变化。报告仍由数据库字段固定生成，包含当前事实版本和当前引用；同步接口不调用模型或外部来源。
+- 新写入需显式启用 `TENDER_EVENTS_ENABLED`，审核还需原 `REVIEW_WORKBENCH_ENABLED` 和平台管理员角色。关闭新开关不删除已有观测、已核实结果或审计；解读 Worker 的原外部调用及预算授权独立生效。
 
 ## 3. 双通道搜索与详情契约
 

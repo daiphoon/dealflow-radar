@@ -12,11 +12,11 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
 
+from backend.app import web_research_budget as budget
 from backend.app.models import (
     Company,
     IdentityResearchState,
     PersonalCompanyRequest,
-    UsageLedger,
     utc_now,
 )
 from backend.app.providers import validate_unified_credit_code
@@ -121,6 +121,8 @@ def _save(session, request, state, progress, status="identity_queued", error=Non
     else:
         for key, value in updates.items():
             setattr(request, key, value)
+    if "external_calls" in updates:
+        request.external_calls = updates["external_calls"]
     request.status = status
     if status in {"cancelled", "in_review", "needs_input", "research_queued"}:
         progress.pop("robots", None)
@@ -130,17 +132,47 @@ def _save(session, request, state, progress, status="identity_queued", error=Non
     session.commit()
 
 
-def _usage(session, user, request, provider, operation, token, calls, metrics):
-    record = UsageLedger(
-        tenant_id=user.tenant_id,
+def _reserve_identity(
+    session,
+    user,
+    request,
+    state,
+    progress,
+    policy,
+    *,
+    provider,
+    operation,
+    token,
+    calls,
+    unit_price,
+    metrics,
+):
+    baseline = progress.setdefault(
+        "budget_baseline",
+        {
+            "search_calls": int(progress.get("search_calls", 0)),
+            "fetch_calls": int(progress.get("fetch_calls", 0)),
+        },
+    )
+    state.progress = progress
+    flag_modified(state, "progress")
+    search = operation == "company_discovery"
+    usage = budget.reserve(
+        session,
+        user,
+        policy,
+        task_key=f"identity:{request.id}",
+        subject=budget.subject_key(request.requested_credit_code, request.id),
         company_id=None,
         provider=provider,
         operation=operation,
-        external_calls=calls,
-        input_tokens=0,
-        output_tokens=0,
-        estimated_cost=Decimal("0"),
-        idempotency_key=hashlib.sha256(f"identity:{request.id}:{token}".encode()).hexdigest(),
+        token=token,
+        calls=calls,
+        unit_price=unit_price,
+        task_limit=min(6, policy.identity_max_search_calls)
+        if search
+        else policy.identity_max_fetch_requests,
+        task_baseline=baseline["search_calls" if search else "fetch_calls"],
         metrics={
             "request_id": str(request.id),
             "policy_version": POLICY_VERSION,
@@ -148,8 +180,23 @@ def _usage(session, user, request, provider, operation, token, calls, metrics):
             **metrics,
         },
     )
-    session.add(record)
-    return record
+    session.refresh(request, with_for_update=True)
+    return usage
+
+
+def _dispatch_identity(session, user, request, usage, policy):
+    # Persist progress and dispatch together; the row lock serializes a concurrent cancellation.
+    session.flush()
+    budget.dispatch(
+        session,
+        user,
+        usage,
+        policy,
+        cancelled=lambda: (
+            request.cancel_requested_at is not None
+            or request.status in {"cancel_requested", "cancelled"}
+        ),
+    )
 
 
 def run_identity_step(session, user, providers, policy, fetcher_factory=None):
@@ -178,14 +225,26 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
     )
     if request is None:
         return None
+
+    def _result(**kwargs):
+        research._restore_worker_context(session, user)
+        progress = state.progress or {}
+        baseline = progress.get("budget_baseline", progress)
+        legacy = int(baseline.get("search_calls", 0)) + int(baseline.get("fetch_calls", 0))
+        return research.WebResearchWorkerResult(
+            **kwargs,
+            cost_summary=budget.summary(session, f"identity:{request.id}", legacy_calls=legacy),
+        )
+
     state = session.get(IdentityResearchState, request.id)
     if state is None:
         state = IdentityResearchState(request_id=request.id, progress={})
         session.add(state)
     progress = dict(state.progress)
     if request.cancel_requested_at or request.status == "cancel_requested":
+        budget.recover(session, task_key=f"identity:{request.id}", cancelled=True)
         _save(session, request, state, progress, "cancelled")
-        return research.WebResearchWorkerResult(status="cancelled", stage="identity")
+        return _result(status="cancelled", stage="identity")
     name, code = request.requested_name, request.requested_credit_code
     try:
         if not name or not code or len(name.strip()) < 4:
@@ -193,11 +252,11 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
         validate_unified_credit_code(code)
     except ValueError:
         _save(session, request, state, progress, "needs_input", "identity_input_required")
-        return research.WebResearchWorkerResult(status="partial", stage="identity")
+        return _result(status="partial", stage="identity")
     fingerprint = hashlib.sha256(f"{normalized(name)}|{code}".encode()).hexdigest()
     if progress and progress.get("input_hash") != fingerprint:
         _save(session, request, state, progress, "needs_input", "identity_input_changed")
-        return research.WebResearchWorkerResult(status="partial", stage="identity")
+        return _result(status="partial", stage="identity")
     progress.setdefault("input_hash", fingerprint)
     progress.setdefault("policy_version", POLICY_VERSION)
     # Coalesce equal input before any network reservation. Only platform-collected
@@ -217,7 +276,7 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
     if older is not None:
         request.leased_until = now + timedelta(seconds=30)
         session.commit()
-        return research.WebResearchWorkerResult(status="partial", stage="identity")
+        return _result(status="partial", stage="identity")
     if not progress.get("search_calls") and not progress.get("reused_evidence"):
         previous = session.scalar(
             select(IdentityResearchState)
@@ -263,15 +322,16 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
             _save(session, request, state, progress, "research_queued", company_id=company.id)
         else:
             _save(session, request, state, progress, "in_review", "identity_review_required")
-        return research.WebResearchWorkerResult(status="partial", stage="identity")
+        return _result(status="partial", stage="identity")
     if progress.get("in_flight"):
+        budget.recover(session, task_key=f"identity:{request.id}")
         # An interrupted HTTP call has an unknown outcome; never silently spend it again.
         _save(session, request, state, progress, "in_review", "identity_interrupted")
-        return research.WebResearchWorkerResult(status="partial", stage="identity")
+        return _result(status="partial", stage="identity")
     evidence = list(progress.get("evidence", []))
     if any(item.get("conflict") for item in evidence):
         _save(session, request, state, progress, "needs_input", "identity_conflict")
-        return research.WebResearchWorkerResult(status="partial", stage="identity")
+        return _result(status="partial", stage="identity")
     if corroborated(evidence):
         # This step holds the request lock and makes no network calls.
         company = Company(
@@ -289,7 +349,7 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
                 session.flush()
         except IntegrityError:
             _save(session, request, state, progress, "in_review", "identity_review_required")
-            return research.WebResearchWorkerResult(status="partial", stage="identity")
+            return _result(status="partial", stage="identity")
         progress["company_id"] = str(company.id)
         progress["decision"] = "public_crosscheck"
         progress["decided_at"] = now.isoformat()
@@ -306,9 +366,7 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
             identity_checked_at=now,
             confirmed_at=now,
         )
-        return research.WebResearchWorkerResult(
-            status="partial", stage="identity", company_id=company.id
-        )
+        return _result(status="partial", stage="identity", company_id=company.id)
     search_calls = int(progress.get("search_calls", 0))
     candidates = list(progress.get("candidates", []))
     index = int(progress.get("candidate_index", 0))
@@ -320,7 +378,7 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
         or downloaded >= policy.identity_max_download_bytes
     ):
         _save(session, request, state, progress, "in_review", "identity_evidence_missing")
-        return research.WebResearchWorkerResult(status="partial", stage="identity")
+        return _result(status="partial", stage="identity")
     attempted = {(item["provider"], item["query"]) for item in progress.get("search_attempts", [])}
     next_search = None
     for plan_index in range(int(progress.get("search_plan_index", search_calls)), 6):
@@ -336,17 +394,31 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
     ):
         if not can_search:
             _save(session, request, state, progress, "in_review", "identity_evidence_missing")
-            return research.WebResearchWorkerResult(status="partial", stage="identity")
-        day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        if (
-            research._search_call_count(session, since=day) >= policy.daily_search_call_limit
-            or research._search_call_count(session, since=day.replace(day=1))
-            >= policy.monthly_search_call_limit
-        ):
-            _save(session, request, state, progress, "identity_queued", "identity_budget_deferred")
-            return research.WebResearchWorkerResult(status="budget_deferred", stage="identity")
+            return _result(status="partial", stage="identity")
         plan_index, provider_code, query = next_search
         token = f"search:{search_calls}"
+        try:
+            usage = _reserve_identity(
+                session,
+                user,
+                request,
+                state,
+                progress,
+                policy,
+                provider=f"web_search_{provider_code}",
+                operation="company_discovery",
+                token=token,
+                calls=1,
+                unit_price=budget.search_price(providers[provider_code], policy),
+                metrics={"query": query},
+            )
+        except budget.WebResearchBudgetDeferred:
+            _save(session, request, state, progress, "identity_queued", "identity_budget_deferred")
+            return _result(status="budget_deferred", stage="identity")
+        if request.cancel_requested_at or request.status in {"cancel_requested", "cancelled"}:
+            budget.recover(session, task_key=f"identity:{request.id}", cancelled=True)
+            _save(session, request, state, progress, "cancelled")
+            return _result(status="cancelled", stage="identity")
         progress.update(
             in_flight=token,
             search_calls=search_calls + 1,
@@ -360,18 +432,8 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
         request.status = "identity_checking"
         request.leased_until = now + timedelta(seconds=policy.worker_lease_seconds)
         state.progress = progress
-        usage = _usage(
-            session,
-            user,
-            request,
-            f"web_search_{provider_code}",
-            "company_discovery",
-            token,
-            1,
-            {"stage": "identity", "status": "reserved", "query": query},
-        )
-        session.commit()
-        research._restore_worker_context(session, user)
+        flag_modified(state, "progress")
+        _dispatch_identity(session, user, request, usage, policy)
         try:
             response = providers[provider_code].search(
                 SearchRequest(query, policy.max_results_per_search, recent_only=False)
@@ -415,7 +477,7 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
             progress["primary_failed"] = True
             progress.setdefault("failures", []).append({"code": error.code, "stage": "search"})
         progress.pop("in_flight", None)
-        usage.external_calls = actual_calls
+        budget.settle(session, usage, calls=actual_calls, metrics=usage.metrics)
         _save(
             session,
             request,
@@ -423,9 +485,7 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
             progress,
             external_calls=request.external_calls - 1 + actual_calls,
         )
-        return research.WebResearchWorkerResult(
-            status="partial", stage="identity", external_calls=actual_calls
-        )
+        return _result(status="partial", stage="identity", external_calls=actual_calls)
     candidate = candidates[index]
     title_code = normalized(candidate.get("title", ""))
     if candidate.get("subject_match") is False or (
@@ -438,27 +498,39 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
             {"url": candidate["url"], "code": "discovery_subject_mismatch"}
         )
         _save(session, request, state, progress)
-        return research.WebResearchWorkerResult(status="partial", stage="identity")
+        return _result(status="partial", stage="identity")
     token = f"fetch:{index}"
     # robots + page + up to three permitted same-domain redirects.
     reserved = min(5, policy.identity_max_fetch_requests - fetch_calls)
+    try:
+        usage = _reserve_identity(
+            session,
+            user,
+            request,
+            state,
+            progress,
+            policy,
+            provider="public_identity_fetch",
+            operation="identity_document",
+            token=token,
+            calls=reserved,
+            unit_price=Decimal("0"),
+            metrics={"download_bytes_limit": policy.identity_max_download_bytes - downloaded},
+        )
+    except budget.WebResearchBudgetDeferred:
+        _save(session, request, state, progress, "identity_queued", "identity_budget_deferred")
+        return _result(status="budget_deferred", stage="identity")
+    if request.cancel_requested_at or request.status in {"cancel_requested", "cancelled"}:
+        budget.recover(session, task_key=f"identity:{request.id}", cancelled=True)
+        _save(session, request, state, progress, "cancelled")
+        return _result(status="cancelled", stage="identity")
     progress.update(in_flight=token, candidate_index=index + 1, fetch_calls=fetch_calls + reserved)
     state.progress = progress
+    flag_modified(state, "progress")
     request.status = "identity_checking"
     request.leased_until = now + timedelta(seconds=policy.worker_lease_seconds)
     request.external_calls += reserved
-    _usage(
-        session,
-        user,
-        request,
-        "public_identity_fetch",
-        "identity_document",
-        token,
-        reserved,
-        {"status": "reserved"},
-    )
-    session.commit()
-    research._restore_worker_context(session, user)
+    _dispatch_identity(session, user, request, usage, policy)
     fetch_policy = research._fetch_policy(
         policy,
         remaining_requests=reserved,
@@ -499,18 +571,22 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
     except SourceFetchError as error:
         progress.setdefault("failures", []).append({"url": candidate["url"], "code": error.code})
     finally:
-        progress["fetch_calls"] = fetch_calls + fetcher.request_count
-        progress["downloaded_bytes"] = downloaded + fetcher.downloaded_bytes
-        progress["robots"] = cache
-        usage = session.scalar(
-            select(UsageLedger).where(
-                UsageLedger.idempotency_key
-                == hashlib.sha256(f"identity:{request.id}:{token}".encode()).hexdigest()
-            )
-        )
-        usage.external_calls = fetcher.request_count
-        usage.metrics = {**usage.metrics, "status": "completed", "bytes": fetcher.downloaded_bytes}
         fetcher.close()
+    progress["fetch_calls"] = fetch_calls + fetcher.request_count
+    progress["downloaded_bytes"] = downloaded + fetcher.downloaded_bytes
+    progress["robots"] = cache
+    budget.settle(
+        session,
+        usage,
+        calls=fetcher.request_count,
+        metrics={
+            "status": "completed"
+            if not progress.get("failures")
+            or progress["failures"][-1].get("url") != candidate["url"]
+            else "failed",
+            "bytes": fetcher.downloaded_bytes,
+        },
+    )
     progress.pop("in_flight", None)
     _save(
         session,
@@ -519,6 +595,4 @@ def run_identity_step(session, user, providers, policy, fetcher_factory=None):
         progress,
         external_calls=request.external_calls - reserved + fetcher.request_count,
     )
-    return research.WebResearchWorkerResult(
-        status="partial", stage="identity", external_calls=fetcher.request_count
-    )
+    return _result(status="partial", stage="identity", external_calls=fetcher.request_count)

@@ -47,6 +47,7 @@ from backend.app.personal_features import (
     cancel_personal_company_request,
     create_refresh_request,
 )
+from backend.app.research_outcome import research_result
 from backend.app.source_fetcher import TrustedSourceFetcher
 from backend.app.web_research_service import (
     SEARCH_GROUPS,
@@ -54,6 +55,7 @@ from backend.app.web_research_service import (
     _event_classification,
     _gap_follow_up_query,
     _identity_fingerprint,
+    _initial_coverage,
     _process_gap_follow_up,
     _subject_match,
     prepare_pending_research_requests,
@@ -293,7 +295,8 @@ def _providers() -> tuple[MockSearchProvider, MockSearchProvider]:
     return primary, MockSearchProvider("bocha")
 
 
-def test_ended_research_result_is_owner_only_and_persists(migrated_app, client):
+@pytest.mark.parametrize("recorded", [False, True])
+def test_ended_research_result_is_owner_only_and_persists(migrated_app, client, recorded):
     _grant_platform_admin(migrated_app)
     with migrated_app.state.session_factory() as session:
         owner = session.get(User, NO_ACCESS_USER_ID)
@@ -308,6 +311,7 @@ def test_ended_research_result_is_owner_only_and_persists(migrated_app, client):
         job.status = row.status = "completed"
         job.current_stage = "completed"
         job.coverage = {
+            **(_initial_coverage(WebResearchPolicy()) if recorded else {}),
             "stats": {"quality_gate_passed": 0},
             "completed_at": RECENT_TIMESTAMP,
             "documents": [
@@ -315,6 +319,7 @@ def test_ended_research_result_is_owner_only_and_persists(migrated_app, client):
                     "status": "failed",
                     "error_code": "robots_disallowed",
                     "url": "https://private.invalid/research",
+                    "coverage_category": "contract_commercial",
                 }
             ],
         }
@@ -327,6 +332,9 @@ def test_ended_research_result_is_owner_only_and_persists(migrated_app, client):
         assert "未通过自动读取规则检查" in str(result["personal_research_result"]["limitations"])
         assert "规则文件不可用" in str(result["personal_research_result"]["limitations"])
         assert "private.invalid" not in str(result)
+        rows = result["personal_research_result"]["category_coverage"]
+        contract = next(item for item in rows if item["category"] == "contract_commercial")
+        assert contract["status"] == ("blocked" if recorded else "unknown")
         assert result["investments"] == []
     requests = client.get("/api/v1/me/company-requests", headers=headers).json()
     own = next(item for item in requests if item["id"] == str(request_id))
@@ -341,6 +349,81 @@ def test_ended_research_result_is_owner_only_and_persists(migrated_app, client):
         assert other.json()["personal_research_result"] is None
     with migrated_app.state.session_factory() as session:
         assert session.scalar(select(func.coalesce(func.sum(UsageLedger.external_calls), 0))) == 0
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_group_completion_uses_provider_outcomes_instead_of_existing_events(migrated_app, failure):
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        session.get(Company, SHARED_COMPANY_ID).official_website = None
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), SHARED_COMPANY_ID)
+        session.commit()
+    outcomes = (
+        {_query(terms): "provider_unavailable" for _, terms in SEARCH_GROUPS} if failure else {}
+    )
+    primary = MockSearchProvider("baidu", failures=outcomes)
+    fallback = MockSearchProvider("bocha", failures=outcomes)
+    fetcher = RecordingFetcherFactory()
+    assert _drain(migrated_app, {"baidu": primary, "bocha": fallback}, fetcher)[-1] == "idle"
+    assert len(primary.calls) == len(fallback.calls) == 2
+    assert fetcher.requests == []
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        assert job.status == "completed"
+        result = research_result(job)
+        rows = [item for item in result.category_coverage if item.category != "information_quality"]
+        assert all(item.status == ("failed" if failure else "no_records") for item in rows)
+        assert all((item.search_checked_at is None) == failure for item in rows)
+        assert job.coverage["modules"]["information_quality"] == "not_configured"
+
+
+def test_recorded_coverage_survives_cache_replay_without_new_calls_or_fresh_times(migrated_app):
+    _grant_platform_admin(migrated_app)
+    with migrated_app.state.session_factory() as session:
+        owner = session.get(User, NO_ACCESS_USER_ID)
+        create_refresh_request(session, owner, PersonalEntitlementPolicy(), SHARED_COMPANY_ID)
+    primary, fallback = _providers()
+    fetcher = RecordingFetcherFactory()
+    _drain(migrated_app, {"baidu": primary, "bocha": fallback}, fetcher)
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        previous = research_result(job).model_dump(mode="json")
+        contract = next(
+            item
+            for item in previous["category_coverage"]
+            if item["category"] == "contract_commercial"
+        )
+        assert contract["status"] == "evidence_obtained" and contract["evidence_count"] == 1
+        assert all(
+            item["status"] != "evidence_obtained"
+            for item in previous["category_coverage"]
+            if item["category"] not in {"contract_commercial", "financing_cap_table"}
+        )
+        # Replaying the same job emulates recovery; no new request or policy change.
+        job.status = "partial"
+        job.current_stage = "search:business_capital"
+        job.coverage = _initial_coverage(WebResearchPolicy())
+        session.scalar(select(PersonalCompanyRequest)).status = "partial"
+        session.commit()
+    previous_calls = (len(primary.calls), len(fallback.calls), len(fetcher.requests))
+    _drain(migrated_app, {"baidu": primary, "bocha": fallback}, fetcher)
+    assert (len(primary.calls), len(fallback.calls), len(fetcher.requests)) == previous_calls
+    with migrated_app.state.session_factory() as session:
+        job = session.scalar(select(CompanyResearchJob))
+        result = research_result(job)
+        contract = next(
+            item for item in result.category_coverage if item.category == "contract_commercial"
+        )
+        assert contract.status == "evidence_obtained" and contract.cache_reused
+        assert job.coverage["stats"]["events_created"] == 0
+        for old, new in zip(
+            previous["category_coverage"],
+            result.model_dump(mode="json")["category_coverage"],
+            strict=True,
+        ):
+            assert old["search_checked_at"] == new["search_checked_at"]
+            assert old["evidence_checked_at"] == new["evidence_checked_at"]
 
 
 def test_cached_listing_reprocess_is_idempotent_and_not_a_recent_confirmed_change(
@@ -913,7 +996,7 @@ def test_one_material_evidence_gap_can_trigger_one_targeted_follow_up(
 def test_gap_follow_up_attempt_is_checkpointed_before_provider_call(
     migrated_app: FastAPI,
 ) -> None:
-    class CrashingProvider:
+    class CrashingProvider(MockSearchProvider):
         code = "baidu"
 
         def __init__(self) -> None:
@@ -1949,7 +2032,7 @@ def test_primary_failure_diagnostic_is_safe_and_fallback_reason_is_explicit(
         assert company is not None and owner is not None
         create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
 
-    class FailingPrimary:
+    class FailingPrimary(MockSearchProvider):
         code = "baidu"
 
         def __init__(self) -> None:
@@ -2008,6 +2091,8 @@ def test_primary_failure_diagnostic_is_safe_and_fallback_reason_is_explicit(
         )
         assert usage is not None
         assert usage.metrics == {
+            "task_limit": 4,
+            "task_baseline": 0,
             "query_kind": SEARCH_GROUPS[0][0],
             "status": "failed",
             "error_code": "authentication_failed",

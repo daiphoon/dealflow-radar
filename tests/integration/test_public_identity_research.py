@@ -401,7 +401,7 @@ def test_downgrade_refuses_to_delete_identity_audit(migrated_app):
     request_id = setup_request(migrated_app)
     step(migrated_app, request_id, providers())
     config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
-    with pytest.raises(RuntimeError, match="Identity research evidence exists"):
+    with pytest.raises(RuntimeError, match="Usage reservations or precise costs exist"):
         command.downgrade(config, "0026")
     with migrated_app.state.session_factory() as session:
         assert session.get(IdentityResearchState, request_id).progress["search_calls"] == 1

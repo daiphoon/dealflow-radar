@@ -700,6 +700,12 @@ class TrustedSourceFetcher:
         self.downloaded_bytes = 0
         self._last_request_at: dict[str, float] = {}
         self._robots: RobotsRuleCache = {}
+        self._request_guard: Callable[[], bool] | None = None
+
+    def bind_request_guard(self, guard: Callable[[], bool]) -> None:
+        if self.request_count:
+            raise RuntimeError("request guard must be bound before use")
+        self._request_guard = guard
 
     def bind_job_robots_cache(self, cache: RobotsRuleCache) -> None:
         """Reuse robots rules only across fresh fetchers for the same research job."""
@@ -789,6 +795,8 @@ class TrustedSourceFetcher:
             raise SourceFetchError("request_limit_exceeded", "run request limit reached")
         allowed_addresses = self._check_dns(url)
         self._rate_limit(url)
+        if self._request_guard is not None and not self._request_guard():
+            raise SourceFetchError("research_cancelled", "research stopped before HTTP dispatch")
         client = self.client
         if urlsplit(url).hostname in self._tls_compatibility_hosts:
             assert self._tls_compatibility_client is not None

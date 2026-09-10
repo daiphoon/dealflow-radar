@@ -1,8 +1,14 @@
 # 11 测试与验收策略
 
+E3（EV13）：`test_watchlist_monitoring.py` 使用独立 SQLite/PostgreSQL 及非 owner 应用角色验证到期/批量上限、重复关注并发合并、私人清单与计划 RLS、身份/活跃用户筛选、手动研究双向复用、搜索与 robots/body 之间关停、失败/预算退避、成功时间不被覆盖、缓存期限/连续无新文档降频及历史迁移保护；`test_watchlist_monitor_policy.py` 验证配置、默认只读 CLI 和运行中进程配置闸门。前端真实组件测试及本地浏览器检查进度、旧成功时间与窄屏。真实费用、召回和低频命中率仅由 E4 验证。
+
+> 增量改造按 [完整计划](15-incremental-event-delivery-plan.md) 的 EV01—EV15 和 [实施看板](10-implementation-plan.md) 当前切片验收。本文的“必测”表示要求，不代表各路径已经实现或通过；旧文档命令不是本轮执行清单。文档变更只检查链接、范围及状态一致性，代码/迁移/真实来源分别验收。
+
 ## 1. 原则
 
 测试默认完全离线、确定性、使用虚构数据和 Mock Provider。任何外部集成测试必须显式设置 `RUN_EXTERNAL_TESTS=true`、单独标记、先显示 `dry-run` 费用且 CI 默认跳过；真实付费密钥不进入测试仓库。
+
+全量数据库回归每轮使用新建隔离库；部分旧 RLS 用例包含已提交的 fixture，不复用上一轮测试库作为零数据基线。
 
 测试层次：领域单元测试 → 数据库约束/迁移测试 → API 与 Worker 集成测试 → 最小浏览器闭环。优先测试会导致错误事实、越权、重复费用或错误发布的行为。
 
@@ -16,7 +22,11 @@
 | 文档幂等 | 同外部 ID、规范 URL、内容哈希重复运行不新增；URL 内容变更保留版本 |
 | 人工导入 | 仅私有目录 JSON；大小/版本/许可/时间精度校验；文件与批次幂等；未解析主体进入身份审核但不生成事件 |
 | 事件去重 | 同事件多来源只新增证据；指纹版本可追踪 |
+| E1 单类中标落库 | `tests/unit/test_tender_events.py` 固定离线抽取契约；`tests/integration/test_tender_storage.py` 验证多来源、修订追加、字段定位、重试/并发、原文变更拒绝、基金授权过期、作用域隔离和迁移回退。PostgreSQL 用例要求本机 `DATABASE_ADMIN_URL`，每例创建独立临时库和非 owner、非 BypassRLS 应用角色，用后清理；SQLite 不冒充 RLS/并发验证 |
+| E1 中标交付 | `test_tender_delivery.py` 在 SQLite/独立 PostgreSQL 中覆盖私有导入→逐版本人工核实→公司详情/个人变化→异步 Mock 解读→固定报告；转载复用、更正失效、原文/字段篡改、许可撤回、失败不重复入队、旧报告不变、观测审核复合外键与有历史拒绝降级。浏览器检查重要变化/候选/历史、审核提交和窄屏；默认无真实模型或来源调用 |
 | 事件 Schema | 枚举、评分范围、金额/币种配对、额外字段、未知值和时区校验 |
+| E2.1 来源覆盖 | `test_research_coverage.py` 验证 EV11、混合成功/受阻/失败、组合检索不能当作逐类证据、旧历史未知、缓存时间及事件数独立；`test_bounded_web_research.py` 验证真实 Worker 的 Mock 搜索失败/空结果和缓存回放零增量调用；`test_research_coverage_delivery.py` 用隔离 SQLite/PostgreSQL 非 owner 角色验证 Worker→本人申请/公司详情、跨用户/租户不可见、查询零调用与历史不改写。前端真实组件/页面测试与浏览器验证状态、时间、事实边界和窄屏 |
+| E2.2 费用与恢复 | `test_web_research_budget.py` 验证空价格/零价格与配置边界；`test_web_budget_delivery.py` 用 SQLite/PostgreSQL 验证预占、金额状态、结算幂等、取消与跨周期不确定支出、已知失败后的重试计数、跨租户并发争用次数及五层金额预算、账本 RLS、迁移保护和结果丢失恢复；`test_web_usage_reconciliation_cli.py` 验证默认只读、管理员核对、历史零值及零 Provider 实例。并发只以 PostgreSQL 分支为证据，SQLite 对应分支明确跳过 |
 | 发布路由 | 安全 A/B 来源自动发布；链接未检查/失效、低置信度及高/极高风险只形成未确认线索；策略版本和原因可追溯 |
 | URL 验证 | 外部开关关闭时零网络；开启后限制每批次数；拒绝回环/私网；保存 HTTP 状态和最终 URL |
 | 审核状态 | 只有身份歧义默认创建新人工任务；既有驳回/纠错/撤回保留历史和理由 |

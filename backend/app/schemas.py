@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from backend.app.event_schema import EventType
 from backend.app.investor_analysis_schema import (
     InvestorChangeAnalysisOutput,
     ResearchCandidateAnalysisOutput,
@@ -103,11 +104,31 @@ class AtomicFactOut(BaseModel):
     evidence_supports: list[FactEvidenceSupportOut]
 
 
+class TenderObservationOut(BaseModel):
+    observation_id: UUID | None = None
+    fact_version: str
+    observation_kind: str
+    occurred_on: date | None
+    date_precision: Literal["day", "unknown"]
+    observed_at: datetime
+    facts: list[dict[str, str | None]]
+    reviewed_at: datetime | None = None
+    evidence_ids: list[UUID]
+    is_current: bool
+    confirmed: bool = False
+    evidence_available: bool = True
+    can_publish: bool = False
+
+
 class EventOut(BaseModel):
     id: UUID
     event_type: str
     event_subtype: str
     occurred_at: datetime | None
+    occurred_on: date | None = None
+    fact_version: str | None = None
+    display_kind: Literal["confirmed_change", "baseline", "unconfirmed"] = "baseline"
+    tender_observations: list[TenderObservationOut] = Field(default_factory=list)
     published_at: datetime | None
     published_on: date | None
     direction: str
@@ -170,12 +191,36 @@ class CompanySuggestion(BaseModel):
     registered_region: str | None
 
 
+class CategoryCoverageOut(BaseModel):
+    category: EventType
+    status: Literal[
+        "not_configured",
+        "not_checked",
+        "blocked",
+        "failed",
+        "no_records",
+        "candidates_only",
+        "evidence_obtained",
+        "unknown",
+    ]
+    route: Literal["business_capital", "technology_risk_exit"] | None = None
+    last_attempt_at: datetime | None = None
+    search_checked_at: datetime | None = None
+    evidence_checked_at: datetime | None = None
+    cache_reused: bool = False
+    evidence_count: int | None = Field(default=None, ge=0)
+    blocked_count: int | None = Field(default=None, ge=0)
+    failed_count: int | None = Field(default=None, ge=0)
+    gaps: list[str] = Field(default_factory=list)
+
+
 class ResearchResultOut(BaseModel):
     outcome: Literal["no_usable_evidence", "candidates_available"]
     finished_at: datetime | None
     message: str
     limitations: list[str]
     coverage_summary: list[str] = Field(default_factory=list)
+    category_coverage: list[CategoryCoverageOut] = Field(default_factory=list)
 
 
 class CurrentCompanyContentOut(BaseModel):
@@ -205,6 +250,14 @@ class CompanyDetail(BaseModel):
     personal_research_result: ResearchResultOut | None = None
 
 
+class WatchlistMonitorOut(BaseModel):
+    status: str
+    categories: list[str]
+    last_attempt_at: datetime | None = None
+    last_successful_check_at: datetime | None = None
+    next_check_at: datetime | None = None
+
+
 class PersonalWatchlistItemOut(BaseModel):
     id: UUID
     company_id: UUID
@@ -215,6 +268,7 @@ class PersonalWatchlistItemOut(BaseModel):
     freshness_status: str
     last_checked_at: datetime | None
     followed_at: datetime
+    monitoring: WatchlistMonitorOut | None = None
 
 
 class PersonalInclusionRequestIn(BaseModel):
@@ -468,6 +522,7 @@ class ReviewWorkbenchOut(BaseModel):
 
 
 class SharingDecisionOut(BaseModel):
+    source_observation_id: UUID | None = None
     id: UUID
     action: str
     reason: str
@@ -493,6 +548,7 @@ class SharingCandidateOut(BaseModel):
 
 
 class SharingPromotionIn(BaseModel):
+    observation_id: UUID | None = None
     title: str = Field(min_length=3, max_length=200)
     summary: str = Field(min_length=3, max_length=2000)
     reason: str = Field(min_length=3, max_length=1000)

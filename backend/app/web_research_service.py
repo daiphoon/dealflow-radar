@@ -4,7 +4,7 @@ import hashlib
 import re
 import unicodedata
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from backend.app import watchlist_monitoring as monitoring
+from backend.app import web_research_budget as budget
 from backend.app.config import SourceMonitoringPolicy, WebResearchPolicy
 from backend.app.database import set_request_context
 from backend.app.fact_support import materialize_event_fact_ledger
@@ -23,6 +25,7 @@ from backend.app.models import (
     SYSTEM_RESTRICTED_SCOPE,
     Company,
     CompanyResearchJob,
+    CompanyWatchSchedule,
     EntityMention,
     Event,
     EventEvidence,
@@ -35,6 +38,14 @@ from backend.app.models import (
     WebSearchCacheEntry,
     utc_now,
 )
+from backend.app.research_coverage import (
+    COVERAGE_VERSION,
+    RESEARCH_MODULES,
+    SEARCH_GROUP_MODULES,
+    SEARCH_GROUPS,
+    category_coverage,
+    source_routes,
+)
 from backend.app.services import user_has_role
 from backend.app.source_fetcher import (
     SourceFetchError,
@@ -43,6 +54,7 @@ from backend.app.source_fetcher import (
     canonicalize_source_url,
     normalized_robots_rule_cache,
 )
+from backend.app.web_research_budget import WebResearchBudgetDeferred
 from backend.app.web_search import (
     SearchProvider,
     SearchProviderError,
@@ -118,44 +130,6 @@ SOURCE_ACCESS_AUTOMATIC_READ = "automatic_read_allowed"
 SOURCE_ACCESS_ROBOTS_BLOCKED = "robots_blocked"
 SOURCE_ACCESS_MANUAL_IMPORT = "authorized_manual_import_required"
 SOURCE_ACCESS_OFFICIAL_DOCUMENT = "official_document"
-
-RESEARCH_MODULES = (
-    "financial_operation",
-    "financing_cap_table",
-    "contract_commercial",
-    "product_technology",
-    "governance_people",
-    "legal_compliance",
-    "capacity_assets",
-    "exit_liquidity",
-    "information_quality",
-)
-
-SEARCH_GROUPS = (
-    (
-        "business_capital",
-        "财务 融资 股权 合同 中标 订单",
-    ),
-    (
-        "technology_risk_exit",
-        "公告 变更 上市 备案 诉讼 处罚 投产 产品",
-    ),
-)
-
-SEARCH_GROUP_MODULES = {
-    "business_capital": (
-        "financial_operation",
-        "financing_cap_table",
-        "contract_commercial",
-    ),
-    "technology_risk_exit": (
-        "product_technology",
-        "governance_people",
-        "legal_compliance",
-        "capacity_assets",
-        "exit_liquidity",
-    ),
-}
 
 GAP_FOLLOW_UP_TERMS = {
     "financial_operation": "经营 营收 利润 产量 停产 公告",
@@ -391,10 +365,6 @@ class WebResearchAccessError(RuntimeError):
     pass
 
 
-class WebResearchBudgetDeferred(RuntimeError):
-    pass
-
-
 @dataclass(frozen=True)
 class _ContentQualityDecision:
     eligible: bool
@@ -439,6 +409,7 @@ class WebResearchWorkerResult:
     documents_created: int = 0
     events_created: int = 0
     error_code: str | None = None
+    cost_summary: dict | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -452,7 +423,21 @@ class WebResearchWorkerResult:
             "events_created": self.events_created,
             "input_tokens": 0,
             "output_tokens": 0,
-            "estimated_cost": "0",
+            "estimated_cost": (
+                self.cost_summary["amount"]
+                if self.cost_summary
+                else None
+                if self.external_calls or self.error_code
+                else "0"
+            ),
+            "cost_status": (
+                self.cost_summary["status"]
+                if self.cost_summary
+                else "unknown"
+                if self.external_calls or self.error_code
+                else "confirmed_free"
+            ),
+            "cost_summary": self.cost_summary,
             "error_code": self.error_code,
         }
 
@@ -501,6 +486,8 @@ def _initial_coverage(policy: WebResearchPolicy) -> dict[str, object]:
     return {
         "policy_version": policy.version,
         "evidence_routing_version": EVIDENCE_ROUTING_VERSION,
+        "category_coverage_version": COVERAGE_VERSION,
+        "source_routes": source_routes(policy.primary_provider, policy.fallback_provider),
         "modules": {module: "pending" for module in RESEARCH_MODULES},
         "search_groups": {
             code: {"status": "pending", "providers": {}} for code, _ in SEARCH_GROUPS
@@ -568,6 +555,9 @@ def prepare_pending_research_requests(
             request.last_error_code = "company_not_verified_for_shared_research"
             continue
         job = _active_job(session, company.id)
+        if job is not None and job.trigger_type == "watchlist":
+            # Finish the bounded check first; the full manual request then reuses its cache.
+            continue
         if job is None:
             coverage = _initial_coverage(policy)
             identity = session.get(IdentityResearchState, request.id)
@@ -612,10 +602,26 @@ def _active_linked_requests(session: Session, job_id: UUID) -> list[PersonalComp
     ]
 
 
+def _job_cost_summary(session, job):
+    baseline = job.coverage.get("budget_baseline", job.coverage.get("stats", {}))
+    legacy_calls = int(baseline.get("search_calls", 0)) + int(baseline.get("fetch_calls", 0))
+    return budget.summary(session, f"web-research:{job.id}", legacy_calls=legacy_calls)
+
+
+def _record_watch_outcome(session, job):
+    policy = session.info.get("watchlist_policy")
+    user_id = session.info.get("watchlist_user_id")
+    if policy is not None and user_id is not None:
+        user = session.get(User, user_id)
+        monitoring.record_outcome(session, user, job, policy, commit=False)
+
+
 def _cancel_job(session: Session, job: CompanyResearchJob) -> WebResearchWorkerResult:
     now = utc_now()
     coverage = dict(job.coverage)
     coverage.pop("_robots_rule_cache", None)
+    budget.recover(session, task_key=f"web-research:{job.id}", cancelled=True)
+    coverage["cost_summary"] = _job_cost_summary(session, job)
     job.coverage = coverage
     job.status = "cancelled"
     job.current_stage = "cancelled"
@@ -628,6 +634,7 @@ def _cancel_job(session: Session, job: CompanyResearchJob) -> WebResearchWorkerR
             request.cancelled_at = request.cancelled_at or now
             request.leased_until = None
             request.heartbeat_at = None
+    _record_watch_outcome(session, job)
     session.commit()
     return WebResearchWorkerResult(
         status="cancelled",
@@ -649,6 +656,16 @@ def _lease_job(
         .where(
             CompanyResearchJob.policy_version == policy.version,
             or_(
+                CompanyResearchJob.trigger_type != "watchlist",
+                not policy.watchlist.enabled,
+                ~select(CompanyWatchSchedule.company_id)
+                .where(
+                    CompanyWatchSchedule.company_id == CompanyResearchJob.company_id,
+                    CompanyWatchSchedule.cooldown_until > now,
+                )
+                .exists(),
+            ),
+            or_(
                 CompanyResearchJob.status.in_(("queued", "partial", "budget_deferred")),
                 (
                     (CompanyResearchJob.status == "running")
@@ -667,8 +684,10 @@ def _lease_job(
     if job is None:
         session.commit()
         return None
-    if job.cancel_requested_at is not None or not _active_linked_requests(session, job.id):
+    if _job_should_stop(session, job):
         _cancel_job(session, job)
+        _restore_worker_context(session, user)
+        monitoring.record_outcome(session, user, job, policy.watchlist)
         return None
     job.status = "running"
     coverage = dict(job.coverage or {})
@@ -931,6 +950,7 @@ def _candidate_payload(
         "url": canonical_url,
         "discovered_by": [provider_code],
         "query_kind": query_kind,
+        "coverage_category": _event_classification(result.title, result.snippet),
         "source_tier": source_rank.tier,
         "source_rank_reasons": list(source_rank.reasons),
         "search_date_status": _search_date_status(result, policy),
@@ -945,6 +965,8 @@ def _cached_response(
     provider_code: str,
     query: str,
     now: datetime,
+    *,
+    max_age_days: int | None = None,
 ) -> SearchResponse | None:
     entry = session.scalar(
         select(WebSearchCacheEntry).where(
@@ -955,7 +977,9 @@ def _cached_response(
             WebSearchCacheEntry.expires_at > now,
         )
     )
-    if entry is None:
+    if entry is None or (
+        max_age_days is not None and _aware(entry.fetched_at) <= now - timedelta(days=max_age_days)
+    ):
         return None
     try:
         results = [SearchResult.from_dict(item) for item in entry.results]
@@ -970,65 +994,38 @@ def _cached_response(
     )
 
 
-def _search_call_count(session: Session, *, since: datetime) -> int:
-    return int(
-        session.scalar(
-            select(func.coalesce(func.sum(UsageLedger.external_calls), 0)).where(
-                UsageLedger.provider.in_(("web_search_baidu", "web_search_bocha")),
-                UsageLedger.operation == "company_discovery",
-                UsageLedger.created_at >= since,
-            )
-        )
-        or 0
+def _reserve_job_call(
+    session, user, job, company, policy, *, provider, operation, token, calls, unit_price, metrics
+):
+    coverage = dict(job.coverage)
+    baseline = coverage.setdefault("budget_baseline", dict(coverage.get("stats", {})))
+    job.coverage = coverage
+    is_search = operation == "company_discovery"
+    usage = budget.reserve(
+        session,
+        user,
+        policy,
+        task_key=f"web-research:{job.id}",
+        subject=budget.subject_key(company.credit_code, company.id),
+        company_id=company.id,
+        provider=provider,
+        operation=operation,
+        token=token,
+        calls=calls,
+        unit_price=unit_price,
+        task_limit=policy.max_search_calls_per_job
+        if is_search
+        else policy.max_fetch_requests_per_job,
+        task_baseline=int(baseline.get("search_calls" if is_search else "fetch_calls", 0)),
+        metrics=metrics,
     )
 
+    def cancelled():
+        session.refresh(job)
+        return _job_should_stop(session, job)
 
-def _check_search_budget(
-    session: Session,
-    job: CompanyResearchJob,
-    policy: WebResearchPolicy,
-) -> None:
-    now = utc_now()
-    stats = job.coverage.get("stats", {}) if isinstance(job.coverage, dict) else {}
-    search_calls = int(stats.get("search_calls", 0)) if isinstance(stats, dict) else 0
-    if search_calls >= policy.max_search_calls_per_job:
-        raise WebResearchBudgetDeferred("job search call limit reached")
-    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    month_start = day_start.replace(day=1)
-    if _search_call_count(session, since=day_start) >= policy.daily_search_call_limit:
-        raise WebResearchBudgetDeferred("daily search call limit reached")
-    if _search_call_count(session, since=month_start) >= policy.monthly_search_call_limit:
-        raise WebResearchBudgetDeferred("monthly search call limit reached")
-
-
-def _record_usage(
-    session: Session,
-    user: User,
-    job: CompanyResearchJob,
-    *,
-    provider: str,
-    operation: str,
-    external_calls: int,
-    metrics: dict[str, object],
-    idempotency_suffix: str,
-) -> None:
-    idempotency_key = _sha256(f"web-research:{job.id}:{idempotency_suffix}")
-    if session.scalar(select(UsageLedger.id).where(UsageLedger.idempotency_key == idempotency_key)):
-        return
-    session.add(
-        UsageLedger(
-            tenant_id=user.tenant_id,
-            company_id=job.company_id,
-            provider=provider,
-            operation=operation,
-            external_calls=external_calls,
-            input_tokens=0,
-            output_tokens=0,
-            estimated_cost=Decimal("0"),
-            metrics=metrics,
-            idempotency_key=idempotency_key,
-        )
-    )
+    budget.dispatch(session, user, usage, policy, cancelled=cancelled)
+    return usage
 
 
 def _store_search_response(
@@ -1083,11 +1080,43 @@ def _provider_response(
     query: str,
     policy: WebResearchPolicy,
 ) -> tuple[SearchResponse, bool]:
-    cached = _cached_response(session, company, provider.code, query, utc_now())
+    cached = _cached_response(
+        session, company, provider.code, query, utc_now(), max_age_days=policy.search_cache_ttl_days
+    )
     if cached is not None:
         _record_search_cache_hit(session, job)
         return cached, True
-    _check_search_budget(session, job, policy)
+    token = f"search:{query_kind}:{provider.code}"
+    previous = session.scalar(
+        select(UsageLedger).where(
+            UsageLedger.idempotency_key == _sha256(f"web-research:{job.id}:{token}")
+        )
+    )
+    if (
+        previous is not None
+        and previous.usage_state == "settled"
+        and previous.metrics.get("status") == "failed"
+    ):
+        # A known failed attempt may be replayed as a result, never as another paid call.
+        raise SearchProviderError(
+            previous.metrics.get("error_code", "request_failed"),
+            "previous attempt already accounted",
+            external_calls=0,
+            http_status=previous.metrics.get("http_status"),
+        )
+    usage = _reserve_job_call(
+        session,
+        user,
+        job,
+        company,
+        policy,
+        provider=f"web_search_{provider.code}",
+        operation="company_discovery",
+        token=f"search:{query_kind}:{provider.code}",
+        calls=1,
+        unit_price=budget.search_price(provider, policy),
+        metrics={"query_kind": query_kind},
+    )
     try:
         response = provider.search(
             SearchRequest(query=query, max_results=policy.max_results_per_search)
@@ -1105,16 +1134,7 @@ def _provider_response(
             "error_code": error.code,
             "http_status": error.http_status,
         }
-        _record_usage(
-            session,
-            user,
-            job,
-            provider=f"web_search_{provider.code}",
-            operation="company_discovery",
-            external_calls=error.external_calls,
-            metrics=safe_diagnostic,
-            idempotency_suffix=f"search:{query_kind}:{provider.code}",
-        )
+        budget.settle(session, usage, calls=error.external_calls, metrics=safe_diagnostic)
         session.commit()
         raise
     job.external_calls += response.external_calls
@@ -1124,20 +1144,16 @@ def _provider_response(
     coverage["stats"] = stats
     job.coverage = coverage
     _store_search_response(session, company, response, query_kind, query, policy)
-    _record_usage(
+    budget.settle(
         session,
-        user,
-        job,
-        provider=f"web_search_{provider.code}",
-        operation="company_discovery",
-        external_calls=response.external_calls,
+        usage,
+        calls=response.external_calls,
         metrics={
             "query_kind": query_kind,
             "status": "completed",
             "request_id": response.request_id,
             "results": len(response.results),
         },
-        idempotency_suffix=f"search:{query_kind}:{provider.code}",
     )
     session.commit()
     return response, False
@@ -1163,6 +1179,9 @@ def _refresh_job(session: Session, job_id: UUID) -> CompanyResearchJob:
 
 
 def _job_should_stop(session: Session, job: CompanyResearchJob) -> bool:
+    if job.trigger_type == "watchlist":
+        user = session.get(User, session.info["watchlist_user_id"])
+        return not monitoring.allowed(session, user, job)
     return job.cancel_requested_at is not None or not _active_linked_requests(session, job.id)
 
 
@@ -1282,6 +1301,7 @@ def _process_search_group(
             fallback.code,
             query,
             utc_now(),
+            max_age_days=policy.search_cache_ttl_days,
         )
         if cached_fallback is None:
             provider_state[fallback.code] = {
@@ -1331,7 +1351,10 @@ def _process_search_group(
                 query_kind=group_code,
                 policy=policy,
             )
-            if candidate is None:
+            if candidate is None or (
+                job.trigger_type == "watchlist"
+                and candidate.get("coverage_category") not in monitoring.CATEGORIES
+            ):
                 continue
             canonical_url = str(candidate["url"])
             current = merged.get(canonical_url)
@@ -1349,9 +1372,29 @@ def _process_search_group(
                     merged[canonical_url] = candidate
     coverage = dict(job.coverage)
     groups = dict(coverage.get("search_groups", {}))
+    successful_providers = [
+        code
+        for code, state in provider_state.items()
+        if state.get("status") in {"completed", "cache_hit", "cache_fused"}
+    ]
+    checked_at = (
+        session.scalar(
+            select(func.max(WebSearchCacheEntry.fetched_at)).where(
+                WebSearchCacheEntry.company_id == company.id,
+                WebSearchCacheEntry.provider_code.in_(successful_providers),
+                WebSearchCacheEntry.query_hash == _sha256(query),
+                WebSearchCacheEntry.identity_fingerprint == _identity_fingerprint(company),
+            )
+        )
+        if successful_providers
+        else None
+    )
     groups[group_code] = {
         "status": "completed",
         "providers": provider_state,
+        "attempted_at": utc_now().isoformat(),
+        "checked_at": _aware(checked_at).isoformat() if checked_at is not None else None,
+        "cache_reused": cache_hits > 0,
         "subject_results": len(merged),
         "qualified_subject_results": sum(
             1
@@ -1392,8 +1435,13 @@ def _process_search_group(
     )
     coverage["candidates"] = candidates[: policy.max_candidate_urls]
     job.coverage = coverage
+    group_codes = (
+        [monitoring.GROUP]
+        if job.trigger_type == "watchlist"
+        else [code for code, _ in SEARCH_GROUPS]
+    )
     next_groups = [
-        code for code, _ in SEARCH_GROUPS if groups.get(code, {}).get("status") != "completed"
+        code for code in group_codes if groups.get(code, {}).get("status") != "completed"
     ]
     job.current_stage = f"search:{next_groups[0]}" if next_groups else "fetch"
     job.status = "partial"
@@ -1746,6 +1794,7 @@ def _candidate_event(
     policy: WebResearchPolicy,
     *,
     new_document: bool,
+    allowed_categories: tuple[str, ...] | None = None,
 ) -> tuple[Event | None, bool, _ContentQualityDecision]:
     excerpt = str(document.payload.get("excerpt") or "").strip()
     quality = _content_quality_decision(
@@ -1756,6 +1805,10 @@ def _candidate_event(
         observed_at=document.observed_at,
         policy=policy,
     )
+    if allowed_categories is not None and quality.event_type not in allowed_categories:
+        quality = replace(
+            quality, eligible=False, reasons=(*quality.reasons, "category_outside_monitoring_scope")
+        )
     if not quality.eligible or quality.event_type is None or quality.supporting_excerpt is None:
         return None, False, quality
     event_type = quality.event_type
@@ -2079,7 +2132,14 @@ def _process_source_recovery(
             query_kind="source_recovery",
             policy=policy,
         )
-        if candidate is None or candidate["url"] == blocked_url:
+        if (
+            candidate is None
+            or candidate["url"] == blocked_url
+            or (
+                job.trigger_type == "watchlist"
+                and candidate.get("coverage_category") not in monitoring.CATEGORIES
+            )
+        ):
             continue
         candidate["recovery_for_url"] = blocked_url
         recovered.append(candidate)
@@ -2167,6 +2227,7 @@ def _process_gap_follow_up(
         follow_up.get("status") != "pending"
         or int(follow_up.get("attempts", 0)) >= 1
         or event_type not in GAP_FOLLOW_UP_TERMS
+        or (job.trigger_type == "watchlist" and event_type not in monitoring.CATEGORIES)
     ):
         job.current_stage = "finalize"
         job.status = "partial"
@@ -2218,7 +2279,9 @@ def _process_gap_follow_up(
     job = _refresh_job(session, job.id)
     if _job_should_stop(session, job):
         return _cancel_job(session, job)
-    cached_fallback = _cached_response(session, company, fallback.code, query, utc_now())
+    cached_fallback = _cached_response(
+        session, company, fallback.code, query, utc_now(), max_age_days=policy.search_cache_ttl_days
+    )
     if cached_fallback is not None:
         responses.append(cached_fallback)
         cache_hits += 1
@@ -2240,7 +2303,14 @@ def _process_gap_follow_up(
                 query_kind=f"gap_follow_up:{event_type}",
                 policy=policy,
             )
-            if candidate is None or candidate["url"] == original_url:
+            if (
+                candidate is None
+                or candidate["url"] == original_url
+                or (
+                    job.trigger_type == "watchlist"
+                    and candidate.get("coverage_category") not in monitoring.CATEGORIES
+                )
+            ):
                 continue
             candidate["gap_follow_up_for"] = event_type
             recovered.append(candidate)
@@ -2423,6 +2493,8 @@ def _fetch_candidate(
     fetch_calls = 0
     downloaded_bytes = 0
     error_code: str | None = None
+    http_status: int | None = None
+    usage = None
     if cached_document is not None:
         extraction = cached_document.payload.get("content_extraction", {})
         is_official_pdf = bool(
@@ -2439,6 +2511,7 @@ def _fetch_candidate(
             source,
             policy,
             new_document=False,
+            allowed_categories=monitoring.CATEGORIES if job.trigger_type == "watchlist" else None,
         )
         events_created += int(event_created)
         quality_gate_passed += int(quality.eligible)
@@ -2451,6 +2524,12 @@ def _fetch_candidate(
                 "event_created": event_created,
                 "quality_gate": quality.to_dict(),
                 "source_access_status": candidate["source_access_status"],
+                "coverage_category": quality.event_type,
+                "attempted_at": utc_now().isoformat(),
+                "checked_at": cached_document.payload.get("_source_verification", {}).get(
+                    "checked_at"
+                ),
+                "cache_reused": True,
             }
         )
         stats = dict(coverage.get("stats", {}))
@@ -2466,6 +2545,23 @@ def _fetch_candidate(
         else:
             host = (urlsplit(url).hostname or "").lower().rstrip(".")
             root_domain = host.removeprefix("www.")
+            usage = _reserve_job_call(
+                session,
+                user,
+                job,
+                company,
+                policy,
+                provider="public_web_fetch",
+                operation="evidence_fetch",
+                token=f"fetch:{_sha256(url)}",
+                calls=policy.max_fetch_requests_per_job - previous_fetch_calls,
+                unit_price=Decimal("0"),
+                metrics={
+                    "download_bytes_limit": policy.max_download_bytes_per_job
+                    - previous_downloaded_bytes
+                },
+            )
+            coverage["budget_baseline"] = job.coverage["budget_baseline"]
             fetcher = fetcher_factory(
                 _fetch_policy(
                     policy,
@@ -2474,6 +2570,8 @@ def _fetch_candidate(
                 )
             )
             fetcher.bind_job_robots_cache(robots_cache)
+            if job.trigger_type == "watchlist":
+                fetcher.bind_request_guard(monitoring.request_guard(session, user, job))
             try:
                 result = fetcher.check(
                     source_type="single_page",
@@ -2532,6 +2630,9 @@ def _fetch_candidate(
                                 source,
                                 policy,
                                 new_document=document_created,
+                                allowed_categories=monitoring.CATEGORIES
+                                if job.trigger_type == "watchlist"
+                                else None,
                             )
                             events_created += int(event_created)
                             quality_gate_passed += int(quality.eligible)
@@ -2544,29 +2645,35 @@ def _fetch_candidate(
                                     "event_created": event_created,
                                     "quality_gate": quality.to_dict(),
                                     "source_access_status": candidate["source_access_status"],
+                                    "coverage_category": quality.event_type,
+                                    "attempted_at": utc_now().isoformat(),
+                                    "checked_at": (
+                                        document.payload["_source_verification"]["checked_at"]
+                                        if document_created
+                                        else utc_now().isoformat()
+                                    ),
+                                    "cache_reused": False,
                                 }
                             )
             except SourceFetchError as error:
                 fetch_calls = fetcher.request_count
                 downloaded_bytes = fetcher.downloaded_bytes
                 error_code = error.code
+                http_status = error.http_status
             finally:
                 fetcher.close()
         job.external_calls += fetch_calls
-        _record_usage(
-            session,
-            user,
-            job,
-            provider="public_web_fetch",
-            operation="evidence_fetch",
-            external_calls=fetch_calls,
-            metrics={
-                "status": "completed" if error_code is None else "failed",
-                "error_code": error_code,
-                "downloaded_bytes": downloaded_bytes,
-            },
-            idempotency_suffix=f"fetch:{_sha256(url)}",
-        )
+        if usage is not None:
+            budget.settle(
+                session,
+                usage,
+                calls=fetch_calls,
+                metrics={
+                    "status": "completed" if error_code is None else "failed",
+                    "error_code": error_code,
+                    "downloaded_bytes": downloaded_bytes,
+                },
+            )
         if error_code is not None:
             if error_code == "robots_disallowed":
                 candidate["source_access_status"] = SOURCE_ACCESS_ROBOTS_BLOCKED
@@ -2593,6 +2700,11 @@ def _fetch_candidate(
                     "status": "failed",
                     "error_code": error_code,
                     "source_access_status": candidate["source_access_status"],
+                    "http_status": http_status,
+                    "coverage_category": candidate.get("coverage_category"),
+                    "attempted_at": utc_now().isoformat(),
+                    "checked_at": None,
+                    "cache_reused": False,
                 }
             )
     stats = dict(coverage.get("stats", {}))
@@ -2637,6 +2749,7 @@ def _fetch_candidate(
 
 def _finalize(session: Session, job: CompanyResearchJob) -> WebResearchWorkerResult:
     coverage = dict(job.coverage)
+    coverage["cost_summary"] = _job_cost_summary(session, job)
     coverage.pop("_robots_rule_cache", None)
     follow_up = dict(coverage.get("gap_follow_up", {}))
     if follow_up.get("status") in {"not_requested", "pending"}:
@@ -2648,25 +2761,7 @@ def _finalize(session: Session, job: CompanyResearchJob) -> WebResearchWorkerRes
         )
         coverage["gap_follow_up"] = follow_up
     documents = [item for item in coverage.get("documents", []) if isinstance(item, dict)]
-    event_types = set(
-        session.scalars(
-            select(Event.event_type).where(
-                Event.company_id == job.company_id,
-                Event.visibility_scope == PLATFORM_SHARED_SCOPE,
-                Event.fingerprint_version == "web-v1",
-                Event.observed_at >= job.created_at,
-            )
-        )
-    )
-    modules = {
-        module: (
-            "completed"
-            if module in event_types
-            else ("completed" if module == "information_quality" else "no_data")
-        )
-        for module in RESEARCH_MODULES
-    }
-    coverage["modules"] = modules
+    coverage["modules"] = {item.category: item.status for item in category_coverage(coverage)}
     coverage["completed_at"] = utc_now().isoformat()
     coverage["failed_documents"] = sum(1 for item in documents if item.get("status") == "failed")
     job.coverage = coverage
@@ -2681,6 +2776,7 @@ def _finalize(session: Session, job: CompanyResearchJob) -> WebResearchWorkerRes
             request.leased_until = None
             request.heartbeat_at = job.heartbeat_at
             request.last_error_code = None
+    _record_watch_outcome(session, job)
     session.commit()
     stats = coverage.get("stats", {})
     return WebResearchWorkerResult(
@@ -2702,12 +2798,29 @@ def _defer_budget(
     job.status = "budget_deferred"
     job.leased_until = None
     job.heartbeat_at = utc_now()
+    job.coverage = {
+        **job.coverage,
+        "cost_summary": _job_cost_summary(session, job),
+    }
+    if job.current_stage in {"gap_follow_up", "source_recovery"}:
+        kind = job.current_stage
+        attempts = session.scalars(
+            select(UsageLedger).where(
+                UsageLedger.task_key == f"web-research:{job.id}",
+                UsageLedger.metrics["query_kind"].as_string() == kind,
+            )
+        ).all()
+        if not any(item.usage_state in {"in_flight", "uncertain", "settled"} for item in attempts):
+            follow_up = dict(job.coverage.get(kind, {}))
+            follow_up.update(status="pending", attempts=0, deferred_at=utc_now().isoformat())
+            job.coverage = {**job.coverage, kind: follow_up}
     job.last_error_code = "web_research_budget_deferred"
     for request in _active_linked_requests(session, job.id):
         request.status = "budget_deferred"
         request.leased_until = None
         request.heartbeat_at = job.heartbeat_at
         request.last_error_code = job.last_error_code
+    _record_watch_outcome(session, job)
     session.commit()
     return WebResearchWorkerResult(
         status="budget_deferred",
@@ -2716,10 +2829,34 @@ def _defer_budget(
         stage=job.current_stage,
         external_calls=job.external_calls,
         error_code=str(error),
+        cost_summary=job.coverage.get("cost_summary"),
     )
 
 
 def run_web_research_worker_once(
+    session, user, providers, policy, *, fetcher_factory=None, watchlist_gate=None
+):
+    session.info["watchlist_gate"] = watchlist_gate or (lambda: policy.watchlist.enabled)
+    session.info["watchlist_user_id"] = user.id
+    session.info["watchlist_policy"] = policy.watchlist
+    try:
+        result = _run_web_research_worker_once(
+            session, user, providers, policy, fetcher_factory=fetcher_factory
+        )
+        if result.job_id:
+            _restore_worker_context(session, user)
+            job = session.get(CompanyResearchJob, result.job_id)
+            if job is not None:
+                monitoring.record_outcome(session, user, job, policy.watchlist)
+                return replace(result, cost_summary=_job_cost_summary(session, job))
+        return result
+    finally:
+        session.info.pop("watchlist_gate", None)
+        session.info.pop("watchlist_user_id", None)
+        session.info.pop("watchlist_policy", None)
+
+
+def _run_web_research_worker_once(
     session: Session,
     user: User,
     providers: dict[str, SearchProvider],
@@ -2744,10 +2881,19 @@ def run_web_research_worker_once(
         if identity_result is not None:
             return identity_result
         return WebResearchWorkerResult(status="idle")
+    if job.trigger_type == "watchlist":
+        policy = replace(
+            policy,
+            search_cache_ttl_days=min(policy.search_cache_ttl_days, policy.watchlist.interval_days),
+            document_cache_ttl_days=min(
+                policy.document_cache_ttl_days, policy.watchlist.interval_days
+            ),
+        )
     company = session.get(Company, job.company_id)
     if not _public_company(company):
         job.status = "failed"
         job.last_error_code = "company_not_verified_for_shared_research"
+        _record_watch_outcome(session, job)
         session.commit()
         return WebResearchWorkerResult(
             status="failed",
@@ -2755,6 +2901,10 @@ def run_web_research_worker_once(
             company_id=job.company_id,
             stage=job.current_stage,
             error_code=job.last_error_code,
+        )
+    if budget.recover(session, task_key=f"web-research:{job.id}"):
+        return _defer_budget(
+            session, job, WebResearchBudgetDeferred("uncertain spend requires reconciliation")
         )
     coverage = dict(job.coverage or {})
     started_at_value = coverage.get("step_started_at")
@@ -2819,7 +2969,31 @@ def run_web_research_worker_once(
         raise RuntimeError("unknown web research job stage")
     except WebResearchBudgetDeferred as error:
         job = _refresh_job(session, job.id)
+        if _job_should_stop(session, job):
+            return _cancel_job(session, job)
         return _defer_budget(session, job, error)
+    except Exception:
+        if job.trigger_type != "watchlist":
+            raise
+        job_id = job.id
+        session.rollback()
+        _restore_worker_context(session, user)
+        job = _refresh_job(session, job_id)
+        if budget.recover(session, task_key=f"web-research:{job.id}"):
+            return _defer_budget(
+                session, job, WebResearchBudgetDeferred("uncertain spend requires reconciliation")
+            )
+        job.status, job.leased_until = "failed", None
+        job.heartbeat_at = utc_now()
+        job.last_error_code = "watchlist_step_failed"
+        _record_watch_outcome(session, job)
+        session.commit()
+        return WebResearchWorkerResult(
+            status="failed",
+            job_id=job.id,
+            company_id=job.company_id,
+            error_code="watchlist_step_failed",
+        )
 
 
 def inspect_web_research_queue(
@@ -2876,5 +3050,35 @@ def inspect_web_research_queue(
         "external_calls": 0,
         "input_tokens": 0,
         "output_tokens": 0,
-        "estimated_cost": "0",
+        "estimated_cost": None,
+        "cost_status": "unknown",
+        "cost_policy": {
+            "version": policy.cost.version,
+            "currency": "CNY",
+            "baidu_price_per_call": (
+                str(policy.cost.baidu_price_per_call)
+                if policy.cost.baidu_price_per_call is not None
+                else None
+            ),
+            "bocha_price_per_call": (
+                str(policy.cost.bocha_price_per_call)
+                if policy.cost.bocha_price_per_call is not None
+                else None
+            ),
+            "unknown_price_upper_bound": (
+                str(policy.cost.unknown_price_upper_bound)
+                if policy.cost.unknown_price_upper_bound is not None
+                else None
+            ),
+            **{
+                name: str(getattr(policy.cost, name))
+                for name in (
+                    "task_limit",
+                    "company_daily_limit",
+                    "company_weekly_limit",
+                    "system_weekly_limit",
+                    "system_monthly_limit",
+                )
+            },
+        },
     }

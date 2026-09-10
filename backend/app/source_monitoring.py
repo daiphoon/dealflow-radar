@@ -936,6 +936,7 @@ def import_candidate_research(
             settings.publication_policy,
             candidate_document=candidate,
             verification_overrides={candidate.canonical_url: verification},
+            tender_events_enabled=settings.tender_events_enabled,
         )
     except AccessDeniedError as error:
         raise SourceMonitoringAccessError(str(error)) from error
