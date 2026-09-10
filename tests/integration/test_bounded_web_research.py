@@ -57,6 +57,7 @@ from backend.app.web_research_service import (
     _identity_fingerprint,
     _initial_coverage,
     _process_gap_follow_up,
+    _qualification_reason,
     _subject_match,
     prepare_pending_research_requests,
     run_web_research_worker_once,
@@ -1706,8 +1707,16 @@ def test_cross_group_duplicate_keeps_the_better_dated_candidate(
         assert candidates[0]["search_date_status"] == "recent"
 
 
+@pytest.mark.parametrize(
+    "profile_url",
+    [
+        "https://www.newseed.cn/project/example",
+        "https://www.kanzhun.com/firm/info/example.html",
+    ],
+)
 def test_profile_only_primary_results_trigger_conditional_fallback(
     migrated_app: FastAPI,
+    profile_url: str,
 ) -> None:
     _grant_platform_admin(migrated_app)
     with migrated_app.state.session_factory() as session:
@@ -1722,7 +1731,7 @@ def test_profile_only_primary_results_trigger_conditional_fallback(
         {
             query: [
                 _result(
-                    "https://www.newseed.cn/project/example",
+                    profile_url,
                     f"{SHARED_COMPANY_NAME}企业资料",
                     f"{SHARED_COMPANY_NAME}企业资料。",
                 )
@@ -1765,6 +1774,23 @@ def test_profile_only_primary_results_trigger_conditional_fallback(
         assert [item["source_tier"] for item in job.coverage["candidates"]] == [
             "trusted_media_article"
         ]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.kanzhun.com/article/product-update.html",
+        "https://news.example.com/firm/info/product-update.html",
+    ],
+)
+def test_company_profile_path_filter_keeps_other_article_urls(url: str) -> None:
+    company = Company(legal_name=SHARED_COMPANY_NAME)
+    result = _result(
+        url,
+        f"{SHARED_COMPANY_NAME}发布新产品",
+        f"{SHARED_COMPANY_NAME}发布新产品并开始交付。",
+    )
+    assert _qualification_reason(company, result, WebResearchPolicy()) == "qualified"
 
 
 def test_explicitly_old_primary_result_triggers_recent_fallback(

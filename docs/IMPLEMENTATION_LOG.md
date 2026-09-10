@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-09-10：合并运维文档并开始 E4 原缓存对照
+
+- 任务/关键文件：按明确确认合并 [PR #78](https://github.com/daiphoon/dealflow-radar/pull/78) 为 `38c7667003e95f46590b863df0ee356d7794be63`，应用仍运行 `6d8f47f` / `0031`。在 E4 范围内修正 `web_research_service.py` 对看准企业资料页的分类，扩展 `test_bounded_web_research.py`，更新 README、唯一看板和本记录；原输入及对照证据保存于 Git 忽略的 `data/private/e4-validation/20260910/`。
+- 实际命令：`gh pr merge 78 --squash --match-head-commit 2525bf8927990b5a0e6c21af9d5c1cef6cf9f49f`、`git fetch/switch/pull --ff-only`；分离 `0a2344b` 历史工作树，使用同一冻结缓存、禁止 socket 联网，在隔离 SQLite 库执行旧版/当前版/修正版对照。先运行资料页条件回退测试复现失败，再运行四项定向测试及 `pytest tests/integration/test_bounded_web_research.py tests/unit/test_web_research_outcomes.py tests/unit/test_web_research_budget.py -q --tb=short`，对两个修改的 Python 文件执行 Ruff 和格式检查。
+- 结果：改造前后对五份搜索缓存与一份正文的行为一致；确认原未上市样本的一张资料页被误当作有效结果而阻止条件回退。窄修正后只有该组有效候选由 1 变 0，正确触发原回退规则；上市样本仍为 1 条未确认线索/1 条证据，重复与发布为 0、缺年份未知、原文不变。定向 **4 通过**，相关回归 **93 通过**，Ruff/格式通过；保留既有 Starlette 弃用警告。
+- 费用/阻塞：已读取百度官方目录报价及财务页面，账户用量归属和逐项扣费仍待核实；博查原账户待登录，随后 Mac 锁定使浏览器核对暂停。公开报价不回填为历史实际费用，生产单价/金额预算未更改。原任务和累计消耗保留，本轮产品搜索/网页研究/模型调用与生产写入均为 **0**；修正尚未合并部署，补充复测尚未执行，EV14 与独立用户内容价值未通过。
+
 ## 2026-09-10：COS 恢复验收收尾与 E4 只读前置核对
 
 - 任务/关键文件：按已批准顺序完成 COS 下载原因核对及真实恢复，保留前轮部署记录并同步 `README.md`、唯一实施看板、运维手册与本记录；文档提交独立 PR 审查，不重新部署应用。具体样本、原申请/任务 ID、缓存、账本和恢复收据保存在 Git 忽略的私有验收目录。
