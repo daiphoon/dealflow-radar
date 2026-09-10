@@ -371,7 +371,10 @@ def list_personal_watchlist(
     session: Session,
     user: User,
     refresh_policy: RefreshPolicy,
+    monitor_policy=None,
 ) -> list[PersonalWatchlistItemOut]:
+    from backend.app.watchlist_monitoring import monitoring_summary
+
     rows = list(
         session.execute(
             select(PersonalWatchlistItem, Company)
@@ -408,6 +411,7 @@ def list_personal_watchlist(
                 freshness_status=_freshness_status(snapshot, refresh_policy, now),
                 last_checked_at=snapshot.last_checked_at if snapshot else None,
                 followed_at=watchlist_item.created_at,
+                monitoring=monitoring_summary(session, company.id, monitor_policy),
             )
         )
     return items
@@ -1173,6 +1177,7 @@ def _unseen_shared_events(
     session: Session,
     user: User,
     company_id: UUID,
+    viewed_after: datetime | None = None,
 ) -> list[Event]:
     seen_event_ids = select(PersonalEventViewReceipt.event_id).where(
         PersonalEventViewReceipt.owner_user_id == user.id
@@ -1186,7 +1191,12 @@ def _unseen_shared_events(
                 Event.visibility_scope == PLATFORM_SHARED_SCOPE,
                 Event.owner_user_id.is_(None),
                 Event.owner_tenant_id.is_(None),
-                ~Event.id.in_(seen_event_ids),
+                or_(
+                    ~Event.id.in_(seen_event_ids),
+                    (Event.fingerprint_version == "tender-v1") & (Event.updated_at > viewed_after)
+                    if viewed_after is not None
+                    else False,
+                ),
             )
             .order_by(Event.created_at.asc(), Event.id.asc())
         )
@@ -1211,19 +1221,31 @@ def record_personal_company_view(
     )
     first_view = state is None
     previous_viewed_at = state.last_viewed_at if state is not None else None
-    unseen_events = _unseen_shared_events(session, user, company_id)
+    unseen_events = _unseen_shared_events(session, user, company_id, previous_viewed_at)
     viewed_at = utc_now()
     window_start_at = previous_viewed_at or viewed_at - timedelta(days=_FIRST_VIEW_LOOKBACK_DAYS)
-    visible_events = unseen_events
+    event_outputs = [platform_shared_event_out(session, event, user) for event in unseen_events]
+    event_outputs = [item for item in event_outputs if item.display_kind != "unconfirmed"]
     if first_view:
-        visible_events = [
+        event_outputs = [
             event
-            for event in unseen_events
-            if event.publication_route == "deterministic_change"
-            and _aware_utc(event.occurred_at or event.published_at or event.observed_at)
-            >= _aware_utc(window_start_at)
+            for event in event_outputs
+            if event.display_kind == "confirmed_change"
+            and (
+                event.occurred_on >= window_start_at.date()
+                if event.occurred_on
+                else _aware_utc(event.occurred_at or event.published_at or event.observed_at)
+                >= _aware_utc(window_start_at)
+            )
         ]
-    event_outputs = [platform_shared_event_out(session, event, user) for event in visible_events]
+    already_seen = set(
+        session.scalars(
+            select(PersonalEventViewReceipt.event_id).where(
+                PersonalEventViewReceipt.owner_user_id == user.id,
+                PersonalEventViewReceipt.event_id.in_([event.id for event in unseen_events]),
+            )
+        )
+    )
     session.add_all(
         [
             PersonalEventViewReceipt(
@@ -1232,6 +1254,7 @@ def record_personal_company_view(
                 first_seen_at=viewed_at,
             )
             for event in unseen_events
+            if event.id not in already_seen
         ]
     )
     if state is None:
@@ -1261,6 +1284,8 @@ def _single_line(value: str) -> str:
 
 
 def _event_date_label(event: EventOut) -> str:
+    if event.tender_observations:
+        return event.occurred_on.strftime("%Y年%m月%d日") if event.occurred_on else "事件日期未知"
     if event.occurred_at is not None:
         return _aware_utc(event.occurred_at).astimezone(_SHANGHAI).strftime("%Y年%m月%d日")
     if event.published_on is not None:
@@ -1316,9 +1341,29 @@ def _report_markdown(
                 "证据引用：",
             ]
         )
-        if not event.evidence:
+        if event.fact_version:
+            lines[-1:-1] = [
+                *(
+                    f"- {item['name']}：{item['value']}{item.get('unit') or ''}"
+                    for item in event.facts
+                ),
+                f"- 事实版本：{event.fact_version}",
+                "",
+            ]
+        current = next(
+            (
+                item
+                for item in event.tender_observations
+                if item.is_current and item.evidence_available
+            ),
+            None,
+        )
+        report_evidence = [
+            item for item in event.evidence if current is None or item.id in current.evidence_ids
+        ]
+        if not report_evidence:
             lines.append("- 暂无允许展示的证据引用。")
-        for evidence in event.evidence:
+        for evidence in report_evidence:
             source_name = _single_line(evidence.source_name)
             if evidence.link_display_allowed:
                 url = evidence.final_url or evidence.canonical_url
@@ -1420,6 +1465,7 @@ def create_personal_company_report(
         )
     )
     events = [platform_shared_event_out(session, event, user) for event in event_rows]
+    events = [event for event in events if event.display_kind != "unconfirmed"]
     snapshot = session.scalar(
         select(CompanySnapshot).where(
             CompanySnapshot.company_id == company_id,

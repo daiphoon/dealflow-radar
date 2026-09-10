@@ -12,6 +12,31 @@
   --shadow: 0 18px 50px rgb(20 35 31 / 8%);
 }
 
+.research-coverage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 12px;
+}
+
+.research-coverage-grid article {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+}
+
+.research-coverage-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.research-coverage-heading span {
+  font-size: 0.875rem;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -2160,3 +2185,11 @@ dd {
     gap: 5px;
   }
 }
+
+.tender-history { margin: 1rem 0; overflow-wrap: anywhere; }
+.tender-history summary { cursor: pointer; font-weight: 600; }
+.tender-history section, .tender-review-version { border-top: 1px solid var(--line); padding-top: 1rem; margin-top: 1rem; }
+.tender-history dl { display: grid; gap: 0.5rem; }
+.tender-history dl > div { display: grid; grid-template-columns: minmax(6rem, 1fr) minmax(0, 3fr); gap: 1rem; }
+.tender-history dt { color: var(--muted); }
+.tender-history dd { margin: 0; }

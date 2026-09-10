@@ -460,6 +460,7 @@ class PersonalQuotaIncreaseRequest(TimestampMixin, Base):
 class CompanyResearchJob(TimestampMixin, Base):
     __tablename__ = "company_research_jobs"
     __table_args__ = (
+        CheckConstraint("trigger_type IN ('manual', 'watchlist')", name="ck_research_job_trigger"),
         CheckConstraint(
             "status IN ('queued', 'running', 'partial', 'budget_deferred', "
             "'completed', 'cancelled', 'failed')",
@@ -483,6 +484,7 @@ class CompanyResearchJob(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     current_stage: Mapped[str] = mapped_column(String(64), default="queued")
     policy_version: Mapped[str] = mapped_column(String(64))
+    trigger_type: Mapped[str] = mapped_column(String(16), default="manual", server_default="manual")
     coverage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     external_calls: Mapped[int] = mapped_column(Integer, default=0)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
@@ -492,6 +494,29 @@ class CompanyResearchJob(TimestampMixin, Base):
     leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_code: Mapped[str | None] = mapped_column(String(80))
+
+
+class CompanyWatchSchedule(TimestampMixin, Base):
+    __tablename__ = "company_watch_schedules"
+    __table_args__ = (
+        CheckConstraint(
+            "consecutive_failures >= 0 AND consecutive_no_change_runs >= 0",
+            name="ck_watch_schedule_counts",
+        ),
+        Index("ix_watch_schedule_due", "next_check_at"),
+    )
+
+    company_id: Mapped[UUID] = mapped_column(ForeignKey("companies.id"), primary_key=True)
+    policy_version: Mapped[str] = mapped_column(String(64))
+    next_check_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_successful_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_job_id: Mapped[UUID | None] = mapped_column(ForeignKey("company_research_jobs.id"))
+    last_outcome_key: Mapped[str | None] = mapped_column(String(128))
+    last_outcome: Mapped[str] = mapped_column(String(32), default="never_checked")
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    consecutive_no_change_runs: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class WebSearchCacheEntry(TimestampMixin, Base):
@@ -1267,6 +1292,38 @@ class EventFactSupport(TimestampMixin, Base):
     assessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class EventObservation(Base):
+    __tablename__ = "event_observations"
+    __table_args__ = (
+        UniqueConstraint("id", "event_id", name="uq_event_observation_id_event"),
+        UniqueConstraint(
+            "event_id", "raw_document_id", "schema_version", name="uq_event_observation_document"
+        ),
+        CheckConstraint(
+            "observation_kind IN ('initial', 'same_facts', 'correction_candidate', "
+            "'conflicting', 'incomplete')",
+            name="ck_event_observation_kind",
+        ),
+        CheckConstraint(
+            "(occurred_on IS NULL AND date_precision = 'unknown') OR "
+            "(occurred_on IS NOT NULL AND date_precision = 'day')",
+            name="ck_event_observation_date_precision",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    event_id: Mapped[UUID] = mapped_column(ForeignKey("events.id"), index=True)
+    raw_document_id: Mapped[UUID] = mapped_column(ForeignKey("raw_documents.id"), index=True)
+    schema_version: Mapped[str] = mapped_column(String(64))
+    fact_version: Mapped[str] = mapped_column(String(64))
+    observation_kind: Mapped[str] = mapped_column(String(32))
+    occurred_on: Mapped[date | None] = mapped_column(Date)
+    date_precision: Mapped[str] = mapped_column(String(16))
+    candidate_payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class InvestorChangeAnalysis(TimestampMixin, Base):
     __tablename__ = "investor_change_analyses"
     __table_args__ = (
@@ -1317,6 +1374,11 @@ class InvestorChangeAnalysis(TimestampMixin, Base):
 class EventSharingDecision(Base):
     __tablename__ = "event_sharing_decisions"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["source_observation_id", "source_event_id"],
+            ["event_observations.id", "event_observations.event_id"],
+            name="fk_sharing_decision_observation_event",
+        ),
         CheckConstraint(
             "action IN ('promote', 'reject', 'retract')",
             name="ck_event_sharing_decision_action",
@@ -1333,13 +1395,17 @@ class EventSharingDecision(Base):
             "uq_event_sharing_source_outcome",
             "source_event_id",
             unique=True,
-            postgresql_where=text("action IN ('promote', 'reject')"),
-            sqlite_where=text("action IN ('promote', 'reject')"),
+            postgresql_where=text(
+                "action IN ('promote', 'reject') AND source_observation_id IS NULL"
+            ),
+            sqlite_where=text("action IN ('promote', 'reject') AND source_observation_id IS NULL"),
         ),
+        Index("uq_event_sharing_observation", "source_observation_id", unique=True),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     source_event_id: Mapped[UUID | None] = mapped_column(ForeignKey("events.id"), index=True)
+    source_observation_id: Mapped[UUID | None] = mapped_column(Uuid)
     shared_event_id: Mapped[UUID | None] = mapped_column(ForeignKey("events.id"), index=True)
     actor_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     actor_tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
@@ -1485,15 +1551,50 @@ class ReviewQueue(TimestampMixin, Base):
 
 class UsageLedger(TimestampMixin, Base):
     __tablename__ = "usage_ledger"
+    __table_args__ = (
+        CheckConstraint(
+            "usage_state IN ('legacy','reserved','in_flight','settled','uncertain','released')",
+            name="ck_usage_state",
+        ),
+        CheckConstraint(
+            "cost_status IN ('unknown','estimated','actual','confirmed_free')",
+            name="ck_usage_cost_status",
+        ),
+        CheckConstraint("reserved_calls >= 0", name="ck_usage_reserved_calls"),
+        CheckConstraint(
+            "quota_scope IS NULL OR (quota_scope = 'platform_web' AND task_key IS NOT NULL "
+            "AND subject_key IS NOT NULL)",
+            name="ck_usage_quota_scope",
+        ),
+        Index("ix_usage_quota_task", "quota_scope", "task_key"),
+        Index("ix_usage_quota_subject", "quota_scope", "subject_key", "created_at"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     company_id: Mapped[UUID | None] = mapped_column(ForeignKey("companies.id"))
     provider: Mapped[str] = mapped_column(String(80))
     operation: Mapped[str] = mapped_column(String(80))
-    external_calls: Mapped[int] = mapped_column(Integer, default=0)
+    external_calls: Mapped[int | None] = mapped_column(
+        Integer().evaluates_none(), default=0, nullable=True
+    )
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    estimated_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"))
+    estimated_cost: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 6).evaluates_none(), default=Decimal("0"), nullable=True
+    )
+    cost_status: Mapped[str] = mapped_column(
+        String(24), default="unknown", server_default="unknown"
+    )
+    usage_state: Mapped[str] = mapped_column(String(24), default="legacy", server_default="legacy")
+    quota_scope: Mapped[str | None] = mapped_column(String(32))
+    task_key: Mapped[str | None] = mapped_column(String(96))
+    subject_key: Mapped[str | None] = mapped_column(String(64))
+    reserved_calls: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    reserved_cost: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    quoted_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    pricing_version: Mapped[str | None] = mapped_column(String(64))
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     idempotency_key: Mapped[str] = mapped_column(String(64), unique=True)

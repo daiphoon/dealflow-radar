@@ -80,6 +80,17 @@ def _with_worker_session(
         engine.dispose()
 
 
+def _watchlist_gate() -> bool:
+    current = Settings.from_env()
+    if not current.web_research_policy.watchlist.enabled:
+        return False
+    try:
+        _validate_worker_safety(current)
+    except RuntimeError:
+        return False
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the bounded public web research worker")
     mode = parser.add_mutually_exclusive_group()
@@ -135,6 +146,7 @@ def main() -> None:
                 user,
                 providers,
                 policy,
+                watchlist_gate=_watchlist_gate,
             ).to_dict(),
         )
 

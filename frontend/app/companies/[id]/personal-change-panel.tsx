@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { TenderObservations } from "@/components/tender-observations";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { loadPersonalCompanyChanges } from "@/app/personal-actions";
@@ -26,11 +27,11 @@ function formatDate(value: string | null): string {
 }
 
 function eventDate(event: Event): string {
-  return event.occurred_at ?? event.published_at ?? event.published_on ?? event.observed_at;
+  return event.occurred_on ?? event.occurred_at ?? event.published_at ?? event.published_on ?? event.observed_at;
 }
 
 function isMaterialChange(event: Event): boolean {
-  return event.publication_route === "deterministic_change";
+  return event.display_kind === "confirmed_change" || event.publication_route === "deterministic_change";
 }
 
 function withinDays(event: Event, reference: string, days: number): boolean {
@@ -156,6 +157,7 @@ function InvestorChangeCard({ event }: { event: Event }) {
             </div>
           ) : null}
 
+          <TenderObservations observations={event.tender_observations ?? []} />
           <div className="investor-evidence-list">
             <strong>证据来源</strong>
             {event.evidence.map((evidence) => {
@@ -165,6 +167,7 @@ function InvestorChangeCard({ event }: { event: Event }) {
                   <div>
                     <span>{evidence.source_name}</span>
                     <small>{evidence.title}</small>
+                    {event.tender_observations?.length ? <blockquote>{evidence.excerpt}</blockquote> : null}
                   </div>
                   <div>
                     {evidence.detail_available ? (
@@ -188,7 +191,7 @@ function InvestorChangeCard({ event }: { event: Event }) {
             <p className="analysis-disclaimer">{event.analysis.disclaimer}</p>
           ) : (
             <p className="analysis-pending">
-              变化事实已经程序核验；辅助解读尚未生成，不影响查看变化和证据。
+              变化事实已核实；辅助解读尚未生成，不影响查看变化和证据。
             </p>
           )}
         </div>

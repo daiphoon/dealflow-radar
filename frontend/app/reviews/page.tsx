@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { TenderObservations } from "@/components/tender-observations";
+
 import {
   ApiError,
   getPlatformCompanyRequests,
@@ -10,6 +12,7 @@ import {
   type PersonalCompanyRequest,
   type ReviewWorkbenchItem,
   type SharingCandidate,
+  type TenderObservation,
 } from "@/lib/api";
 import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
 
@@ -64,7 +67,7 @@ const resultMessages: Record<string, string> = {
   approve: "已批准候选事件并更新发布状态。",
   reject: "已驳回候选事件，审核理由已保留。",
   identity_resolved: "已确认工商主体，原始记录已按现行策略自动重新路由。",
-  sharing_promoted: "已生成独立的平台共享事实，原私有候选与底稿保持不变。",
+  sharing_promoted: "已保存核实决定并更新共享事实，原私有候选与底稿保持不变。",
   sharing_rejected: "已拒绝本次共享晋升，决定理由已记录。",
   sharing_retracted: "已撤回平台共享事实，个人路径不再展示。",
   quota_approved: "已批准临时研究额度；额度只在设定有效期内生效。",
@@ -479,11 +482,81 @@ function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
   );
 }
 
+function SharingPromotionForm({ candidate, observation }: {
+  candidate: SharingCandidate;
+  observation?: TenderObservation;
+}) {
+  const event = candidate.event;
+  const formId = observation?.observation_id ?? candidate.source_event_id;
+  const evidence = observation
+    ? event.evidence.filter((item) => observation.evidence_ids.includes(item.id))
+    : event.evidence;
+  const hasUncheckedLink = evidence.some((item) => item.url_health_status === "unchecked");
+  return (
+    <form action={submitSharingPromotion} className="review-form">
+      <input name="source_event_id" type="hidden" value={candidate.source_event_id} />
+      <label htmlFor={`sharing-title-${formId}`}>共享事实标题</label>
+      <textarea
+        defaultValue={event.title}
+        id={`sharing-title-${formId}`}
+        maxLength={200}
+        minLength={3}
+        name="title"
+        required
+        rows={2}
+      />
+      <label htmlFor={`sharing-summary-${formId}`}>谨慎共享表述</label>
+      <textarea
+        defaultValue={observation ? "公告披露：" + observation.facts.map((fact) => `${fact.name}：${fact.value}${fact.unit ?? ""}`).join("；") + "。不代表履约或收入。" : event.summary}
+        id={`sharing-summary-${formId}`}
+        maxLength={2000}
+        minLength={3}
+        name="summary"
+        required
+        rows={4}
+      />
+      {observation ? <input name="observation_id" type="hidden" value={observation.observation_id ?? ""} /> : null}
+      <fieldset>
+        <legend>选择允许展示的证据引用</legend>
+        {evidence.map((evidence) => (
+          <label className="review-confirmation" key={evidence.id}>
+            <input defaultChecked name="evidence_ids" type="checkbox" value={evidence.id} />
+            <span>
+              {evidence.source_name}：{observation ? evidence.excerpt : evidence.title}（{evidence.url_health_status}）
+            </span>
+          </label>
+        ))}
+      </fieldset>
+      <label htmlFor={`sharing-reason-${formId}`}>晋升理由</label>
+      <textarea
+        id={`sharing-reason-${formId}`}
+        maxLength={1000}
+        minLength={3}
+        name="reason"
+        required
+        rows={3}
+      />
+      <label className="review-confirmation">
+        <input name="confirm_evidence_support" required type="checkbox" />
+        <span>我已确认共享表述受所选证据支持。</span>
+      </label>
+      {hasUncheckedLink ? (
+        <label className="review-confirmation">
+          <input name="confirm_unchecked_links" required type="checkbox" />
+          <span>我已人工打开并检查未自动验证的链接。</span>
+        </label>
+      ) : null}
+      <button className="button button-approve" type="submit">
+        {observation ? "核实并采用此版本" : "生成独立共享事实"}
+      </button>
+      <p>操作不会改变原私有事件和原始文档的作用域。</p>
+    </form>
+  );
+}
+
 function SharingCandidateCard({ candidate }: { candidate: SharingCandidate }) {
   const event = candidate.event;
-  const hasUncheckedLink = event.evidence.some(
-    (evidence) => evidence.url_health_status === "unchecked",
-  );
+  const observations = event.tender_observations ?? [];
   const latestDecision = candidate.decisions.at(-1);
   const displayState =
     candidate.shared_event_status === "published"
@@ -551,7 +624,8 @@ function SharingCandidateCard({ candidate }: { candidate: SharingCandidate }) {
         </div>
       </dl>
 
-      <div className="review-evidence-list">
+      <details className="review-evidence-list" open={!observations.length}>
+        <summary>查看全部原文证据（{event.evidence.length} 条）</summary>
         {event.evidence.map((evidence) => (
           <div className="evidence" key={evidence.id}>
             <div>
@@ -586,7 +660,19 @@ function SharingCandidateCard({ candidate }: { candidate: SharingCandidate }) {
             ) : null}
           </div>
         ))}
-      </div>
+      </details>
+
+      {observations.map((observation) => (
+        <section className="tender-review-version" key={observation.observation_id}>
+          <TenderObservations observations={[observation]} expanded />
+          {candidate.decisions.some((item) => item.source_observation_id === observation.observation_id) ? (
+            <p className="muted">此版本已有核实记录。</p>
+          ) : observation.can_publish && observation.evidence_available && !candidate.identity_ambiguous
+              && displayState !== "rejected" && displayState !== "retracted" ? (
+            <SharingPromotionForm candidate={candidate} observation={observation} />
+          ) : <p className="muted">当前版本尚不满足共享条件，候选与证据继续保留。</p>}
+        </section>
+      ))}
 
       {displayState === "shared" && candidate.shared_event_id ? (
         <form action={submitSharingRetraction} className="review-form">
@@ -605,65 +691,9 @@ function SharingCandidateCard({ candidate }: { candidate: SharingCandidate }) {
           </button>
           <p>撤回只停止个人路径展示，不删除原候选、证据或审计记录。</p>
         </form>
-      ) : displayState === "pending" ? (
+      ) : displayState === "pending" && observations.length === 0 ? (
         <>
-          <form action={submitSharingPromotion} className="review-form">
-            <input name="source_event_id" type="hidden" value={candidate.source_event_id} />
-            <label htmlFor={`sharing-title-${candidate.source_event_id}`}>共享事实标题</label>
-            <textarea
-              defaultValue={event.title}
-              id={`sharing-title-${candidate.source_event_id}`}
-              maxLength={200}
-              minLength={3}
-              name="title"
-              required
-              rows={2}
-            />
-            <label htmlFor={`sharing-summary-${candidate.source_event_id}`}>谨慎共享表述</label>
-            <textarea
-              defaultValue={event.summary}
-              id={`sharing-summary-${candidate.source_event_id}`}
-              maxLength={2000}
-              minLength={3}
-              name="summary"
-              required
-              rows={4}
-            />
-            <fieldset>
-              <legend>选择允许展示的证据引用</legend>
-              {event.evidence.map((evidence) => (
-                <label className="review-confirmation" key={evidence.id}>
-                  <input defaultChecked name="evidence_ids" type="checkbox" value={evidence.id} />
-                  <span>
-                    {evidence.source_name}：{evidence.title}（{evidence.url_health_status}）
-                  </span>
-                </label>
-              ))}
-            </fieldset>
-            <label htmlFor={`sharing-reason-${candidate.source_event_id}`}>晋升理由</label>
-            <textarea
-              id={`sharing-reason-${candidate.source_event_id}`}
-              maxLength={1000}
-              minLength={3}
-              name="reason"
-              required
-              rows={3}
-            />
-            <label className="review-confirmation">
-              <input name="confirm_evidence_support" required type="checkbox" />
-              <span>我已确认共享表述受所选证据支持。</span>
-            </label>
-            {hasUncheckedLink ? (
-              <label className="review-confirmation">
-                <input name="confirm_unchecked_links" required type="checkbox" />
-                <span>我已人工打开并检查未自动验证的链接。</span>
-              </label>
-            ) : null}
-            <button className="button button-approve" type="submit">
-              生成独立共享事实
-            </button>
-            <p>操作不会改变原私有事件和原始文档的作用域。</p>
-          </form>
+          <SharingPromotionForm candidate={candidate} />
           <form action={submitSharingRejection} className="review-form">
             <input name="source_event_id" type="hidden" value={candidate.source_event_id} />
             <label htmlFor={`reject-sharing-${candidate.source_event_id}`}>拒绝共享理由</label>

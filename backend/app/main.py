@@ -567,6 +567,7 @@ def create_app(
             session,
             user,
             app.state.settings.refresh_policy,
+            app.state.settings.web_research_policy.watchlist,
         )
 
     @app.post(
@@ -1037,6 +1038,8 @@ def create_app(
                 confirm_evidence_support=payload.confirm_evidence_support,
                 confirm_unchecked_links=payload.confirm_unchecked_links,
                 auto_publish_enabled=app.state.settings.publication_policy.enabled,
+                observation_id=payload.observation_id,
+                tender_events_enabled=app.state.settings.tender_events_enabled,
             )
         except NotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error

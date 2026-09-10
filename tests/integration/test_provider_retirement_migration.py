@@ -3,18 +3,18 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, select
+from sqlalchemy import MetaData, Table, create_engine, select
 from sqlalchemy.orm import Session
 
 from backend.app.models import (
     PLATFORM_SHARED_SCOPE,
     SYSTEM_RESTRICTED_SCOPE,
     Company,
-    CompanyResearchJob,
     Event,
     EventEvidence,
     OfficialIdentityVerification,
@@ -170,16 +170,25 @@ def test_retirement_migration_hides_legacy_only_results_and_preserves_audit(
         )
         session.add(user)
         session.flush()
-        job = CompanyResearchJob(
-            company_id=provider_company.id,
-            created_by_user_id=user.id,
-            status="completed",
-            current_stage="completed",
-            policy_version="on-demand-research-v1",
-            coverage={},
+        # This fixture deliberately targets 0021, before later job columns existed.
+        jobs = Table("company_research_jobs", MetaData(), autoload_with=session.connection())
+        job_id = uuid4()
+        session.execute(
+            jobs.insert().values(
+                id=job_id.hex,
+                company_id=provider_company.id.hex,
+                created_by_user_id=user.id.hex,
+                status="completed",
+                current_stage="completed",
+                policy_version="on-demand-research-v1",
+                coverage={},
+                external_calls=0,
+                input_tokens=0,
+                output_tokens=0,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
         )
-        session.add(job)
-        session.flush()
         request = PersonalCompanyRequest(
             owner_user_id=user.id,
             request_type="inclusion",
@@ -188,7 +197,7 @@ def test_retirement_migration_hides_legacy_only_results_and_preserves_audit(
             requested_credit_code=provider_company.credit_code,
             target_key=f"retirement:{provider_company.id}",
             status="completed",
-            research_job_id=job.id,
+            research_job_id=job_id,
             provider_company_id="historical-provider-record",
         )
         session.add_all(
@@ -236,7 +245,6 @@ def test_retirement_migration_hides_legacy_only_results_and_preserves_audit(
         legacy_event_id = legacy_event.id
         mixed_event_id = mixed_event.id
         request_id = request.id
-        job_id = job.id
         legacy_document_id = legacy_document.id
 
     command.upgrade(config, "0022")
@@ -262,7 +270,7 @@ def test_retirement_migration_hides_legacy_only_results_and_preserves_audit(
         assert parked_request.status == "failed"
         assert parked_request.research_job_id is None
         assert parked_request.last_error_code == "legacy_provider_retired"
-        assert session.get(CompanyResearchJob, job_id).status == "completed"
+        assert session.scalar(select(jobs.c.status).where(jobs.c.id == job_id.hex)) == "completed"
         assert session.scalar(select(RawDocument).where(RawDocument.id == legacy_document_id))
         assert session.scalar(select(Source).where(Source.code == LEGACY_SOURCE_CODE))
 

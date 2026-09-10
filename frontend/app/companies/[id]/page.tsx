@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 
 import Link from "next/link";
+import { ResearchCoverage } from "@/components/research-coverage";
+import { TenderObservations } from "@/components/tender-observations";
 
 import {
   followCompany,
@@ -137,9 +139,11 @@ function EventCard({
   unconfirmed?: boolean;
   privateRecord?: boolean;
 }) {
-  const eventDate = event.occurred_at ?? event.published_at ?? event.published_on;
+  const eventDate = event.occurred_on ?? event.occurred_at ?? event.published_at ?? event.published_on;
+  const isTender = Boolean(event.tender_observations?.length);
   const isLicensedSourceRecord = event.publication_route === "licensed_source_record";
   const isDeterministicChange = event.publication_route === "deterministic_change";
+  const isConfirmedChange = event.display_kind === "confirmed_change" || isDeterministicChange;
   const changeField = event.facts.find((fact) => fact.name === "变化字段")?.value;
   const beforeValue = event.facts.find((fact) => fact.name === "变更前")?.value;
   const afterValue = event.facts.find((fact) => fact.name === "变更后")?.value;
@@ -161,7 +165,9 @@ function EventCard({
       <div className="event-meta">
         <span>{eventTypeLabels[event.event_type] ?? event.event_type}</span>
         <span>
-          {unconfirmed
+          {isTender
+            ? `公告所述事件日期：${event.occurred_on ?? "未知"}${unconfirmed ? "（待核实）" : ""}`
+            : unconfirmed
             ? event.occurred_at
               ? `正文所述事件日期：${formatDate(event.occurred_at)}（待核实）`
               : `事件日期待核实 · 来源发布：${formatDate(eventDate)}（不代表近期发生）`
@@ -304,7 +310,7 @@ function EventCard({
           这是授权数据源已返回的记录概览，可供查看；平台尚未将数量、关联关系或评分解释为风险结论。
         </p>
       ) : null}
-      {isDeterministicChange ? (
+      {isConfirmedChange ? (
         event.analysis ? (
           <section className="investor-analysis" aria-label="模型辅助解读">
             <div className="analysis-heading">
@@ -353,10 +359,11 @@ function EventCard({
           </section>
         ) : (
           <p className="analysis-pending">
-            变化事实已经程序核验；辅助解读尚未生成，不影响查看原始变化和证据。
+            变化事实已核实；辅助解读尚未生成，不影响查看原始变化和证据。
           </p>
         )
       ) : null}
+      <TenderObservations observations={event.tender_observations ?? []} />
       {event.evidence.map((evidence) => {
         const sourceUrl = evidence.final_url ?? evidence.canonical_url;
         const sourceAvailable = evidence.link_display_allowed;
@@ -418,10 +425,10 @@ export default async function CompanyDetailPage({
     const isFollowed = watchlist.some((item) => item.company_id === company.id);
     const reportIdempotencyKey = randomBytes(32).toString("hex");
     const materialChanges = company.events.filter(
-      (event) => event.publication_route === "deterministic_change",
+      (event) => event.display_kind === "confirmed_change" || event.publication_route === "deterministic_change",
     );
     const baselineEvents = company.events.filter(
-      (event) => event.publication_route !== "deterministic_change",
+      (event) => event.display_kind !== "confirmed_change" && event.publication_route !== "deterministic_change",
     );
     const baselineGroups = Object.entries(
       baselineEvents.reduce<Record<string, Event[]>>((groups, event) => {
@@ -685,6 +692,7 @@ export default async function CompanyDetailPage({
               </p>
               <p>当次任务结束时间：{formatDate(company.personal_research_result.finished_at, true)}</p>
               <p>{company.personal_research_result.message}</p>
+              <ResearchCoverage items={company.personal_research_result.category_coverage} />
               {company.personal_research_result.limitations.length > 0 ? (
                 <ul>
                   {company.personal_research_result.limitations.map((item) => <li key={item}>{item}</li>)}

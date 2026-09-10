@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { WatchlistMonitorStatus } from "@/components/watchlist-monitor";
 
 import {
   cancelCompanyRequest,
@@ -174,6 +175,7 @@ export default async function WatchlistPage({
                     <br />
                     注册地区：{company.registered_region ?? "未知"}
                   </p>
+                  <WatchlistMonitorStatus monitoring={company.monitoring} />
                   <form action={unfollowCompany} className="card-footer">
                     <input name="company_id" type="hidden" value={company.company_id} />
                     <input name="return_to" type="hidden" value="watchlist" />

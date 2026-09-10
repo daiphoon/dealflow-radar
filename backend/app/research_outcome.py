@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from backend.app.models import CompanyResearchJob
+from backend.app.research_coverage import COVERAGE_VERSION, category_coverage
 from backend.app.schemas import ResearchResultOut
 
 
@@ -21,6 +22,10 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
     documents = [item for item in coverage.get("documents", []) if isinstance(item, dict)]
     errors = {item.get("error_code") for item in documents}
     limitations: list[str] = []
+    if coverage.get("stop_reason") == "reconciled_result_unavailable":
+        limitations.append(
+            "本轮调用中断后的费用已核对，但部分结果未能保存，未自动重复调用；资料覆盖不完整。"
+        )
     if "robots_disallowed" in errors:
         limitations.append(
             "部分来源未通过自动读取规则检查，可能为网站限制或规则文件不可用，未取得正文。"
@@ -51,7 +56,11 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
     if isinstance(coverage.get("documents"), list):
         readable = sum(item.get("status") in {"created", "reused"} for item in documents)
         coverage_summary.append(f"当时取得或复用了 {readable} 份正文；取得正文不等于事实已核实。")
-    coverage_summary.append("各类信息的检查情况未完整记录，不能据此判断某类信息不存在。")
+    coverage_summary.append(
+        "类别覆盖依据当次搜索与正文检查记录；组合检索不代表逐类查全。"
+        if coverage.get("category_coverage_version") == COVERAGE_VERSION
+        else "各类信息的检查情况未完整记录，不能据此判断某类信息不存在。"
+    )
     finished_at = None
     value = coverage.get("completed_at")
     if isinstance(value, str):
@@ -69,4 +78,5 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
         ),
         limitations=limitations,
         coverage_summary=coverage_summary,
+        category_coverage=category_coverage(coverage),
     )

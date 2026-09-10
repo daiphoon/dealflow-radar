@@ -38,6 +38,8 @@ def _set_valid_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "WEB_RESEARCH_CALLS_ENABLED",
         "INVESTOR_ANALYSIS_ENABLED",
         "REVIEW_WORKBENCH_ENABLED",
+        "TENDER_EVENTS_ENABLED",
+        "WATCHLIST_MONITOR_ENABLED",
     ):
         monkeypatch.setenv(name, "false")
 
@@ -114,6 +116,8 @@ def test_production_preflight_rejects_public_origin_port_mismatch(
         ("INVESTOR_ANALYSIS_ENABLED", "true", "INVESTOR_ANALYSIS_ENABLED"),
         ("WEB_RESEARCH_ENABLED", "true", "WEB_RESEARCH_ENABLED"),
         ("WEB_RESEARCH_CALLS_ENABLED", "true", "WEB_RESEARCH_CALLS_ENABLED"),
+        ("TENDER_EVENTS_ENABLED", "true", "TENDER_EVENTS_ENABLED"),
+        ("WATCHLIST_MONITOR_ENABLED", "true", "WATCHLIST_MONITOR_ENABLED"),
         ("SITE_ADDRESS", "http://app.dealflow.test", "HTTPS"),
         ("CLOUDBASE_ENV_ID", "replace-with-env", "placeholder"),
     ],

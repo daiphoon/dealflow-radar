@@ -1,0 +1,622 @@
+{
+  "schema_version": "tender-fixtures-v1",
+  "fixture_only": true,
+  "description": "E1.1 冻结离线样本：全部虚构；不代表来源覆盖、官方确认、发布资格或真实收益。每份为已由上游取得的单公告带标签正文，不是 HTML/PDF 解析测试。",
+  "cases": [
+    {
+      "id": "award",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000001",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/award",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "892612dcb691057deee50b32fa80e8ff8d47f5091a755955720160731d82b41c"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "award-001",
+        "revision_group": "award-001-v1",
+        "phase": "award_result",
+        "amount": "12345000.00",
+        "currency": "CNY",
+        "occurred_on": "2026-08-03"
+      }
+    },
+    {
+      "id": "reprint",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000002",
+        "source_id": "00000000-0000-0000-0002-000000000002",
+        "canonical_url": "https://example.invalid/tender/reprint",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "892612dcb691057deee50b32fa80e8ff8d47f5091a755955720160731d82b41c"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "award-001",
+        "revision_group": "award-001-v1",
+        "phase": "award_result",
+        "amount": "12345000.00",
+        "currency": "CNY",
+        "occurred_on": "2026-08-03"
+      }
+    },
+    {
+      "id": "format_variant",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000003",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/format_variant",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026-08-03\n中标金额：人民币 12345000 元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "8cb29fd2ea3f0ce2345b953b5a364ae3c806d9276861526f1ab4739c25adef1a"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "award-001",
+        "revision_group": "award-001-v1",
+        "phase": "award_result",
+        "amount": "12345000.00",
+        "currency": "CNY",
+        "occurred_on": "2026-08-03"
+      }
+    },
+    {
+      "id": "other_project",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000004",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/other_project",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-002\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "17e3f83248f44d66418df4ece4893aa83d604eac17e797ed6330cc2f9e5a30e6"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "project-002",
+        "revision_group": "project-002-v1",
+        "phase": "award_result",
+        "amount": "12345000.00",
+        "currency": "CNY",
+        "occurred_on": "2026-08-03"
+      }
+    },
+    {
+      "id": "other_lot",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000005",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/other_lot",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-02\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "d3d9bc079af0a11600ab932fe7a10e87a972f006ff39b119a65fa0b9821a3f8c"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "lot-002",
+        "revision_group": "lot-002-v1",
+        "phase": "award_result",
+        "amount": "12345000.00",
+        "currency": "CNY",
+        "occurred_on": "2026-08-03"
+      }
+    },
+    {
+      "id": "other_buyer",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000006",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/other_buyer",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位乙\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "8ed653c38795c29bd82f6a3e23cd71bb4f552d123eeb4157fc24eeabe196de7a"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "buyer-b",
+        "revision_group": "buyer-b-v1",
+        "phase": "award_result",
+        "amount": "12345000.00",
+        "currency": "CNY",
+        "occurred_on": "2026-08-03"
+      }
+    },
+    {
+      "id": "later_notice",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000007",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/later_notice",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-002\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月4日\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "67830cdec82f3995958486644162571958a41e70966edb507d7ce490a1f3c45f"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "award-002",
+        "revision_group": "award-002-v1",
+        "phase": "award_result",
+        "amount": "12345000.00",
+        "currency": "CNY",
+        "occurred_on": "2026-08-04"
+      }
+    },
+    {
+      "id": "shortlisted",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000008",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/shortlisted",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司成为中标候选人，尚未中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标候选人公示\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标候选人：示例星河科技一号有限公司\n中标候选人统一社会信用代码：91310000MA1K000006\n公示日期：2026年8月3日\n投标报价：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "3973571f985e29fb62232f0ab655c7f8d7e5641368af89596011518810311fab"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "shortlist-001",
+        "revision_group": "shortlist-001-v1",
+        "phase": "award_candidate",
+        "amount": "12345000.00",
+        "currency": "CNY",
+        "occurred_on": "2026-08-03"
+      }
+    },
+    {
+      "id": "correction",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000009",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/correction",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果更正公告\n公告编号：DEMO-CORRECTION-001\n原公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：人民币 1,200.00 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "0f79dba65cfeeeae37c8ac8ff09ac85e3bf31dc29dae2ad4efd8810cdb06e726"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "award-001",
+        "revision_group": "award-001-v2",
+        "phase": "award_result",
+        "amount": "12000000.00",
+        "currency": "CNY",
+        "occurred_on": "2026-08-03"
+      }
+    },
+    {
+      "id": "unknown_date",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000010",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/unknown_date",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：8月3日\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "8bec060130adeb1a77af976e86d649eca48530b16dfd93a6d7eae49bd4f0fb21"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "award-001",
+        "revision_group": "unknown-date",
+        "phase": "award_result",
+        "amount": "12345000.00",
+        "currency": "CNY",
+        "occurred_on": null,
+        "issues": [
+          "event_date_unknown"
+        ]
+      }
+    },
+    {
+      "id": "invalid_date",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000011",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/invalid_date",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026-02-30\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "bf3a4158de6c478e3828074cebf878197d7435f8be671e834d70d42cf2117d70"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "award-001",
+        "revision_group": "unknown-date",
+        "phase": "award_result",
+        "amount": "12345000.00",
+        "currency": "CNY",
+        "occurred_on": null,
+        "issues": [
+          "event_date_invalid"
+        ]
+      }
+    },
+    {
+      "id": "unknown_amount",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000012",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/unknown_amount",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：未披露",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "de8e304236f0cebe147486864421757a97da1259ac799e36bc28b657fccb14af"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "award-001",
+        "revision_group": "unknown-amount",
+        "phase": "award_result",
+        "amount": null,
+        "currency": null,
+        "occurred_on": "2026-08-03",
+        "issues": [
+          "amount_unknown"
+        ]
+      }
+    },
+    {
+      "id": "currency_missing",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000013",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/currency_missing",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "45fe1c8acd5251eaff1ade414d4a92667b19dc45b5b385aaf47d1bdb194362bd"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "award-001",
+        "revision_group": "unknown-amount",
+        "phase": "award_result",
+        "amount": null,
+        "currency": null,
+        "occurred_on": "2026-08-03",
+        "issues": [
+          "amount_unsupported"
+        ]
+      }
+    },
+    {
+      "id": "other_currency",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000014",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/other_currency",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：美元 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "66147d88426e594afa902beaa2c4c421ce55c2e94b6d53d31e444f423c4d381c"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": "award-001",
+        "revision_group": "unknown-amount",
+        "phase": "award_result",
+        "amount": null,
+        "currency": null,
+        "occurred_on": "2026-08-03",
+        "issues": [
+          "amount_unsupported"
+        ]
+      }
+    },
+    {
+      "id": "missing_project",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000015",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/missing_project",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "8b1bbcf57eb328fe92c3d8c3ba4c7ead446e88f1caf85fc37bbfdc4adacb55ec"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": null,
+        "revision_group": null,
+        "phase": "award_result",
+        "amount": "12345000.00",
+        "currency": "CNY",
+        "occurred_on": "2026-08-03",
+        "issues": [
+          "business_identity_incomplete"
+        ]
+      }
+    },
+    {
+      "id": "correction_without_reference",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000016",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/correction_without_reference",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果更正公告\n公告编号：DEMO-CORRECTION-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "075a20659382b754971a68a7b07ae9d9e883442e30959bc73100df5b559fe424"
+      },
+      "expected": {
+        "status": "candidate",
+        "event_group": null,
+        "revision_group": null,
+        "phase": "award_result",
+        "amount": "12345000.00",
+        "currency": "CNY",
+        "occurred_on": "2026-08-03",
+        "issues": [
+          "business_identity_incomplete"
+        ]
+      }
+    },
+    {
+      "id": "wrong_company_code",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000017",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/wrong_company_code",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000019\n中标日期：2026年8月3日\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "ca509c42ca245b906bedf419fbb540b13df0f9cbd24843964b1dceb0ae30f8fe"
+      },
+      "expected": {
+        "status": "identity_unresolved",
+        "issues": [
+          "subject_code_mismatch"
+        ]
+      }
+    },
+    {
+      "id": "unresolved_subject",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "unresolved"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000018",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/unresolved_subject",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "892612dcb691057deee50b32fa80e8ff8d47f5091a755955720160731d82b41c"
+      },
+      "expected": {
+        "status": "identity_unresolved",
+        "issues": [
+          "subject_unresolved"
+        ]
+      }
+    },
+    {
+      "id": "unsupported_stage",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000019",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/unsupported_stage",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：招标公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "eed5b3cbdabee8ea51b55b8f3e7ef162c9886f05d186079f80b7a36a610a47d3"
+      },
+      "expected": {
+        "status": "unsupported",
+        "issues": [
+          "unsupported_notice_type"
+        ]
+      }
+    },
+    {
+      "id": "conflicting_fields",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000020",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/conflicting_fields",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标人统一社会信用代码：91310000MA1K000006\n中标日期：2026年8月3日\n中标金额：人民币 1,234.50 万元\n中标人：另一家虚构有限公司",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "434078c272cd42ecfa450604607b6c247a6b111d3b9b92153dad8f85b8e83149"
+      },
+      "expected": {
+        "status": "unsupported",
+        "issues": [
+          "ambiguous_fields"
+        ]
+      }
+    },
+    {
+      "id": "missing_subject_code",
+      "subject": {
+        "company_id": "00000000-0000-0000-0000-000000000111",
+        "legal_name": "示例星河科技一号有限公司",
+        "credit_code": "91310000MA1K000006",
+        "identity_status": "verified"
+      },
+      "document": {
+        "document_id": "00000000-0000-0000-0001-000000000021",
+        "source_id": "00000000-0000-0000-0002-000000000001",
+        "canonical_url": "https://example.invalid/tender/missing_subject_code",
+        "title": "虚构设备采购项目公告",
+        "body": "虚构测试材料，不代表真实公告或公司事件。\n示例星河科技一号有限公司中标虚构设备采购项目，履约与收入情况未知。\n公告类型：中标结果公告\n公告编号：DEMO-NOTICE-001\n采购人：虚构采购单位甲\n项目编号：DEMO-PROJECT-001\n项目名称：虚构设备采购项目\n标段编号：LOT-01\n中标人：示例星河科技一号有限公司\n中标日期：2026年8月3日\n中标金额：人民币 1,234.50 万元",
+        "published_at": "2026-08-05T09:00:00+08:00",
+        "observed_at": "2026-09-09T09:00:00+08:00",
+        "license_status": "test_fixture_only",
+        "content_hash": "8080b35216b1b0cd304736d4180294c8ec07bf38d9581774953ef344c6ff8760"
+      },
+      "expected": {
+        "status": "identity_unresolved",
+        "issues": [
+          "subject_code_missing"
+        ]
+      }
+    }
+  ]
+}

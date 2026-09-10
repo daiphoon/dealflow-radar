@@ -19,7 +19,7 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     command.upgrade(config, "head")
     command.check(config)
     engine = create_engine(database_url)
-    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 39
+    assert len(set(inspect(engine).get_table_names()) - {"alembic_version"}) == 41
     user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
     assert {"auth_provider", "auth_subject"} <= user_columns
     assert "uq_users_auth_identity" in {
@@ -238,6 +238,17 @@ def test_initial_migration_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
         for constraint in inspect(engine).get_unique_constraints("web_search_cache_entries")
     }
     assert {"event_facts", "event_fact_supports"} <= set(inspect(engine).get_table_names())
+    assert {
+        "event_id",
+        "raw_document_id",
+        "schema_version",
+        "fact_version",
+        "observation_kind",
+        "occurred_on",
+        "date_precision",
+        "candidate_payload",
+        "created_by",
+    } <= {column["name"] for column in inspect(engine).get_columns("event_observations")}
     assert {
         "event_id",
         "fact_key",

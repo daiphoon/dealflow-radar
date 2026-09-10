@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { ResearchCoverage } from "@/components/research-coverage";
 import type { PersonalCompanyRequest } from "@/lib/api";
 
 const moduleLabels: Record<string, string> = {
@@ -75,6 +76,7 @@ export function RequestResearchResult({ request }: { request: PersonalCompanyReq
                     "各类信息的检查情况未完整记录，不能据此判断某类信息不存在。",
                   ]).map((item) => <li key={item}>{item}</li>)}
                 </ul>
+                <ResearchCoverage items={result.category_coverage} />
                 {result.limitations.length > 0 ? (
                   <ul aria-label="读取与证据限制">
                     {result.limitations.map((item) => <li key={item}>{item}</li>)}

@@ -40,6 +40,8 @@ const company = (overrides = {}) => ({
 async function render(data, newEvents = [], { failed = false, loading = false } = {}) {
   const view = { new_events: newEvents, first_view: true, viewed_at: "2026-09-07", previous_viewed_at: null };
   const mocks = {
+    "@/components/research-coverage": load(path.join(__dirname, "../components/research-coverage.tsx"), {}),
+    "@/components/tender-observations": load(path.join(__dirname, "../components/tender-observations.tsx"), {}),
     "next/link": { default: ({ children, ...props }) => React.createElement("a", props, children) },
     "@/app/personal-actions": {},
     "@/lib/auth-navigation": { redirectIfAuthenticationRequired: async () => {} },
@@ -58,6 +60,20 @@ async function render(data, newEvents = [], { failed = false, loading = false } 
   return renderToStaticMarkup(await Page({ params: Promise.resolve({ id: data.id }), searchParams: Promise.resolve({}) }));
 }
 const overview = (html) => html.match(/<section[^>]*aria-label="当前可查看内容"[^>]*>(.*?)<\/section>/s)?.[1];
+
+test("公司详情展示本人的类别检查历史，不把检查成功计入当前事实", async () => {
+  const data = company({ personal_research_result: { ...history, category_coverage: [{
+    category: "contract_commercial", status: "evidence_obtained", route: "business_capital",
+    evidence_count: 2, blocked_count: 1, failed_count: 0, gaps: ["仅取得正文，尚未核实"],
+    last_attempt_at: null, search_checked_at: null, evidence_checked_at: null, cache_reused: false,
+  }] } });
+  const html = await render(data);
+  assert.match(html, /本次类别来源覆盖/);
+  assert.match(html, /相关正文 2 份 · 受阻 1 项/);
+  assert.match(overview(html), /已核实变化（含历史）：0 条/);
+  assert.ok(html.indexOf("当前可查看内容") < html.indexOf("本次类别来源覆盖"));
+  assert.doesNotMatch(await render(company()), /本次类别来源覆盖/);
+});
 
 test("历史无成果不覆盖后来新增的线索；查询历史默认折叠并位于内容之后", async () => {
   const data = company({ personal_research_result: history, platform_unconfirmed_leads: [event("lead")] });
@@ -129,4 +145,68 @@ test("个人水位加载中或失败不清空当前概览，失败回退仍只�
     assert.doesNotMatch(overview(html), /当前暂无可展示/);
     if (state.failed) assert.match(html, /测试条目-change/);
   }
+});
+
+test("已核实中标进入变化区，日期只显示到日，历史版本保留，候选不进入变化数", async () => {
+  const observation = { observation_id: null, fact_version: "new-version", observation_kind: "correction_candidate",
+    occurred_on: "2026-08-03", date_precision: "day", observed_at: "2026-09-01T00:00:00Z",
+    facts: [{ name: "中标金额", value: "12000000", unit: "CNY" }], evidence_ids: [],
+    is_current: true, confirmed: true, evidence_available: true, can_publish: false };
+  const tender = { ...event("tender", "human_promoted"), occurred_at: null, occurred_on: "2026-08-03",
+    display_kind: "confirmed_change", fact_version: "new-version", tender_observations: [
+      { ...observation, fact_version: "old-version", is_current: false,
+        facts: [{ name: "中标金额", value: "12345000", unit: "CNY" }] }, observation,
+    ] };
+  const pending = { ...event("pending", "unconfirmed_lead"), display_kind: "unconfirmed", occurred_at: null,
+    tender_observations: [{ ...observation, confirmed: false, occurred_on: null, date_precision: "unknown" }] };
+  const html = await render(company({ events: [tender], unconfirmed_leads: [pending] }), [tender]);
+  assert.match(overview(html), /已核实变化（含历史）：1 条/);
+  assert.match(html, /当前已核实版本/);
+  assert.match(html, /历史已核实版本/);
+  assert.match(html, /12345000/);
+  assert.match(html, /12000000/);
+  assert.match(html, /未知（不以来源发布时间补填）/);
+  assert.match(html, /转载数量不代表独立确认/);
+});
+
+test("撤回证据的历史仅显示状态，不泄露已隐藏的事实内容", () => {
+  const { TenderObservations } = load(path.join(__dirname, "../components/tender-observations.tsx"), {});
+  const html = renderToStaticMarkup(React.createElement(TenderObservations, { observations: [{
+    fact_version: "revoked", observation_kind: "initial", occurred_on: null,
+    is_current: false, confirmed: true, evidence_available: false,
+    facts: [{ name: "撤回字段", value: "不应展示的值" }],
+  }] }));
+  assert.match(html, /证据已撤回或不可用/);
+  assert.doesNotMatch(html, /不应展示的值|撤回字段/);
+});
+
+test("已有共享版本的审核页仍能核实新更正，表单只带所选观测的证据", async () => {
+  const approved = { observation_id: "original-id", fact_version: "original", observation_kind: "initial",
+    occurred_on: "2026-08-03", is_current: true, confirmed: false, evidence_available: true, can_publish: true,
+    facts: [{ name: "中标金额", value: "12345000", unit: "CNY" }], evidence_ids: ["old-evidence"] };
+  const revision = { ...approved, observation_id: "revision-id", fact_version: "revision", is_current: false,
+    observation_kind: "correction_candidate", facts: [{ name: "中标金额", value: "12000000", unit: "CNY" }],
+    evidence_ids: ["new-evidence"] };
+  const mocks = {
+    "next/link": { default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/components/tender-observations": load(path.join(__dirname, "../components/tender-observations.tsx"), {}),
+    "@/lib/auth-navigation": { redirectIfAuthenticationRequired: async () => {} },
+    "./actions": {},
+    "@/lib/api": { ApiError: Error, getReviewWorkbench: async () => [],
+      getPlatformQuotaIncreaseRequests: async () => [], getPlatformCompanyRequests: async () => [],
+      getSharingCandidates: async () => [{ source_event_id: "source-id", shared_event_id: "shared-id",
+        shared_event_status: "published", decisions: [{ source_observation_id: "original-id", action: "promote" }],
+        event: { ...event("review"), tender_observations: [approved, revision], evidence: ["old-evidence", "new-evidence"].map(id => ({
+          id, title: "虚构来源", source_name: "离线材料", url_health_status: "unchecked", excerpt: "原文摘录",
+        })) } }],
+    },
+  };
+  const Page = load(path.join(__dirname, "../app/reviews/page.tsx"), mocks).default;
+  const html = renderToStaticMarkup(await Page({ searchParams: Promise.resolve({}) }));
+  assert.match(html, /核实并采用此版本/);
+  assert.match(html, /撤回共享事实/);
+  const form = html.match(/<form[^>]*>.*?name="observation_id"[^>]*>.*?<\/form>/s)?.[0];
+  assert.match(form, /value="revision-id"/);
+  assert.match(form, /value="new-evidence"/);
+  assert.doesNotMatch(form, /value="old-evidence"|value="original-id"/);
 });

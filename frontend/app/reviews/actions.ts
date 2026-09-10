@@ -105,6 +105,7 @@ export async function submitIdentityResolution(formData: FormData): Promise<void
 
 export async function submitSharingPromotion(formData: FormData): Promise<void> {
   const sourceEventId = String(formData.get("source_event_id") ?? "");
+  const observationId = String(formData.get("observation_id") ?? "");
   const title = String(formData.get("title") ?? "").trim();
   const summary = String(formData.get("summary") ?? "").trim();
   const reason = String(formData.get("reason") ?? "").trim();
@@ -113,6 +114,7 @@ export async function submitSharingPromotion(formData: FormData): Promise<void> 
   const confirmUncheckedLinks = formData.get("confirm_unchecked_links") === "on";
   if (
     !reviewIdPattern.test(sourceEventId) ||
+    (observationId !== "" && !reviewIdPattern.test(observationId)) ||
     title.length < 3 ||
     title.length > 200 ||
     summary.length < 3 ||
@@ -127,6 +129,7 @@ export async function submitSharingPromotion(formData: FormData): Promise<void> 
   }
   try {
     await promoteSharingCandidate(sourceEventId, {
+      ...(observationId ? { observation_id: observationId } : {}),
       title,
       summary,
       reason,

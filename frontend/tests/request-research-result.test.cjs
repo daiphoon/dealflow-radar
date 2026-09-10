@@ -17,6 +17,7 @@ function load(file, mocks) {
   return module.exports;
 }
 const mocks = {
+  "@/components/research-coverage": load(path.join(__dirname, "../components/research-coverage.tsx"), {}),
   "next/link": { default: ({ children, ...props }) => React.createElement("a", props, children) },
 };
 const pageDir = path.join(__dirname, "../app/watchlist");
@@ -41,6 +42,44 @@ const request = (overrides = {}) => ({
 });
 const render = (data) => renderToStaticMarkup(React.createElement(component.RequestResearchResult, { request: data }));
 const visible = (html) => html.replace(/<details>.*?<\/details>/gs, "");
+
+test("类别检查区分五类结果，明确缓存时间与事实边界", () => {
+  const data = request();
+  data.research_result.category_coverage = [
+    ["financial_operation", "no_records"], ["financing_cap_table", "evidence_obtained"],
+    ["contract_commercial", "blocked"], ["legal_compliance", "failed"],
+    ["information_quality", "not_configured"],
+  ].map(([category, status]) => ({
+    category, status, route: status === "not_configured" ? null : "business_capital",
+    last_attempt_at: "2026-09-10T04:05:06Z", search_checked_at: "2026-09-01T01:02:03Z",
+    evidence_checked_at: status === "evidence_obtained" ? "2026-09-01T01:02:03Z" : null,
+    cache_reused: true, evidence_count: status === "evidence_obtained" ? 1 : 0,
+    blocked_count: status === "blocked" ? 1 : 0, failed_count: status === "failed" ? 1 : 0,
+    gaps: ["本次检查记录不代表事实已核实"],
+  }));
+  const html = render(data);
+  for (const label of ["未配置独立来源", "读取受阻", "检查失败", "检索成功，未检出记录", "取得相关正文"]) {
+    assert.ok(html.includes(label));
+  }
+  assert.match(html, /多个类别共用一次组合检索/);
+  assert.match(html, /未检出记录也不代表公司没有风险/);
+  assert.match(html, /复用缓存不会刷新原来源检查时间/);
+  assert.match(html, /最近正文成功检查：2026年9月1日 09:02/);
+  assert.match(html, /本轮尝试：2026年9月10日 12:05/);
+  assert.match(html, /最近正文成功检查：未记录/);
+});
+
+test("历史未知覆盖不呈现虚构零值，未知代码不回显", () => {
+  const data = request();
+  data.research_result.category_coverage = [{
+    category: "private-category", status: "private-status", route: null,
+    evidence_count: null, blocked_count: null, failed_count: null,
+    gaps: ["历史任务检查记录不足"],
+  }];
+  const html = render(data);
+  assert.match(html, /历史任务检查记录不足/);
+  assert.doesNotMatch(html, /private-category|private-status|相关正文 0 份/);
+});
 
 test("当前新增线索不被历史无成果覆盖；八句失败与信息质量伪成功不再展示", () => {
   const data = request();
@@ -109,6 +148,7 @@ test("真实申请页接入当前摘要，保留取消操作，不额外逐公�
     ...mocks, "./request-research-result": component,
     "./request-status-refresher": { RequestStatusRefresher: () => null },
     "@/lib/auth-navigation": { redirectIfAuthenticationRequired: async () => {} },
+    "@/components/watchlist-monitor": load(path.join(__dirname, "../components/watchlist-monitor.tsx"), {}),
     "@/app/personal-actions": {},
     "@/lib/api": {
       getPersonalWatchlist: async () => [],
