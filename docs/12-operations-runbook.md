@@ -73,7 +73,7 @@ unset -f m5
 
 服务器套餐、带宽、期限、价格和 COS 地域仍由项目负责人确认。重建时按以下顺序执行：
 
-1. 购买腾讯云中国香港服务器并固定公网地址；配置云安全组，只允许公网 `80/443`，SSH 仅走 Tailscale 或明确管理地址；创建私有 COS 桶、14 个每日加 8 个每周恢复点的生命周期策略，以及只允许指定前缀读写的最小权限 COSCLI 凭据；
+1. 购买腾讯云中国香港服务器并固定公网地址；配置云安全组，只允许公网 `80/443`，SSH 仅走 Tailscale 或明确管理地址；创建私有 COS 桶、14 个每日加 8 个每周恢复点的生命周期策略；服务器 COSCLI 凭据仅允许上传指定前缀，恢复由管理终端上独立获读取授权的身份执行；
 2. 复制 `deploy/single-host.env.example` 为 Git 忽略的 `deploy/single-host.env`，填写真实值并执行 `chmod 600 deploy/single-host.env`；不得把 Secret 放入命令历史、镜像、日志或 Git；
 3. 为 `BACKEND_IMAGE` 和 `FRONTEND_IMAGE` 使用固定提交对应的不可变标签，不使用漂移的 `latest`；
 4. 运行无网络、无数据库写入的 `preflight`，确认生产模式、CloudBase、PostgreSQL、HTTPS 和八个初始安全开关；
@@ -117,7 +117,13 @@ export COS_BACKUP_PREFIX='dealflow-radar/postgres'
 unset BACKUP_DIR BACKUP_FILE COSCLI_CONFIG_PATH COS_BUCKET_ALIAS COS_BACKUP_PREFIX
 ```
 
-COSCLI 配置必须通过官方工具交互生成并执行 `chmod 600`，不要把 Secret ID 或 Secret Key 放进上述命令。上传脚本不会删除本地文件，也不会上传解密私钥；实际 COS 创建前只能用假命令测试，不能宣称异机备份完成。首次恢复验收必须从 COS 下载加密文件到隔离环境，校验后临时挂载离线私钥，并使用 `--profile restore` 启动独立恢复库：
+COSCLI 配置必须通过官方工具交互生成并执行 `chmod 600`，不要把 Secret ID 或 Secret Key 放进上述命令。上传脚本不会删除本地文件，也不会上传解密私钥；实际 COS 创建前只能用假命令测试，不能宣称异机备份完成。
+
+香港环境的服务器账号 `dealflow-radar-backup-writer` 使用 `DealflowRadarCosBackupUploadOnly`：仅允许向既有备份前缀执行 `cos:PutObject`。该账号不能下载、列举或删除；用它执行下载时，`HEAD Object` / `GET Object` 返回 403 属于预期权限边界，不能据此认定备份损坏或补授生产读取权限。COSCLI 下载需要的读取动作见[腾讯云官方说明](https://intl.cloud.tencent.com/zh/document/product/436/43256)。
+
+恢复使用管理终端上已获读取授权的管理身份：登录 COS 控制台，在 `dealflow-radar/postgres/` 选取明确恢复点，下载同名 `.dump.age`、`.dump.age.sha256` 和 `.dump.age.plain.sha256` 三个文件；将它们放入 Git 忽略的私有目录，校验加密文件及解密后的哈希。服务器上的上传凭据和 Mac 上的解密私钥分别保管；临时签名下载链接不写入聊天、Git 或操作日志。核对恢复来源必须是 COS 实际下载，不能用服务器 SSH 副本代替这项验收。
+
+在管理终端的独立 Compose 项目或一次性容器中创建 `_restore_test` 数据库，临时只读挂载离线私钥，使用 `--profile restore` 启动独立恢复库；以下命令只用于已配置的隔离恢复环境：
 
 ```bash
 export BACKUP_FILE='替换为从COS下载的.dump.age文件名'
@@ -181,7 +187,7 @@ CloudBase 只接入身份认证，不创建或迁移数据库、云函数、业�
 3. 确认本地 `users` 中存在相同邮箱的唯一 active 记录，且对应 tenant 为 active；不得用同一邮箱跨 tenant 建两个待绑定用户；
 4. 不把 CloudBase group 当作本地角色，不在 CloudBase 迁移基金或公司权限。
 
-数据库先备份并升级到当前 Alembic head（当前代码基线为 `0017`；`0015` 只是 CloudBase 认证首次落地时的历史基线）。后端与前端使用相同的服务端环境配置；环境 ID 和客户端 ID 不是业务权限凭证，但仍应由部署配置管理，不写死在代码：
+数据库先备份并升级到当前 Alembic head（2026-09-10 已部署基线为 `0031`；`0015` 只是 CloudBase 认证首次落地时的历史基线）。后端与前端使用相同的服务端环境配置；环境 ID 和客户端 ID 不是业务权限凭证，但仍应由部署配置管理，不写死在代码：
 
 ```bash
 export AUTH_PROVIDER=cloudbase
