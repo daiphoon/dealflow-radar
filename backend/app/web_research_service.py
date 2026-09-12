@@ -776,6 +776,10 @@ def _profile_or_listing_url(url: str) -> bool:
     host = (parsed.hostname or "").lower().rstrip(".")
     if _host_matches_any(host, PROFILE_AGGREGATOR_DOMAINS):
         return True
+    if _host_matches_domain(host, "kanzhun.com") and parsed.path.casefold().startswith(
+        "/firm/info/"
+    ):
+        return True
     path_parts = {part.casefold() for part in parsed.path.split("/") if part}
     if not path_parts:
         return True
