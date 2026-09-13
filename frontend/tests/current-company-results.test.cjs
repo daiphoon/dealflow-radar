@@ -137,6 +137,29 @@ test("私有公司不出现平台共享概览", async () => {
   assert.equal(overview(await render(company({ is_platform_shared: false }))), undefined);
 });
 
+test("人工初始资料保留月份、历史、来源性质与未评分，不伪造最近检查", async () => {
+  const version = { record_version: "revision", fact_version: "facts", is_current: true,
+    date_text: "2024-04", date_precision: "月", date_basis: "公司回溯月份",
+    reviewed_at: "2026-09-01T00:00:00Z", as_of_date: "2026-08-31",
+    occurred_date_text: "未单独确认", subject_scope: "品牌融资；未确认法人增资",
+    source_grade: "B｜媒体报道", content_support: "媒体报道支持", evidence_available: true,
+    summary: "金额近一亿元，未推断估值" };
+  const curated = { ...event("curated", "human_promoted"), occurred_at: null,
+    materiality_score: 0, risk_severity: "unknown", confidence_score: "0",
+    curated_versions: [version, { ...version, record_version: "old", is_current: false,
+      summary: "早期人工记录，已保留" }] };
+  const html = await render(company({ identity_verification_basis: "curator_confirmed", events: [curated] }));
+  assert.match(html, /主体已由负责人确认/);
+  assert.match(html, /资料所述日期：2024-04（月；公司回溯月份）/);
+  assert.match(html, /人工整理、负责人已复核/);
+  assert.match(html, /本次导入未重新读取网页/);
+  assert.match(html, /尚未联网检查/);
+  assert.match(html, /风险尚未评价/);
+  assert.match(html, /品牌融资；未确认法人增资/);
+  assert.match(html, /早期人工记录，已保留/);
+  assert.doesNotMatch(html, /0\/100|>0%<|无显著风险|2024年4月1日/);
+});
+
 test("个人水位加载中或失败不清空当前概览，失败回退仍只用当前列表", async () => {
   const change = event("change", "deterministic_change");
   for (const state of [{ loading: true }, { failed: true }]) {

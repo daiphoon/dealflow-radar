@@ -1150,9 +1150,15 @@ def _refresh_company_snapshot(
     )
     risk_order = {"none": 0, "low": 1, "moderate": 2, "high": 3, "critical": 4}
     highest_risk = max(
-        (item.risk_severity for item in published_events),
+        (
+            item.risk_severity
+            for item in published_events
+            if item.fingerprint_version != "curated-v1"
+        ),
         key=lambda value: risk_order.get(value, -1),
-        default="none",
+        default="unknown"
+        if any(item.fingerprint_version == "curated-v1" for item in published_events)
+        else "none",
     )
     event_dates: list[date] = []
     missing_fact_dates = False
@@ -1923,6 +1929,17 @@ def _event_out(
                 detail_available=False,
             )
         )
+    from backend.app.curated_publication import curated_versions
+
+    curated = curated_versions(session, event, {item.id for item in evidence_items})
+    if curated and event.visibility_scope == PLATFORM_SHARED_SCOPE:
+        current_evidence_ids = {
+            evidence_id
+            for version in curated
+            if version.is_current and version.evidence_available
+            for evidence_id in version.evidence_ids
+        }
+        evidence_items = [item for item in evidence_items if item.id in current_evidence_ids]
     observations = tender_observations(session, event, {item.id for item in evidence_items})
     current_observation = next(
         (item for item in observations if item.is_current and item.evidence_available), None
@@ -2000,7 +2017,7 @@ def _event_out(
             .order_by(EventFact.position, EventFact.fact_key)
         )
     )
-    if event.fingerprint_version == "tender-v1":
+    if event.fingerprint_version in {"tender-v1", "curated-v1"}:
         # 观测账本追加的更正字段不能自动成为当前事件的展示事实。
         current_keys = {
             fact_key(item["name"], item["value"], item.get("unit")) for item in event.facts
@@ -2069,11 +2086,12 @@ def _event_out(
         fact_version=current_observation.fact_version if current_observation else None,
         display_kind=display_kind,
         tender_observations=observations,
+        curated_versions=curated,
         published_at=event.published_at,
         published_on=event.published_on,
         direction=event.direction,
         materiality_score=event.materiality_score,
-        risk_severity=event.risk_severity,
+        risk_severity="unknown" if curated else event.risk_severity,
         confidence_score=event.confidence_score,
         source_quality=event.source_quality,
         title=event.title,
@@ -2639,6 +2657,8 @@ def promote_private_event(
     auto_publish_enabled: bool,
     observation_id: UUID | None = None,
     tender_events_enabled: bool = False,
+    commit: bool = True,
+    refresh_snapshot: bool = True,
 ) -> SharingActionOut:
     _require_platform_admin(session, user)
     if auto_publish_enabled:
@@ -2647,7 +2667,15 @@ def promote_private_event(
     if source_event is None:
         raise NotFoundError("source event not found")
     tender_selection = None
+    curated_selection = None
     decision_key = f"sharing:promote:{source_event_id}"
+    if source_event.fingerprint_version == "curated-v1":
+        from backend.app.curated_publication import select_curated_observation
+
+        curated_selection = select_curated_observation(
+            session, source_event, observation_id, evidence_ids
+        )
+        decision_key += f":{curated_selection.id}"
     if is_tender_event(source_event):
         if not tender_events_enabled:
             raise PromotionEligibilityError("tender event path is disabled")
@@ -2820,12 +2848,25 @@ def promote_private_event(
         for item in shared_evidence_by_source.values():
             if item.display_detail_payload is None:
                 item.display_detail_payload = snapshot_payload
+    elif curated_selection is not None:
+        from backend.app.curated_publication import project_curated_observation
+
+        project_curated_observation(
+            shared_event, curated_selection, list(shared_evidence_by_source.values())
+        )
+        materialize_event_fact_ledger(session, shared_event)
     else:
         materialize_event_fact_ledger(session, shared_event)
 
     decision = EventSharingDecision(
         source_event_id=source_event.id,
-        source_observation_id=tender_selection[0].id if tender_selection else None,
+        source_observation_id=(
+            tender_selection[0].id
+            if tender_selection
+            else curated_selection.id
+            if curated_selection
+            else None
+        ),
         shared_event_id=shared_event.id,
         actor_user_id=user.id,
         actor_tenant_id=user.tenant_id,
@@ -2864,14 +2905,10 @@ def promote_private_event(
                 },
             )
         )
-    _refresh_company_snapshot(
-        session,
-        company,
-        PLATFORM_SHARED_SCOPE,
-        None,
-        None,
-    )
-    session.commit()
+    if refresh_snapshot:
+        _refresh_company_snapshot(session, company, PLATFORM_SHARED_SCOPE, None, None)
+    if commit:
+        session.commit()
     return _sharing_action_out(
         decision,
         shared_event,
@@ -3004,7 +3041,7 @@ def _snapshot_freshness_status(
 ) -> str:
     if active_job is not None:
         return "refreshing"
-    if snapshot is None:
+    if snapshot is None or snapshot.last_checked_at is None:
         return "unknown"
     if snapshot.freshness_status in {"unknown", "budget_deferred"}:
         return snapshot.freshness_status
@@ -3062,7 +3099,7 @@ def list_companies(session: Session, user_id: UUID, policy: RefreshPolicy) -> li
             )
         )
         highest_risk = max(
-            (event.risk_severity for event in events),
+            (event.risk_severity for event in events if event.fingerprint_version != "curated-v1"),
             key=lambda value: risk_order.get(value, -1),
             default=None,
         )
@@ -3354,6 +3391,13 @@ def get_company_detail(
             .order_by(Event.observed_at.desc())
         )
     )
+    from backend.app.curated_publication import has_pending_curated_record
+
+    unconfirmed_leads = [
+        event
+        for event in unconfirmed_leads
+        if event.fingerprint_version != "curated-v1" or has_pending_curated_record(session, event)
+    ]
     own_job = session.scalar(
         select(CompanyResearchJob)
         .join(

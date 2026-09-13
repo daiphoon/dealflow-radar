@@ -94,6 +94,7 @@ export type Event = {
   fact_version?: string | null;
   display_kind?: "confirmed_change" | "baseline" | "unconfirmed";
   tender_observations?: TenderObservation[];
+  curated_versions?: CuratedVersion[];
   published_at: string | null;
   published_on: string | null;
   direction: string;
@@ -115,6 +116,30 @@ export type Event = {
   visibility_scope: string;
   analysis: InvestorChangeAnalysis | null;
   research_analysis: ResearchCandidateAnalysis | null;
+};
+
+export type CuratedVersion = {
+  record_version: string;
+  fact_version: string;
+  observed_at: string;
+  reviewed_at: string;
+  as_of_date: string;
+  date_text: string;
+  date_precision: string;
+  date_basis: string;
+  occurred_date_text: string;
+  subject_scope: string;
+  source_grade: string;
+  content_support: string;
+  assessment_status: "not_assessed";
+  title: string;
+  summary: string;
+  facts: Array<{ name: string; value: string; unit: string | null }>;
+  sources: Array<{ name: string; url: string }>;
+  evidence_ids: string[];
+  confirmed: boolean;
+  is_current: boolean;
+  evidence_available: boolean;
 };
 
 export type TenderObservation = {

@@ -47,7 +47,7 @@ const freshnessLabels: Record<string, string> = {
   fresh: "数据新鲜",
   stale: "数据已过期",
   refreshing: "后台更新中",
-  unknown: "待生成快照",
+  unknown: "检查状态未确认",
 };
 
 const publicationReasonLabels: Record<string, string> = {
@@ -101,6 +101,7 @@ function identityLabel(status: string, basis: string | null): string {
   if (basis === "official_government") return "已核验（政府官方来源）";
   if (basis === "exchange_disclosure") return "已核验（交易所披露·人工核验）";
   if (basis === "public_crosscheck") return "主体已交叉核对（公开资料，非官方登记核验）";
+  if (basis === "curator_confirmed") return "主体已由负责人确认";
   return "待核验";
 }
 
@@ -141,6 +142,9 @@ function EventCard({
 }) {
   const eventDate = event.occurred_on ?? event.occurred_at ?? event.published_at ?? event.published_on;
   const isTender = Boolean(event.tender_observations?.length);
+  const curatedVersions = event.curated_versions ?? [];
+  const isCurated = curatedVersions.length > 0;
+  const curated = curatedVersions.find((item) => item.is_current) ?? curatedVersions[0];
   const isLicensedSourceRecord = event.publication_route === "licensed_source_record";
   const isDeterministicChange = event.publication_route === "deterministic_change";
   const isConfirmedChange = event.display_kind === "confirmed_change" || isDeterministicChange;
@@ -149,6 +153,8 @@ function EventCard({
   const afterValue = event.facts.find((fact) => fact.name === "变更后")?.value;
   const publicationLabel = unconfirmed
     ? "未确认线索"
+    : isCurated
+      ? "人工整理、负责人已复核"
     : privateRecord
       ? "机构私有已确认"
       : event.publication_route === "licensed_structured_fact"
@@ -165,7 +171,9 @@ function EventCard({
       <div className="event-meta">
         <span>{eventTypeLabels[event.event_type] ?? event.event_type}</span>
         <span>
-          {isTender
+          {isCurated
+            ? `资料所述日期：${curated.date_text || "未知"}（${curated.date_precision}；${curated.date_basis}）`
+            : isTender
             ? `公告所述事件日期：${event.occurred_on ?? "未知"}${unconfirmed ? "（待核实）" : ""}`
             : unconfirmed
             ? event.occurred_at
@@ -174,20 +182,41 @@ function EventCard({
             : formatDate(eventDate)}
         </span>
         <span
-          className={`risk ${isLicensedSourceRecord ? "risk-unknown" : `risk-${event.risk_severity}`}`}
+          className={`risk ${isLicensedSourceRecord || isCurated ? "risk-unknown" : `risk-${event.risk_severity}`}`}
         >
-          {isLicensedSourceRecord
+          {isCurated
+            ? "风险尚未评价"
+            : isLicensedSourceRecord
             ? "影响待判断"
             : (riskLabels[event.risk_severity] ?? event.risk_severity)}
         </span>
       </div>
       <h3>{event.title}</h3>
       <p>{event.summary}</p>
+      {isCurated ? (
+        <section aria-label="人工整理资料口径" className="privacy-note">
+          <p>{unconfirmed ? "人工整理记录 · 仍待核实" : "人工整理、负责人已复核"} · 本次导入未重新读取网页。</p>
+          <p>人工确认：{formatDate(curated.reviewed_at)} · 资料基准日：{curated.as_of_date || "未知"}</p>
+          <p>实际发生日期：{curated.occurred_date_text || "未知"} · {curated.subject_scope}</p>
+          <p>原资料证据等级：{curated.source_grade} · {curated.content_support}。金额与近似口径按原资料保留。</p>
+          {curatedVersions.length > 1 ? (
+            <details>
+              <summary>查看人工资料历史版本（{curatedVersions.length}）</summary>
+              {curatedVersions.map((version) => (
+                <div key={version.record_version}>
+                  <strong>{version.is_current ? "当前版本" : "历史版本"} · {formatDate(version.reviewed_at)}</strong>
+                  <p>{version.evidence_available ? version.summary : "该版本证据已撤回或不可用"}</p>
+                </div>
+              ))}
+            </details>
+          ) : null}
+        </section>
+      ) : null}
       {event.fact_ledger.length > 0 ? (
         <section className="fact-support-ledger" aria-label="事实与证据支持情况">
           <div className="fact-support-heading">
             <strong>事实与证据支持情况</strong>
-            <span>逐条判断，不以“有链接”代替“证据支持”</span>
+            <span>{isCurated ? "支持依据为人工整理记录；不表示系统已读取网页原文" : "逐条判断，不以“有链接”代替“证据支持”"}</span>
           </div>
           <dl>
             {event.fact_ledger.map((fact) => (
@@ -231,11 +260,11 @@ function EventCard({
       <dl className="score-grid">
         <div>
           <dt>重要性</dt>
-          <dd>{event.materiality_score}/100</dd>
+          <dd>{isCurated ? "尚未评分" : `${event.materiality_score}/100`}</dd>
         </div>
         <div>
           <dt>可信度</dt>
-          <dd>{Math.round(Number(event.confidence_score) * 100)}%</dd>
+          <dd>{isCurated ? "尚未评分" : `${Math.round(Number(event.confidence_score) * 100)}%`}</dd>
         </div>
         <div>
           <dt>来源质量</dt>
@@ -477,7 +506,7 @@ export default async function CompanyDetailPage({
               工商主体身份：
               {identityLabel(company.identity_status, company.identity_verification_basis)} · 数据基准日
               {formatDate(company.data_as_of)} · 已发布资料检查：
-              {company.last_checked_at ? formatDate(company.last_checked_at) : "尚无已发布资料"}
+              {company.last_checked_at ? formatDate(company.last_checked_at) : company.events.length ? "尚未联网检查" : "尚无已发布资料"}
             </p>
             <p>统一社会信用代码：{company.credit_code ?? "暂未收录"}</p>
             {company.official_website ? (

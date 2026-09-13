@@ -12,6 +12,8 @@ dependencies = [
   "pydantic>=2.10,<3",
   "sqlalchemy>=2.0,<3",
   "uvicorn>=0.34,<1",
+  "openpyxl>=3.1.5,<4",
+  "defusedxml>=0.7.1,<1",
 ]
 
 [dependency-groups]

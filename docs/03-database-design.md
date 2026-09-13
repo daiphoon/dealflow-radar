@@ -63,13 +63,13 @@ PostgreSQL 是事实主库。所有结构变化通过 Alembic 新迁移完成；
 | `refresh_runs` | 每次尝试、检查点、Provider 结果、错误、变化计数、起止时间 | FK job；job/attempt 唯一；状态/开始时间索引 |
 | `company_research_jobs` | 全局公司级研究队列、九类投资研究覆盖状态、租约、取消和调用/缓存/Token 计数；旧任务的历史模块状态继续兼容读取 | 同一公司仅一个活动任务；多个个人或机构请求可关联同一任务；E2.1 在既有 `coverage` JSON 追加 `category_coverage_version/source_routes` 和逐次搜索/正文的分类、时间、缓存及失败元数据，无新迁移；历史缺少记录时保持未知，不从事件数反推 |
 | `web_search_cache_entries` | Provider、规范查询、查询组、公司身份指纹、结果与响应哈希、取得/到期时间 | 全局公共搜索缓存；唯一 `(provider_code, query_hash, company_identity_fingerprint, policy_version)`；只允许平台管理员 Worker 通过 RLS 读写 |
-| `research_imports` | tenant、导入人、批次、格式、工具、原始文件哈希、许可、自动发布/未确认/身份审核计数与状态 | `(tenant_id, batch_id)` 和 `(tenant_id, file_hash, parser_version)` 唯一；机构管理员 RLS；状态索引 |
+| `research_imports` | tenant、导入人、批次、格式、工具、原始文件哈希、许可、自动发布/未确认/身份审核计数与状态 | `(tenant_id, batch_id)` 和 `(tenant_id, file_hash, parser_version, selection_key)` 唯一；旧入口选择键为空，负责人表格按用途/选样区分；普通人工导入保留原 RLS，`curated-xlsx-v1` 仅 active 平台管理员可读写；状态索引 |
 | `official_identity_verifications` | tenant、公司候选、私有身份原文档、查询词、工商全称、信用代码、注册地、登记状态、`verification_basis`、核验结果/规则/时间 | 每份原文档唯一核验记录；当前入口为政府官方或 ADR-0019 交易所披露人工核验，旧商业依据仅留历史兼容；tenant/状态/时间及信用代码索引；原管理员写、审核员读 RLS 不扩张，交易所入口应用层额外要求平台管理员 |
 | `trusted_sources` | tenant、公司、来源类型、允许域名、起始 URL、可选列表内容路径、许可依据、检查频率、保留策略和最近状态 | 同 tenant/company/URL 唯一；仅当前 tenant 平台管理员可读写；列表路径变更会清除起始页条件缓存 |
 | `source_check_runs` | 来源检查队列、人工/定时触发与应检查时间、策略与资源上限快照、租约、请求/字节/变化/失败计数、robots 状态、请求审计和零费用字段 | 同来源仅一个活跃任务；定时幂等键包含 source 与 due time；tenant/company/source 复合血缘；RLS；运行记录不被后续配置静默改写 |
 | `candidate_documents` | 新增或变化页面的 URL、标题、日期、哈希、最小摘录、许可、链接状态、发现运行、前版本、人工处理状态和研究交接定位 | 同来源/URL/哈希唯一；tenant/company/source/run 复合外键；默认 `organization_private`；只能通过显式结构化交接生成同 tenant 的私有候选，不直接生成共享事实 |
 | `review_queue` | 事件或实体提及、触发规则、状态、分配人、决定和理由 | `event_id` 与 `entity_mention_id` 必须且只能存在一个；每个对象唯一；状态索引 |
-| `event_sharing_decisions` | 平台管理员的晋升、拒绝和撤回决定；操作者、理由、私有来源事件、目标共享事件、共享表述和策略版本；中标决定另绑定 `source_observation_id` | 观测 ID 唯一，`(source_observation_id, source_event_id)` 复合外键防错接；旧空观测行仍按来源事件限制一次晋升/拒绝；幂等键唯一；只追加，不允许应用角色更新或删除 |
+| `event_sharing_decisions` | 平台管理员的晋升、拒绝和撤回决定；操作者、理由、私有来源事件、目标共享事件、共享表述和策略版本；中标及负责人表格决定另绑定 `source_observation_id` | 观测 ID 唯一，`(source_observation_id, source_event_id)` 复合外键防错接；旧空观测行仍按来源事件限制一次晋升/拒绝；幂等键唯一；只追加，不允许应用角色更新或删除 |
 | `event_sharing_decision_evidence` | 每次共享决定采用的私有证据引用和当时展示快照 | 每个决定与来源证据唯一；只追加；不授予原文档共享权限 |
 | `authentication_audit_logs` | CloudBase 身份绑定、会话开始、刷新和结束的追加式审计；只保存 subject 哈希 | user/tenant 外键；事件/结果检查；用户自读自写、同 tenant 平台管理员只读 RLS；应用角色不能更新或删除 |
 | `usage_ledger` | task/run/company/tenant/provider、调用量、Token、估算/实际费用、有效产出 | 用量幂等键唯一；tenant/company/provider/日期索引 |
@@ -185,3 +185,11 @@ E3 另以 `0031` 增加 `company_watch_schedules`：每公司一个计划，保�
 `usage_ledger` 新增 `usage_state`、`cost_status`、`quota_scope/task_key/subject_key`、调用/金额预占、报价版本及派发/结算时间；`external_calls` 和金额允许 `NULL`，金额精度提升至 `Numeric(18,6)`。历史行默认 `legacy/unknown`，不推断免费、不改变来源与累计用量。预占、派发分别先提交，结算与结果/进度一起提交。
 
 平台研究费用跨执行 Worker 的租户归集：当前有效平台管理员可读取/核对平台研究账本及旧搜索费用，普通用户不能通过同租户策略读写新平台账本；机构和模型私有费用仍走原租户策略。新索引支持任务和公司窗口计量。迁移有数据降级保护、跨租户并发预算及非 owner RLS 由 `test_web_budget_delivery.py` 验证；状态和恢复操作见[成本说明](06-cost-control.md)。
+
+### E4.1 最小结构变化（0032）
+
+`Company.identity_verification_basis` 新增 `curator_confirmed`；确认依据由私有 `ResearchImport → RawDocument → EntityMention` 及零调用审计关联到公司，记录确认者、确认时间、文件哈希、工作表/行与选择范围，不伪造政府核验行。共享准入只由 active 平台管理员执行，旧核验依据不覆盖。
+
+`ResearchImport.selection_key` 区分同一文件的主体与初始资料用途；记录幂等另用资料库标识、公司代码、工作表和记录 ID，实质修订追加 `EventObservation` 与人工决定。共享证据只复制许可允许的展示字段，不包含文件名、私有观测 ID 或确认人。
+
+`CompanySnapshot.last_checked_at` 允许为空：初始导入沿用旧联网检查时间，没有历史检查时为 `NULL / unknown`；资料基准日取原资料口径。事件数值字段保留兼容占位，`curated_versions.assessment_status=not_assessed`，风险输出为 `unknown`，不参与已评分风险汇总；页面和模板报告显示未评价。带人工资料或未检查快照时禁止降级 `0032`。

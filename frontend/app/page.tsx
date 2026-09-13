@@ -19,7 +19,7 @@ const freshnessLabels: Record<string, string> = {
   fresh: "新鲜",
   stale: "已过期",
   refreshing: "后台更新中",
-  unknown: "待生成快照",
+  unknown: "检查状态未确认",
 };
 
 const riskLabels: Record<string, string> = {
