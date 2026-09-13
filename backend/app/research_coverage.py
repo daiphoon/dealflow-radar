@@ -22,6 +22,11 @@ SEARCH_GROUPS = (
     ("business_capital", "财务 融资 股权 合同 中标 订单"),
     ("technology_risk_exit", "公告 变更 上市 备案 诉讼 处罚 投产 产品"),
 )
+SHORT_SEARCH_TOPICS = {"business_capital": "融资", "technology_risk_exit": "产品"}
+SHORT_SEARCH_MODULES = {
+    "business_capital": ("financing_cap_table",),
+    "technology_risk_exit": ("product_technology",),
+}
 SEARCH_GROUP_MODULES = {
     "business_capital": ("financial_operation", "financing_cap_table", "contract_commercial"),
     "technology_risk_exit": (
@@ -51,11 +56,15 @@ def _blocked_document(document: dict[str, object]) -> bool:
     }
 
 
-def source_routes(primary: str, fallback: str) -> dict[str, dict[str, object] | None]:
+def source_routes(
+    primary: str, fallback: str, *, short_topics: bool = False
+) -> dict[str, dict[str, object] | None]:
     return {
         **{
             category: {"search_group": group, "providers": [primary, fallback]}
-            for group, categories in SEARCH_GROUP_MODULES.items()
+            for group, categories in (
+                SHORT_SEARCH_MODULES if short_topics else SEARCH_GROUP_MODULES
+            ).items()
             for category in categories
         },
         "information_quality": None,

@@ -2455,14 +2455,16 @@ def test_daily_search_budget_checkpoints_instead_of_calling_again(
 
     primary, fallback = _providers()
     if incremental:
-        from backend.app.research_subject import load_subject
-        from backend.app.web_research_service import _query_for
+        from backend.app.research_coverage import SHORT_SEARCH_TOPICS
+        from backend.app.research_subject import load_subject, short_business_query
 
         with migrated_app.state.session_factory() as session:
             subject = load_subject(session, session.get(Company, SHARED_COMPANY_ID))
             primary.responses = {
-                _query_for(subject, terms): primary.responses[_query(terms)]
-                for _, terms in SEARCH_GROUPS
+                short_business_query(subject, SHORT_SEARCH_TOPICS[code]): primary.responses[
+                    _query(terms)
+                ]
+                for code, terms in SEARCH_GROUPS
             }
     policy = WebResearchPolicy(
         incremental_research_enabled=incremental,

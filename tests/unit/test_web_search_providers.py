@@ -140,7 +140,17 @@ def test_bocha_provider_maps_documented_shape_without_requesting_summary() -> No
         "query": "示例公司 中标",
         "count": 3,
         "summary": False,
+        "freshness": "oneYear",
     }
+
+
+def test_bocha_all_time_search_does_not_add_a_time_filter() -> None:
+    provider = BochaSearchProvider(
+        "test-key", timeout_seconds=2, max_response_bytes=4096, user_agent="test"
+    )
+    assert "freshness" not in provider._request_payload(
+        SearchRequest("示例公司", recent_only=False)
+    )
 
 
 @pytest.mark.parametrize(

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from backend.app.models import Company, CompanyAlias
 
 QUERY_STRATEGY_VERSION = "verified-business-names-v1"
+SHORT_QUERY_STRATEGY_VERSION = "verified-short-business-topics-v2"
 
 
 def normalize(value: str) -> str:
@@ -93,7 +94,7 @@ def matched_name(company, value: str) -> str | None:
                     r"[a-z0-9]|(?:科技|设备|集团|控股)?(?:有限|股份|子公司|的子公司)", tail
                 ):
                     continue
-                if head and re.search(r"[a-z0-9]$", head):
+                if key[0].isascii() and head and re.search(r"[a-z0-9]$", head):
                     continue
             return name
     if company.credit_code and normalize(company.credit_code) in haystack:
@@ -106,6 +107,20 @@ def query_subject(company) -> str:
     if len(values) == 1:
         return f'"{values[0]}"'
     return "(" + " OR ".join(f'"{value}"' for value in values) + ")"
+
+
+def short_business_query(company, topic: str) -> str:
+    aliases = (
+        [name for name in company.aliases if name not in company.legal_aliases]
+        if isinstance(company, ResearchSubject)
+        else []
+    )
+    name = (
+        min(aliases, key=lambda value: (len(normalize(value)), normalize(value)))
+        if aliases
+        else company.legal_name
+    )
+    return f'"{name}" {topic}'
 
 
 class BusinessExcerptSelector:

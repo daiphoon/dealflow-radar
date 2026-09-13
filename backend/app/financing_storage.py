@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import select, text
 
 from backend.app.financing_events import (
+    EXTRACTOR_VERSION,
     SCHEMA_VERSION,
     FinancingCandidate,
     amount_value,
@@ -244,7 +245,7 @@ def persist_financing_document(session, supplied_company, supplied_document, sup
         observation_kind=kind,
         occurred_on=date.fromisoformat(candidate.occurred_on) if candidate.occurred_on else None,
         date_precision="day" if candidate.occurred_on else "unknown",
-        candidate_payload={"candidate": asdict(candidate)},
+        candidate_payload={"candidate": asdict(candidate), "extractor_version": EXTRACTOR_VERSION},
         created_by=actor.id,
     )
     observed_at = utc_now()
@@ -270,6 +271,7 @@ def persist_financing_document(session, supplied_company, supplied_document, sup
         display_allowed=True,
         display_detail_payload={
             "schema_version": SCHEMA_VERSION,
+            "extractor_version": EXTRACTOR_VERSION,
             "financing_observation": {
                 "kind": kind,
                 "fact_version": observation.fact_version,

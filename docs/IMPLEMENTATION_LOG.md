@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-09-14：E4.4 短业务查询与替代正文交付
+
+- 任务/关键文件：依批准实施两组短查询及冻结版本、博查最近一年参数；从失败后的可读正文定位并修复页头日期、双语品牌和重复融资提及识别，财经频道加入既有排序。关键代码为 `research_subject.py`、`research_coverage.py`、`web_research_service.py`、`web_search.py`、`source_fetcher.py`、`financing_events.py`、`financing_storage.py`；关注巡检保持旧查询。同步计划、看板、来源和测试说明，无迁移或新依赖。
+- 实际命令：相关 Pytest（增量规则、搜索 Provider、安全抓取、覆盖、增量落库、短查询、读取回退、预算路径与关注巡检）；`ruff check`、`ruff format --check`、`git diff --check`；私有 `prepare_isolated.py`、`remote_canary.py`、`diagnostic_fetch.py`、`secondary_fetch.py`、`test_recorded_body_delivery.py`、`production_snapshot_after.py`，Chrome 配额核对。原始输入/输出、后续诊断、回放分别封存于 `data/private/e4-validation/20260914-e44/`，未执行附件命令。
+- 验证结果：最终相关回归 253 通过/3 条件跳过，真实正文经 SQLite/PostgreSQL 非 owner RLS 落库和读取回放 2 通过；Ruff 和格式通过。5 条初始资料及快照不变，2 条新线索可读、重试不重复、普通用户不能读受限底稿。隔离 Worker 为 3 搜索/8 HTTP/200,556 字节/129.986 秒，原始正文支持输出 0/1；随后复用已发现 URL 取得 2 篇融资正文，另耗 4 HTTP/120,834 字节/3.137 秒。合计 3 搜索/12 HTTP，模型 0、免费额度内现金费用 0。配额百度 50→48、博查 967→966 对账一致；线上账本摘要和原 Excel/基准/历史输出哈希不变，13 开关关闭、5 金额上限为零、无临时联网容器和凭据文件。
+- 未解决事项/停止：新正文没有明确轮次或实际发生日，不能自动关联为人工 B 轮事项，保留待核实线索；同源转载不算独立确认。后续正文与回放不回写原盲测 0/1；修复未部署，线上新申请与 EV14/M6B 仍待验收。交付 PR 审查后停止，不扩样、不启动巡检或 E5。
+
 ## 2026-09-13：PR #83 / #84 合并部署与 E4.3 新复测
 
 - 任务/关键文件：按批准合并 PR #83，PR #84 调整到 main 后以 `024c38a` 完整 CI 验收，合并并部署 `de9cb60`，数据库保持 `0033`；通过原生申请更新对原公司执行一次同组回退复测。同步 README、有效看板、增量计划和本记录；本轮无新增产品代码。

@@ -526,6 +526,37 @@ def _decode_body(body: bytes, content_type: str | None) -> str:
     return body.decode("utf-8", errors="replace")
 
 
+def _visible_article_date(title: str, body: str) -> tuple[datetime | None, dict[str, object]]:
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    dates = {}
+    for heading, value, source in zip(lines, lines[1:], lines[2:]):
+        if (
+            len(heading) < 8
+            or not title.startswith(heading)
+            or not re.match(r"(?:来源|稿源)\s*[:：]", source)
+        ):
+            continue
+        matched = re.fullmatch(
+            r"(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?"
+            r"(?:\s+(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?)?",
+            value,
+        )
+        if matched:
+            try:
+                day = datetime(*map(int, matched.groups()), tzinfo=UTC)
+                dates[day] = value
+            except ValueError:
+                continue
+    if len(dates) != 1:
+        return None, {}
+    day, raw = next(iter(dates.items()))
+    return day, {
+        "published_at_basis": "visible_headline_date_source_v1",
+        "published_at_precision": "day",
+        "published_at_raw": raw,
+    }
+
+
 def _html_document(
     response: _FetchedResponse,
     root_domain: str,
@@ -580,11 +611,15 @@ def _html_document(
         if keep_excerpt and visible_text
         else None
     )
+    published_at = _parse_datetime(parser.published_value)
+    date_metadata = {}
+    if published_at is None and excerpt_selector is not None and not identity_mode:
+        published_at, date_metadata = _visible_article_date(title, body_text)
     hash_input = visible_text or response.body
     document = DiscoveredDocument(
         canonical_url=canonical_url,
         title=title[:500],
-        published_at=_parse_datetime(parser.published_value),
+        published_at=published_at,
         content_hash=_sha256(hash_input),
         excerpt=selected_excerpt,
         http_status=response.status_code,
@@ -601,6 +636,7 @@ def _html_document(
                 else ("main_content" if use_main else "clean_body")
             ),
             "extracted_text_length": len(visible_text),
+            **date_metadata,
             **getattr(excerpt_selector, "metadata", {}),
         },
     )

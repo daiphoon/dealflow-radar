@@ -376,7 +376,10 @@ class BochaSearchProvider(_JsonSearchProvider):
     endpoint = BOCHA_WEB_SEARCH_ENDPOINT
 
     def _request_payload(self, request: SearchRequest) -> dict[str, object]:
-        return {"query": request.query, "count": request.max_results, "summary": False}
+        payload = {"query": request.query, "count": request.max_results, "summary": False}
+        if request.recent_only:
+            payload["freshness"] = "oneYear"
+        return payload
 
     def _parse_results(self, payload: dict[str, Any], limit: int) -> list[SearchResult]:
         data = payload.get("data")
