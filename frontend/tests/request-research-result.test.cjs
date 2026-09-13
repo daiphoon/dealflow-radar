@@ -148,6 +148,7 @@ test("真实申请页接入当前摘要，保留取消操作，不额外逐公�
     ...mocks, "./request-research-result": component,
     "./request-status-refresher": { RequestStatusRefresher: () => null },
     "@/lib/auth-navigation": { redirectIfAuthenticationRequired: async () => {} },
+    "@/lib/request-status": load(path.join(__dirname, "../lib/request-status.ts"), {}),
     "@/components/watchlist-monitor": load(path.join(__dirname, "../components/watchlist-monitor.tsx"), {}),
     "@/app/personal-actions": {},
     "@/lib/api": {

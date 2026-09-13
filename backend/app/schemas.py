@@ -120,6 +120,30 @@ class TenderObservationOut(BaseModel):
     can_publish: bool = False
 
 
+class CuratedVersionOut(BaseModel):
+    record_version: str
+    observed_at: datetime
+    fact_version: str
+    reviewed_at: datetime
+    as_of_date: str
+    date_text: str
+    date_precision: str
+    date_basis: str
+    occurred_date_text: str
+    subject_scope: str
+    source_grade: str
+    content_support: str
+    assessment_status: Literal["not_assessed"]
+    title: str
+    summary: str
+    facts: list[dict[str, str | None]]
+    sources: list[dict[str, str]]
+    evidence_ids: list[UUID]
+    confirmed: bool = False
+    is_current: bool = False
+    evidence_available: bool = True
+
+
 class EventOut(BaseModel):
     id: UUID
     event_type: str
@@ -129,6 +153,7 @@ class EventOut(BaseModel):
     fact_version: str | None = None
     display_kind: Literal["confirmed_change", "baseline", "unconfirmed"] = "baseline"
     tender_observations: list[TenderObservationOut] = Field(default_factory=list)
+    curated_versions: list[CuratedVersionOut] = Field(default_factory=list)
     published_at: datetime | None
     published_on: date | None
     direction: str

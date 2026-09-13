@@ -103,7 +103,7 @@ _ACTIVE_REQUEST_STATUSES = {
 _CANCELLABLE_REQUEST_STATUSES = _ACTIVE_REQUEST_STATUSES | {"needs_input"}
 _REQUEST_STATUS_MESSAGES = {
     "pending": "已受理，等待后台核对公司名称和信用代码；无需上传营业执照。",
-    "in_review": "平台正在核对工商主体与共享目录归属。",
+    "in_review": "等待平台定点核对资料；当前没有正在执行的身份查证任务。",
     "identity_queued": "工商主体核验排队中。",
     "identity_checking": "正在查找公开资料核对公司主体；关闭页面不会中断进度。",
     "awaiting_confirmation": "请确认本次查询对应的工商主体。",
@@ -358,7 +358,7 @@ def _freshness_status(
     policy: RefreshPolicy,
     now: datetime,
 ) -> str:
-    if snapshot is None:
+    if snapshot is None or snapshot.last_checked_at is None:
         return "unknown"
     if snapshot.freshness_status in {"unknown", "budget_deferred"}:
         return snapshot.freshness_status
@@ -563,8 +563,11 @@ def _request_out(
         ),
         "identity_budget_deferred": "已保存主体查证进度，等待平台搜索预算恢复。",
         "identity_review_required": "该申请需要进一步核对主体，尚未绑定公司；无需上传营业执照。",
+        "curator_identity_confirmed": "负责人已确认主体；业务更新尚待安排。",
     }
-    if last_error_code in identity_messages:
+    if last_error_code in identity_messages and (
+        last_error_code != "curator_identity_confirmed" or request.status == "in_review"
+    ):
         status_message = identity_messages[last_error_code]
     retired_provider_result = request.last_error_code == "legacy_provider_retired"
     if retired_provider_result:
@@ -1284,6 +1287,11 @@ def _single_line(value: str) -> str:
 
 
 def _event_date_label(event: EventOut) -> str:
+    if event.curated_versions:
+        current = next(
+            (v for v in event.curated_versions if v.is_current), event.curated_versions[0]
+        )
+        return f"{current.date_text or '未知'}（{current.date_precision}；{current.date_basis}）"
     if event.tender_observations:
         return event.occurred_on.strftime("%Y年%m月%d日") if event.occurred_on else "事件日期未知"
     if event.occurred_at is not None:
@@ -1314,7 +1322,9 @@ def _report_markdown(
         f"- 注册地区：{company.registered_region or '暂无可靠公开数据'}",
         "- 工商主体身份："
         + (
-            "公开资料已交叉核对（非官方登记核验）"
+            "负责人已确认（人工整理资料）"
+            if company.identity_verification_basis == "curator_confirmed"
+            else "公开资料已交叉核对（非官方登记核验）"
             if company.identity_verification_basis == "public_crosscheck"
             else ("已核验" if company.identity_status == "verified" else "待核验")
         ),
@@ -1326,15 +1336,30 @@ def _report_markdown(
     if not events:
         lines.append("暂无已审核的重要信息。")
     for event in events:
+        curated = next((v for v in event.curated_versions if v.is_current), None)
         lines.extend(
             [
                 f"### {_event_date_label(event)}｜{_single_line(event.title)}",
                 "",
                 f"- 分类：{_EVENT_TYPE_LABELS.get(event.event_type, '其他')}",
                 f"- 方向：{_DIRECTION_LABELS.get(event.direction, '影响方向待确认')}",
-                f"- 风险级别：{_RISK_LABELS.get(event.risk_severity, '风险待确认')}",
-                f"- 重要性：{event.materiality_score}/100",
-                f"- 可信度：{event.confidence_score * 100:.0f}%",
+                *(
+                    [
+                        "- 资料性质：人工整理、负责人已复核；本次导入未重新读取网页。",
+                        f"- 人工确认时间：{curated.reviewed_at.isoformat()}",
+                        f"- 资料基准日：{curated.as_of_date or '未知'}",
+                        f"- 实际发生日期：{curated.occurred_date_text or '未知'}",
+                        f"- 主体归属口径：{curated.subject_scope or '未说明'}",
+                        f"- 原资料证据等级：{curated.source_grade}；{curated.content_support}",
+                        "- 重要性、风险与置信度：尚未评价。",
+                    ]
+                    if curated
+                    else [
+                        f"- 风险级别：{_RISK_LABELS.get(event.risk_severity, '风险待确认')}",
+                        f"- 重要性：{event.materiality_score}/100",
+                        f"- 可信度：{event.confidence_score * 100:.0f}%",
+                    ]
+                ),
                 "",
                 event.summary.strip(),
                 "",
@@ -1383,6 +1408,8 @@ def _report_markdown(
             _aware_utc(snapshot.last_checked_at)
             .astimezone(_SHANGHAI)
             .strftime("%Y年%m月%d日 %H:%M")
+            if snapshot.last_checked_at
+            else "尚未联网检查"
         )
         lines.append(f"- 最后检查时间：{last_checked_label}")
         for gap in snapshot.information_gaps:

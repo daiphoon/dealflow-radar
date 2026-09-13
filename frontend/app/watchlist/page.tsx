@@ -13,6 +13,7 @@ import {
   getPersonalWatchlist,
 } from "@/lib/api";
 import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
+import { requestState } from "@/lib/request-status";
 
 import { RequestStatusRefresher } from "./request-status-refresher";
 import { RequestResearchResult } from "./request-research-result";
@@ -22,39 +23,9 @@ export const dynamic = "force-dynamic";
 const freshnessLabels: Record<string, string> = {
   fresh: "新鲜",
   stale: "已过期",
-  unknown: "待生成快照",
+  unknown: "检查状态未确认",
   budget_deferred: "等待可用预算",
 };
-
-const requestStatusLabels: Record<string, string> = {
-  pending: "等待工商核验",
-  in_review: "正在核验工商主体",
-  identity_queued: "身份核验排队中",
-  identity_checking: "正在核验身份",
-  awaiting_confirmation: "等待你确认公司",
-  needs_input: "需要准确信用代码",
-  research_queued: "研究排队中",
-  researching: "后台研究中",
-  partial: "已有部分结果",
-  budget_deferred: "额度暂缓",
-  cancel_requested: "正在安全取消",
-  cancelled: "已取消",
-  completed: "本轮已结束",
-  rejected: "未受理",
-  failed: "处理失败",
-};
-
-const activeRequestStatuses = new Set([
-  "pending",
-  "in_review",
-  "identity_queued",
-  "identity_checking",
-  "research_queued",
-  "researching",
-  "partial",
-  "budget_deferred",
-  "cancel_requested",
-]);
 
 function formatDate(value: string | null): string {
   if (!value) return "尚未记录";
@@ -78,7 +49,7 @@ export default async function WatchlistPage({
       getPersonalUsage(),
       getPersonalQuotaIncreaseRequests(),
     ]);
-    const hasActiveRequest = requests.some((request) => activeRequestStatuses.has(request.status));
+    const hasActiveRequest = requests.some((request) => requestState(request).poll);
     const hasPendingQuotaRequest = quotaRequests.some((request) => request.status === "pending");
     return (
       <main className="shell page-stack">
@@ -215,7 +186,7 @@ export default async function WatchlistPage({
                   </div>
                   <div>
                     <span className={`review-status review-status-${request.status}`}>
-                      {requestStatusLabels[request.status] ?? request.status}
+                      {requestState(request).label}
                     </span>
                     <span className="muted">提交于 {formatDate(request.created_at)}</span>
                   </div>

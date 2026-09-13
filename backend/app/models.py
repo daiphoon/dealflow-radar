@@ -180,7 +180,7 @@ class Company(TimestampMixin, Base):
         CheckConstraint(
             "identity_verification_basis IS NULL OR identity_verification_basis IN "
             "('official_government', 'licensed_business_data', 'exchange_disclosure', "
-            "'public_crosscheck')",
+            "'public_crosscheck', 'curator_confirmed')",
             name="ck_company_identity_verification_basis",
         ),
     )
@@ -655,6 +655,7 @@ class ResearchImport(TimestampMixin, Base):
             "tenant_id",
             "file_hash",
             "parser_version",
+            "selection_key",
             name="uq_research_import_file_parser",
         ),
     )
@@ -673,6 +674,7 @@ class ResearchImport(TimestampMixin, Base):
     file_format: Mapped[str] = mapped_column(String(16), default="json")
     file_hash: Mapped[str] = mapped_column(String(64))
     parser_version: Mapped[str] = mapped_column(String(16))
+    selection_key: Mapped[str] = mapped_column(String(64), default="", server_default="")
     license_status: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32), index=True)
     record_count: Mapped[int] = mapped_column(Integer)
@@ -1485,7 +1487,7 @@ class CompanySnapshot(TimestampMixin, Base):
     snapshot_version: Mapped[int] = mapped_column(Integer)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
     data_as_of: Mapped[date | None] = mapped_column(Date)
-    last_checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     freshness_status: Mapped[str] = mapped_column(String(32))
     summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     information_gaps: Mapped[list[str]] = mapped_column(JSON, default=list)
