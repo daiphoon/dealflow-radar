@@ -193,3 +193,10 @@ E3 另以 `0031` 增加 `company_watch_schedules`：每公司一个计划，保�
 `ResearchImport.selection_key` 区分同一文件的主体与初始资料用途；记录幂等另用资料库标识、公司代码、工作表和记录 ID，实质修订追加 `EventObservation` 与人工决定。共享证据只复制许可允许的展示字段，不包含文件名、私有观测 ID 或确认人。
 
 `CompanySnapshot.last_checked_at` 允许为空：初始导入沿用旧联网检查时间，没有历史检查时为 `NULL / unknown`；资料基准日取原资料口径。事件数值字段保留兼容占位，`curated_versions.assessment_status=not_assessed`，风险输出为 `unknown`，不参与已评分风险汇总；页面和模板报告显示未评价。带人工资料或未检查快照时禁止降级 `0032`。
+
+
+### E4.2 融资观测访问策略（0033）
+
+复用 `EventObservation` 与 `EventEvidence`，不新增表或改写历史迁移。融资候选使用 `financing-v1` 事项标识，观测使用 `financing-disclosure-v1`；原始正文留在 `system_restricted`。`0033` 只允许有效平台管理员为已绑定共享公司、来源为 `bounded_public_web` 且关联可展示证据的融资事件追加和读取观测；无更新/删除策略，不向普通用户开放受限原件。
+
+共享展示仅使用证据中的 `financing_observation` 投影，限定字段与来源元数据，移除原件/操作者标识；证据撤回或许可不允许时隐藏其字段。补充来源和更正不改写已发布人工事件；缺轮次、同日多事项或品牌归属不明时不强行合并。已有融资观测时禁止降级 `0033`，回退关闭新路径并保留审计。

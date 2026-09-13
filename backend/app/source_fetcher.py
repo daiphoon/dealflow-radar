@@ -526,13 +526,16 @@ def _html_document(
     excerpt_selector: Callable[[str], str] | None = None,
 ) -> tuple[DiscoveredDocument, _HtmlMetadataParser]:
     text = _decode_body(response.body, response.content_type)
-    parser = _HtmlMetadataParser(preserve_identity_fields=excerpt_selector is not None)
+    identity_mode = excerpt_selector is not None and getattr(
+        excerpt_selector, "preserve_identity_fields", True
+    )
+    parser = _HtmlMetadataParser(preserve_identity_fields=identity_mode)
     parser.feed(text)
     body_text = _normalize_document_text(parser.text_parts)
     main_text = _normalize_document_text(parser.main_text_parts)
     use_main = parser.found_main_content and len(main_text) >= 10
     visible_text = main_text if use_main else body_text
-    if excerpt_selector is not None:
+    if identity_mode:
         # Identity labels may be outside <main>. Inspect bounded decoded text
         # in memory, persisting only the selector's minimal excerpt.
         visible_text = body_text
@@ -548,15 +551,32 @@ def _html_document(
             )
         except UrlSafetyError:
             canonical_url = response.final_url
+    if excerpt_selector is not None and not identity_mode:
+        if (
+            re.search(r"验证码|人机验证|安全验证|verify you are human|captcha", visible_text, re.I)
+            and len(visible_text) < 500
+        ):
+            raise SourceFetchError("captcha_required", "source requires an interactive challenge")
+        if len(visible_text.strip()) < 20:
+            dynamic = re.search(
+                r"__NEXT_DATA__|id=[\"'](?:root|app)[\"']|enable javascript", text, re.I
+            )
+            raise SourceFetchError(
+                "dynamic_rendering_required" if dynamic else "static_body_missing",
+                "source has no usable static body",
+            )
+    selected_excerpt = (
+        (excerpt_selector(visible_text) if excerpt_selector else visible_text)[:1500]
+        if keep_excerpt and visible_text
+        else None
+    )
     hash_input = visible_text or response.body
     document = DiscoveredDocument(
         canonical_url=canonical_url,
         title=title[:500],
         published_at=_parse_datetime(parser.published_value),
         content_hash=_sha256(hash_input),
-        excerpt=(excerpt_selector(visible_text) if excerpt_selector else visible_text)[:1500]
-        if keep_excerpt and visible_text
-        else None,
+        excerpt=selected_excerpt,
         http_status=response.status_code,
         etag=response.etag,
         last_modified=response.last_modified,
@@ -564,9 +584,14 @@ def _html_document(
         metadata={
             "content_type": response.content_type or "unknown",
             "extraction_method": "identity_body"
-            if excerpt_selector is not None
-            else ("main_content" if use_main else "clean_body"),
+            if identity_mode
+            else (
+                "business_passage"
+                if excerpt_selector
+                else ("main_content" if use_main else "clean_body")
+            ),
             "extracted_text_length": len(visible_text),
+            **getattr(excerpt_selector, "metadata", {}),
         },
     )
     return document, parser
@@ -622,6 +647,7 @@ def _pdf_document(
             "document_format": "pdf",
             "extraction_method": "pypdf_isolated_subprocess",
             "extracted_text_length": len(extracted.text),
+            **getattr(excerpt_selector, "metadata", {}),
             "page_count": extracted.page_count,
             "text_truncated": extracted.truncated,
             "published_at_basis": date_basis,

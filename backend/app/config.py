@@ -217,6 +217,7 @@ def _optional_cost(name: str) -> Decimal | None:
 
 @dataclass(frozen=True)
 class WebResearchPolicy:
+    incremental_research_enabled: bool = False
     version: str = "bounded-web-v3"
     primary_provider: str = "baidu"
     fallback_provider: str = "bocha"
@@ -517,6 +518,9 @@ class Settings:
                 ),
             ),
             web_research_policy=WebResearchPolicy(
+                incremental_research_enabled=_as_bool(
+                    os.getenv("WEB_RESEARCH_INCREMENTAL_ENABLED", "false")
+                ),
                 version=os.getenv("WEB_RESEARCH_POLICY_VERSION", "bounded-web-v3"),
                 primary_provider=os.getenv("WEB_RESEARCH_PRIMARY_PROVIDER", "baidu")
                 .strip()

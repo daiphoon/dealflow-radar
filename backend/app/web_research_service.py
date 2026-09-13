@@ -46,6 +46,13 @@ from backend.app.research_coverage import (
     category_coverage,
     source_routes,
 )
+from backend.app.research_subject import (
+    QUERY_STRATEGY_VERSION,
+    BusinessExcerptSelector,
+    load_subject,
+    matched_name,
+    query_subject,
+)
 from backend.app.services import user_has_role
 from backend.app.source_fetcher import (
     SourceFetchError,
@@ -538,6 +545,13 @@ def prepare_pending_research_requests(
                 or_(
                     PersonalCompanyRequest.status == "research_queued",
                     (
+                        (PersonalCompanyRequest.status == "in_review")
+                        & (PersonalCompanyRequest.last_error_code == "curator_identity_confirmed")
+                        & (PersonalCompanyRequest.cancel_requested_at.is_(None))
+                    )
+                    if policy.incremental_research_enabled
+                    else False,
+                    (
                         (PersonalCompanyRequest.request_type == "refresh")
                         & (PersonalCompanyRequest.status == "pending")
                     ),
@@ -705,7 +719,7 @@ def _lease_job(
 
 
 def _query_for(company: Company, terms: str) -> str:
-    return f'"{company.legal_name}" {terms}'
+    return f"{query_subject(company)} {terms}"
 
 
 def _official_host(company: Company) -> str | None:
@@ -729,8 +743,8 @@ def _host_matches_any(host: str, domains: set[str]) -> bool:
 
 
 def _subject_match(company: Company, result: SearchResult) -> bool:
-    haystack = _normalized_identity_for_match(f"{result.title} {result.snippet}")
-    if _normalized_identity_for_match(company.legal_name) in haystack:
+    haystack = _normalized_identity_for_match(f"{result.title}。{result.snippet}")
+    if matched_name(company, haystack):
         return True
     if company.credit_code and _normalized_identity_for_match(company.credit_code) in haystack:
         return True
@@ -1517,14 +1531,9 @@ def _document_matches_company(
     excerpt: str,
     canonical_url: str,
 ) -> bool:
-    content = f"{title} {excerpt}"
+    content = f"{title}。{excerpt}"
     normalized_content = _normalized_identity_for_match(content)
-    current_identity_match = _normalized_identity_for_match(
-        company.legal_name
-    ) in normalized_content or bool(
-        company.credit_code
-        and _normalized_identity_for_match(company.credit_code) in normalized_content
-    )
+    current_identity_match = bool(matched_name(company, normalized_content))
     host = (urlsplit(canonical_url).hostname or "").lower().removeprefix("www.")
     return current_identity_match or bool(_official_host(company) == host)
 
@@ -1599,10 +1608,7 @@ def _content_passages(excerpt: str) -> list[str]:
 
 
 def _body_identity_match(company: Company, value: str) -> bool:
-    normalized = _normalized_identity_for_match(value)
-    return _normalized_identity_for_match(company.legal_name) in normalized or bool(
-        company.credit_code and _normalized_identity_for_match(company.credit_code) in normalized
-    )
+    return bool(matched_name(company, value))
 
 
 def _explicit_event_date(company: Company, passage: str) -> tuple[datetime | None, str]:
@@ -1612,7 +1618,7 @@ def _explicit_event_date(company: Company, passage: str) -> tuple[datetime | Non
     if match:
         remainder = passage[match.end() :]
         if not _normalized_identity_for_match(remainder).startswith(
-            _normalized_identity_for_match(company.legal_name)
+            _normalized_identity_for_match(matched_name(company, remainder) or company.legal_name)
         ) or re.search(r"\d{1,2}月\d{1,2}日", remainder):
             return None, "body_date_ambiguous"
         try:
@@ -1798,6 +1804,7 @@ def _candidate_event(
     policy: WebResearchPolicy,
     *,
     new_document: bool,
+    actor: User | None = None,
     allowed_categories: tuple[str, ...] | None = None,
 ) -> tuple[Event | None, bool, _ContentQualityDecision]:
     excerpt = str(document.payload.get("excerpt") or "").strip()
@@ -1816,6 +1823,17 @@ def _candidate_event(
     if not quality.eligible or quality.event_type is None or quality.supporting_excerpt is None:
         return None, False, quality
     event_type = quality.event_type
+    if policy.incremental_research_enabled and event_type == "financing_cap_table":
+        from backend.app.financing_storage import persist_financing_document
+
+        event, created = persist_financing_document(session, company, document, source, actor)
+        if event is None:
+            quality = replace(
+                quality,
+                eligible=False,
+                reasons=(*quality.reasons, "financing_recipient_or_fields_unresolved"),
+            )
+        return event, created, quality
     fingerprint = _sha256(
         f"{company.id}|{document.canonical_url}|{document.content_hash}|{event_type}"
     )
@@ -2515,6 +2533,7 @@ def _fetch_candidate(
             source,
             policy,
             new_document=False,
+            actor=user,
             allowed_categories=monitoring.CATEGORIES if job.trigger_type == "watchlist" else None,
         )
         events_created += int(event_created)
@@ -2583,6 +2602,11 @@ def _fetch_candidate(
                     start_url=url,
                     retention_policy="minimal_excerpt",
                     conditional_state={},
+                    **(
+                        {"excerpt_selector": BusinessExcerptSelector(company)}
+                        if policy.incremental_research_enabled
+                        else {}
+                    ),
                 )
                 fetch_calls = result.request_count
                 downloaded_bytes = result.downloaded_bytes
@@ -2634,6 +2658,7 @@ def _fetch_candidate(
                                 source,
                                 policy,
                                 new_document=document_created,
+                                actor=user,
                                 allowed_categories=monitoring.CATEGORIES
                                 if job.trigger_type == "watchlist"
                                 else None,
@@ -2906,6 +2931,15 @@ def _run_web_research_worker_once(
             stage=job.current_stage,
             error_code=job.last_error_code,
         )
+    if policy.incremental_research_enabled:
+        company = load_subject(session, company)
+        coverage = dict(job.coverage)
+        coverage["query_strategy_version"] = QUERY_STRATEGY_VERSION
+        coverage["business_subject"] = {
+            "legal_name": company.legal_name,
+            "aliases": list(company.aliases),
+        }
+        job.coverage = coverage
     if budget.recover(session, task_key=f"web-research:{job.id}"):
         return _defer_budget(
             session, job, WebResearchBudgetDeferred("uncertain spend requires reconciliation")
@@ -3012,14 +3046,24 @@ def inspect_web_research_queue(
             select(func.count())
             .select_from(PersonalCompanyRequest)
             .where(
-                PersonalCompanyRequest.status.in_(
+                or_(
+                    PersonalCompanyRequest.status.in_(
+                        (
+                            "pending",
+                            "research_queued",
+                            "identity_queued",
+                            "identity_checking",
+                            "cancel_requested",
+                        )
+                    ),
                     (
-                        "pending",
-                        "research_queued",
-                        "identity_queued",
-                        "identity_checking",
-                        "cancel_requested",
+                        (PersonalCompanyRequest.status == "in_review")
+                        & (PersonalCompanyRequest.last_error_code == "curator_identity_confirmed")
+                        & (PersonalCompanyRequest.company_id.is_not(None))
+                        & (PersonalCompanyRequest.cancel_requested_at.is_(None))
                     )
+                    if policy.incremental_research_enabled
+                    else False,
                 ),
             )
         )
@@ -3038,6 +3082,10 @@ def inspect_web_research_queue(
     )
     return {
         "status": "dry_run",
+        "incremental_research_enabled": policy.incremental_research_enabled,
+        "query_strategy_version": QUERY_STRATEGY_VERSION
+        if policy.incremental_research_enabled
+        else "legal-name-only",
         "pending_requests": pending_requests,
         "queued_jobs": queued_jobs,
         "primary_provider": policy.primary_provider,

@@ -144,6 +144,7 @@ function EventCard({
   const isTender = Boolean(event.tender_observations?.length);
   const curatedVersions = event.curated_versions ?? [];
   const isCurated = curatedVersions.length > 0;
+  const isFinancing = Boolean(event.financing_observations?.length);
   const curated = curatedVersions.find((item) => item.is_current) ?? curatedVersions[0];
   const isLicensedSourceRecord = event.publication_route === "licensed_source_record";
   const isDeterministicChange = event.publication_route === "deterministic_change";
@@ -182,9 +183,9 @@ function EventCard({
             : formatDate(eventDate)}
         </span>
         <span
-          className={`risk ${isLicensedSourceRecord || isCurated ? "risk-unknown" : `risk-${event.risk_severity}`}`}
+          className={`risk ${isLicensedSourceRecord || isCurated || isFinancing ? "risk-unknown" : `risk-${event.risk_severity}`}`}
         >
-          {isCurated
+          {isCurated || isFinancing
             ? "风险尚未评价"
             : isLicensedSourceRecord
             ? "影响待判断"
@@ -260,11 +261,11 @@ function EventCard({
       <dl className="score-grid">
         <div>
           <dt>重要性</dt>
-          <dd>{isCurated ? "尚未评分" : `${event.materiality_score}/100`}</dd>
+          <dd>{isCurated || isFinancing ? "尚未评分" : `${event.materiality_score}/100`}</dd>
         </div>
         <div>
           <dt>可信度</dt>
-          <dd>{isCurated ? "尚未评分" : `${Math.round(Number(event.confidence_score) * 100)}%`}</dd>
+          <dd>{isCurated || isFinancing ? "尚未评分" : `${Math.round(Number(event.confidence_score) * 100)}%`}</dd>
         </div>
         <div>
           <dt>来源质量</dt>
@@ -392,6 +393,22 @@ function EventCard({
           </p>
         )
       ) : null}
+      {(event.financing_observations ?? []).length > 0 ? (
+        <section className="evidence">
+          <h4>程序发现的融资材料 · 待核实</h4>
+          <p>这些材料用于补充或比较；已有人工确认资料继续保留。</p>
+          {event.financing_observations!.map((observation) => (
+            <details key={observation.evidence_id}>
+              <summary>{{ initial: "新增融资线索", same_facts: "同一事项补充来源", correction_candidate: "更正材料待核实", conflicting: "字段差异待核实", incomplete: "字段不完整的线索" }[observation.kind] ?? "待核实材料"} · {observation.fields.round ?? "轮次未知"} · {observation.fields.disclosed_on ?? "披露日期未知"}</summary>
+              <p>披露主体：{observation.fields.subject_name}（{observation.fields.subject_scope.startsWith("brand:") ? "品牌口径，不代表法人实收" : "法人主体口径"}）</p>
+              <p>公开金额：{observation.fields.amount_text ?? "未知 / 未披露"}；明确投资方：{observation.fields.investors.join("、") || "未知 / 未披露"}</p>
+              <p>实际发生日期：{observation.fields.occurred_on ?? "未知"}；重要性、风险和置信度尚未评价。</p>
+              <p>{observation.excerpt}</p>
+              <a href={observation.source_url} target="_blank" rel="noreferrer">{observation.source_title}</a>
+            </details>
+          ))}
+        </section>
+      ) : null}
       <TenderObservations observations={event.tender_observations ?? []} />
       {event.evidence.map((evidence) => {
         const sourceUrl = evidence.final_url ?? evidence.canonical_url;
@@ -471,13 +488,14 @@ export default async function CompanyDetailPage({
       return (leftIndex === -1 ? order.length : leftIndex) -
         (rightIndex === -1 ? order.length : rightIndex);
     });
+    const financingComparisons = baselineEvents.reduce((total, event) => total + (event.financing_observations?.length ?? 0), 0);
     const feedback = result
       ? result === "followed"
         ? "已加入个人关注。关注仅用于整理，不改变公司或私有数据权限。"
         : result === "unfollowed"
           ? "已取消关注；公司共享档案仍可继续查询。"
           : result === "refresh_requested"
-            ? "人工更新申请已进入队列，本次没有触发外部查询。"
+            ? "更新申请已进入后台队列；现有资料可继续查看，进度可在“我的关注”查看。"
             : "相同申请仍在处理或处于 24 小时冷却期，本次没有重复计数。"
       : actionError
         ? actionError === "limit_reached"
@@ -530,7 +548,7 @@ export default async function CompanyDetailPage({
                 <form action={requestCompanyRefresh}>
                   <input name="company_id" type="hidden" value={company.id} />
                   <button className="button button-secondary" type="submit">
-                    申请人工更新
+                    申请更新
                   </button>
                 </form>
                 <form action={generateCompanyReport}>
@@ -584,6 +602,9 @@ export default async function CompanyDetailPage({
                 ) : "待核实线索：0 条"}
               </li>
             </ul>
+            {financingComparisons > 0 ? (
+              <p><a href="#company-records">已有资料的融资对照材料：{financingComparisons} 份</a>（补充来源、字段差异或更正，均待核实）</p>
+            ) : null}
             {company.events.length === 0 && company.platform_unconfirmed_leads.length === 0 ? (
               <p>当前暂无可展示的共享事实或线索，不代表公司没有重要变化。</p>
             ) : company.events.length === 0 ? (
