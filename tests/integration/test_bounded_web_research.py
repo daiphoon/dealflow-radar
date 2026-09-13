@@ -1419,9 +1419,11 @@ def test_low_quality_pages_remain_internal_and_are_not_user_visible(
         )
 
 
+@pytest.mark.parametrize("incremental", [False, True])
 def test_cancel_after_primary_stops_fallback_and_persists_status(
     migrated_app: FastAPI,
     client: TestClient,
+    incremental: bool,
 ) -> None:
     _grant_platform_admin(migrated_app)
     with migrated_app.state.session_factory() as session:
@@ -1471,7 +1473,7 @@ def test_cancel_after_primary_stops_fallback_and_persists_status(
             session,
             worker,
             {"baidu": primary, "bocha": fallback},
-            WebResearchPolicy(),
+            WebResearchPolicy(incremental_research_enabled=incremental),
             fetcher_factory=RecordingFetcherFactory(),
         )
     assert result.status == "cancelled"
@@ -2439,8 +2441,10 @@ def test_unverified_or_private_company_cannot_enter_research(migrated_app: FastA
         assert session.scalar(select(func.count()).select_from(CompanyResearchJob)) == 0
 
 
+@pytest.mark.parametrize("incremental", [False, True])
 def test_daily_search_budget_checkpoints_instead_of_calling_again(
     migrated_app: FastAPI,
+    incremental: bool,
 ) -> None:
     _grant_platform_admin(migrated_app)
     with migrated_app.state.session_factory() as session:
@@ -2450,7 +2454,21 @@ def test_daily_search_budget_checkpoints_instead_of_calling_again(
         create_refresh_request(session, owner, PersonalEntitlementPolicy(), company.id)
 
     primary, fallback = _providers()
-    policy = WebResearchPolicy(daily_search_call_limit=1, monthly_search_call_limit=1)
+    if incremental:
+        from backend.app.research_subject import load_subject
+        from backend.app.web_research_service import _query_for
+
+        with migrated_app.state.session_factory() as session:
+            subject = load_subject(session, session.get(Company, SHARED_COMPANY_ID))
+            primary.responses = {
+                _query_for(subject, terms): primary.responses[_query(terms)]
+                for _, terms in SEARCH_GROUPS
+            }
+    policy = WebResearchPolicy(
+        incremental_research_enabled=incremental,
+        daily_search_call_limit=1,
+        monthly_search_call_limit=1,
+    )
     with migrated_app.state.session_factory() as session:
         worker = session.get(User, ALPHA_USER_ID)
         assert worker is not None

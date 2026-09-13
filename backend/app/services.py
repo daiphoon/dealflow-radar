@@ -1930,7 +1930,9 @@ def _event_out(
             )
         )
     from backend.app.curated_publication import curated_versions
+    from backend.app.financing_events import financing_observations
 
+    financing = financing_observations(evidence_rows, {item.id for item in evidence_items})
     curated = curated_versions(session, event, {item.id for item in evidence_items})
     if curated and event.visibility_scope == PLATFORM_SHARED_SCOPE:
         current_evidence_ids = {
@@ -2077,6 +2079,7 @@ def _event_out(
             observation.evidence_ids = []
             observation.occurred_on = None
             observation.date_precision = "unknown"
+    withdrawn_financing = event.fingerprint_version == "financing-v1" and not financing
     return EventOut(
         id=event.id,
         event_type=event.event_type,
@@ -2087,20 +2090,23 @@ def _event_out(
         display_kind=display_kind,
         tender_observations=observations,
         curated_versions=curated,
+        financing_observations=financing,
         published_at=event.published_at,
         published_on=event.published_on,
         direction=event.direction,
         materiality_score=event.materiality_score,
-        risk_severity="unknown" if curated else event.risk_severity,
+        risk_severity="unknown"
+        if curated or event.fingerprint_version == "financing-v1"
+        else event.risk_severity,
         confidence_score=event.confidence_score,
         source_quality=event.source_quality,
-        title=event.title,
+        title="融资线索证据暂不可用" if withdrawn_financing else event.title,
         summary=(
             "该版本证据已撤回或不可用，暂不作为已核实事实展示。"
-            if withdrawn_tender
+            if withdrawn_tender or withdrawn_financing
             else event.summary
         ),
-        facts=[] if withdrawn_tender else event.facts,
+        facts=[] if withdrawn_tender or withdrawn_financing else event.facts,
         uncertainties=event.uncertainties,
         status=event.status,
         publication_route=event.publication_route,
@@ -2108,7 +2114,7 @@ def _event_out(
         publication_reasons=event.publication_reasons,
         observed_at=event.observed_at,
         evidence=evidence_items,
-        fact_ledger=[] if withdrawn_tender else fact_ledger,
+        fact_ledger=[] if withdrawn_tender or withdrawn_financing else fact_ledger,
         visibility_scope=event.visibility_scope,
         analysis=analysis_output,
         research_analysis=research_analysis_output,

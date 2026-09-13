@@ -120,6 +120,29 @@ class TenderObservationOut(BaseModel):
     can_publish: bool = False
 
 
+class FinancingFieldsOut(BaseModel):
+    subject_name: str
+    subject_scope: str
+    round: str | None
+    amount_text: str | None
+    investors: list[str]
+    disclosed_on: date | None
+    occurred_on: date | None
+
+
+class FinancingObservationOut(BaseModel):
+    kind: Literal["initial", "same_facts", "correction_candidate", "conflicting", "incomplete"]
+    fact_version: str
+    fields: FinancingFieldsOut
+    issues: list[str]
+    observed_at: datetime
+    evidence_id: UUID
+    source_url: str
+    source_title: str
+    excerpt: str
+    confirmed: Literal[False] = False
+
+
 class CuratedVersionOut(BaseModel):
     record_version: str
     observed_at: datetime
@@ -154,6 +177,7 @@ class EventOut(BaseModel):
     display_kind: Literal["confirmed_change", "baseline", "unconfirmed"] = "baseline"
     tender_observations: list[TenderObservationOut] = Field(default_factory=list)
     curated_versions: list[CuratedVersionOut] = Field(default_factory=list)
+    financing_observations: list[FinancingObservationOut] = Field(default_factory=list)
     published_at: datetime | None
     published_on: date | None
     direction: str

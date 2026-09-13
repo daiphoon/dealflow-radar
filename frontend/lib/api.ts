@@ -85,6 +85,20 @@ export type EvidenceDetail = {
   provider_access_notice: string | null;
 };
 
+export type FinancingObservation = {
+  kind: string;
+  fact_version: string;
+  fields: { subject_name: string; subject_scope: string; round: string | null;
+    amount_text: string | null; investors: string[]; disclosed_on: string | null; occurred_on: string | null; };
+  issues: string[];
+  observed_at: string;
+  evidence_id: string;
+  source_url: string;
+  source_title: string;
+  excerpt: string;
+  confirmed: false;
+};
+
 export type Event = {
   id: string;
   event_type: string;
@@ -95,6 +109,7 @@ export type Event = {
   display_kind?: "confirmed_change" | "baseline" | "unconfirmed";
   tender_observations?: TenderObservation[];
   curated_versions?: CuratedVersion[];
+  financing_observations?: FinancingObservation[];
   published_at: string | null;
   published_on: string | null;
   direction: string;

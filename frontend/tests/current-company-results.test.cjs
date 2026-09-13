@@ -233,3 +233,20 @@ test("已有共享版本的审核页仍能核实新更正，表单只带所选�
   assert.match(form, /value="new-evidence"/);
   assert.doesNotMatch(form, /value="old-evidence"|value="original-id"/);
 });
+
+test("融资新来源和更正与初始事实分开展示，未知金额不显示虚构分数", async () => {
+  const pending = { ...event("finance", "unconfirmed_lead"), display_kind: "unconfirmed", occurred_at: null,
+    materiality_score: 0, confidence_score: "0", financing_observations: [{
+      kind: "correction_candidate", fact_version: "finance-v2", fields: {
+        subject_name: "示例品牌", subject_scope: "brand:示例品牌", round: "B轮", amount_text: null,
+        investors: [], disclosed_on: "2026-09-01", occurred_on: null,
+      }, issues: [], observed_at: "2026-09-02T00:00:00Z", evidence_id: "finance-evidence",
+      source_url: "https://example.com/finance", source_title: "示例融资更正", excerpt: "示例融资原文片段", confirmed: false,
+    }] };
+  const html = await render(company({ platform_unconfirmed_leads: [pending] }), []);
+  assert.match(html, /更正材料待核实/);
+  assert.match(html, /品牌口径，不代表法人实收/);
+  assert.match(html, /未知 \/ 未披露/);
+  assert.match(html, /尚未评分/);
+  assert.doesNotMatch(html, /0\/100|>0%/);
+});

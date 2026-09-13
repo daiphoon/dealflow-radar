@@ -26,6 +26,15 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
         limitations.append(
             "本轮调用中断后的费用已核对，但部分结果未能保存，未自动重复调用；资料覆盖不完整。"
         )
+    for code, message in {
+        "captcha_required": "部分来源要求验证码，未取得正文。",
+        "dynamic_rendering_required": "部分页面依赖动态渲染，当前静态读取未取得正文。",
+        "static_body_missing": "部分页面缺少可读取的静态正文。",
+        "fetched_page_identity_mismatch": "部分正文未匹配已确认主体或别名。",
+        "timeout": "部分来源读取超时，已保留其他结果和已有资料。",
+    }.items():
+        if code in errors:
+            limitations.append(message)
     if "robots_disallowed" in errors:
         limitations.append(
             "部分来源未通过自动读取规则检查，可能为网站限制或规则文件不可用，未取得正文。"
