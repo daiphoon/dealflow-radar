@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-09-13：PR #83 / #84 合并部署与 E4.3 新复测
+
+- 任务/关键文件：按批准合并 PR #83，PR #84 调整到 main 后以 `024c38a` 完整 CI 验收，合并并部署 `de9cb60`，数据库保持 `0033`；通过原生申请更新对原公司执行一次同组回退复测。同步 README、有效看板、增量计划和本记录；本轮无新增产品代码。
+- 实际命令：`gh pr merge 83 --squash --match-head-commit …`、`gh pr merge 84 --squash --match-head-commit …`、`git rebase --onto origin/main …`、`git diff --exit-code 024c38a origin/main`；私有 `backup.sh`、`restore_local.py`、`prepare.sh`、`deploy.sh`；`run_phase.py preview/create/business-run`、`capture_case.py sealed-discovery`、`verify_close.py`、`post-backup.sh`。备份、查询、对照和控制脚本仅存放在忽略目录，未执行附件命令。
+- 验证结果：PR #84 后端 783 通过/16 跳过，前端 24 通过，类型/构建、依赖审计及生产镜像通过；合并树一致。加密备份/本机隔离恢复/全表摘要、非 owner RLS 及上线健康检查通过。新研究耗时 17.114 秒、搜索缓存 2 次、博查新增 1 次、HTTP 5 次、34,134 字节、模型 Token 0、免费额度内现金费用 0。旧 133 条账本哈希不变，累计 139 条/124 次外部调用；原样本、原任务和 5 条可见初始资料保持。文档差异、66 个本地链接、公开差异隐私及三份输入哈希检查通过。
+- 结论/停止：正文可读 1 份为官网简介，与基准融资无关且无可靠来源发布日期；融资组备用结果 10 条均不合格，新增事件 0，新的基准正文支持输出仍 `0/1`，EV14/M6B 未通过。Chrome 展示与事实状态一致；13 项运行开关、两份环境文件各 19 项开关关闭、5 项金额上限为零、无活动任务/Worker。下一仅提出短业务查询对照，未执行新搜索、模型或其他公司导入。私有回执见 `data/private/deployment/pr83-pr84-20260913/`、`data/private/e4-validation/20260913-e43-retest/`。
+
 ## 2026-09-13：E4.3 正文全失败后的同组备用搜索修复
 
 - 任务/关键文件：`web_research_service.py` 保留原两组查询，记录查询及跨组 URL 归属，在正文全失败后追加同组备用源；复用缓存、预占与结算，保留已处理候选及证据。`source_fetcher.py` 共用 robots 规则判定；增量按需任务跨步骤共享 180 秒时限并在派发前检查。新增 `test_readability_fallback.py`，同步计划、看板、来源/成本/测试和架构说明。
