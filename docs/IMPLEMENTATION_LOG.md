@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-09-13：E4.3 正文全失败后的同组备用搜索修复
+
+- 任务/关键文件：`web_research_service.py` 保留原两组查询，记录查询及跨组 URL 归属，在正文全失败后追加同组备用源；复用缓存、预占与结算，保留已处理候选及证据。`source_fetcher.py` 共用 robots 规则判定；增量按需任务跨步骤共享 180 秒时限并在派发前检查。新增 `test_readability_fallback.py`，同步计划、看板、来源/成本/测试和架构说明。
+- 实际命令：`git switch -c codex/e43-readable-fallback`；仅本机回环端口启动临时 PostgreSQL 16，沿用每例独立库和非 owner 角色的 fixture；`.venv/bin/pytest -q tests/integration/test_readability_fallback.py --tb=short --show-capture=no`，再合并来源抓取、预算、Worker、增量、来源覆盖和关注研究共 10 份测试文件做最终回归；`.venv/bin/ruff check backend migrations scripts tests`、对应 `ruff format --check`、`git diff --check`、本地 Markdown 链接/隐私及三份原输入 SHA-256 检查。使用 `gh pr view 83` 核对当前文档分支和 CI；工程分支以该未合并文档 PR 为基线独立提交。
+- 结果：最终相关回归 **228 通过/9 个既有条件分支跳过**，其中本切片 **48 项全部通过**，包括非 owner PostgreSQL、成功/失败结算后中断、未知支出暂停、缓存及取消、搜索/抓取/字节/候选/时限边界、原查询复用和初始事实保留。首次测试发现虚构正文过短及取消 fixture 共用事务，分别改为满足读取门槛的虚构正文和独立取消会话，未放宽产品断言或权限。Ruff 148 文件格式、差异及文档检查通过；保留既有 Starlette 弃用警告。测试日志及检查回执在忽略目录 `data/private/e4-validation/20260913-e43-fallback-fix/`。
+- 限制/停止：未新增依赖、迁移或前端改动；本轮未重跑前端/浏览器，完整 CI 以工程 PR 的实际提交为准。产品真实搜索/抓取/模型调用和生产访问、合并、部署均为 0，原 Excel/固定基准/封存输出哈希未变，原 0/1 及 EV14/M6B 未通过保持不变。备用源真实可读性仍未验证；交付未合并 PR 后停止，后续合并部署与原公司新一轮复测按明确批准执行。
+
 ## 2026-09-13：PR #81 / #82 合并部署与 E4.3 单公司对照
 
 - 任务/关键文件：按批准顺序合并 PR #81、重排并复验 PR #82 后合并；香港部署 `fb95ec4`，迁移 `0031 → 0033`。原单公司先身份导入及业务发现，封存后比对固定基准，再导入 5 条初始资料并离线回放。同步有效看板、增量计划、ADR-0022 状态及运维说明。
