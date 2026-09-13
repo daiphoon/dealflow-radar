@@ -6,7 +6,7 @@
 
 当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充个人安全查询、按需缓存、Mock Worker V1、人工研究导入 V1 与受控可信来源监测 V1：
 
-> **当前推进方向**：[ADR-0021](docs/DECISIONS/ADR-0021-incremental-event-delivery.md) 保留“增量交付＋局部重构”；[ADR-0022](docs/DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md) 增加“负责人复核初始资料＋按需增量研究”，明确确认的资料经轻量校验即可按人工依据准入，无需重复取得政府旁证。[完整计划](docs/15-incremental-event-delivery-plan.md)固定范围与验收，[实施看板](docs/10-implementation-plan.md)是当前状态和下一唯一切片入口。E4.1 已提交 PR #81 且 CI 通过；E4.2 业务发现与融资增量已完成本地工程验收，默认关闭；E4.3 真实对照待开始，本轮代码未部署。现有权限、预算、证据血缘与旧供应商退役边界保留。
+> **当前推进方向**：[ADR-0021](docs/DECISIONS/ADR-0021-incremental-event-delivery.md) 保留“增量交付＋局部重构”；[ADR-0022](docs/DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md) 增加“负责人复核初始资料＋按需增量研究”，明确确认的资料经轻量校验即可按人工依据准入，无需重复取得政府旁证。[完整计划](docs/15-incremental-event-delivery-plan.md)固定范围与验收，[实施看板](docs/10-implementation-plan.md)是当前状态和下一唯一切片入口。E4.1 / E4.2 已合并部署；E4.3 单公司对照的正文支持输出为 0/1，初始资料可读，自动内容验收未通过。来源读取全失败后的同组备用搜索修复已完成离线工程验收，待审查，尚未部署或进行新的联网复测。现有权限、预算、证据血缘与旧供应商退役边界保留。
 
 - 10 家虚构公司及两个虚构租户/基金；
 - Mock 文档幂等导入、主体精确匹配、候选事件、证据和历史审核闭环；

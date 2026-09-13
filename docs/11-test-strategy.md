@@ -27,6 +27,7 @@ E3（EV13）：`test_watchlist_monitoring.py` 使用独立 SQLite/PostgreSQL 及
 | 事件 Schema | 枚举、评分范围、金额/币种配对、额外字段、未知值和时区校验 |
 | E2.1 来源覆盖 | `test_research_coverage.py` 验证 EV11、混合成功/受阻/失败、组合检索不能当作逐类证据、旧历史未知、缓存时间及事件数独立；`test_bounded_web_research.py` 验证真实 Worker 的 Mock 搜索失败/空结果和缓存回放零增量调用；`test_research_coverage_delivery.py` 用隔离 SQLite/PostgreSQL 非 owner 角色验证 Worker→本人申请/公司详情、跨用户/租户不可见、查询零调用与历史不改写。前端真实组件/页面测试与浏览器验证状态、时间、事实边界和窄屏 |
 | E2.2 费用与恢复 | `test_web_research_budget.py` 验证空价格/零价格与配置边界；`test_web_budget_delivery.py` 用 SQLite/PostgreSQL 验证预占、金额状态、结算幂等、取消与跨周期不确定支出、已知失败后的重试计数、跨租户并发争用次数及五层金额预算、账本 RLS、迁移保护和结果丢失恢复；`test_web_usage_reconciliation_cli.py` 验证默认只读、管理员核对、历史零值及零 Provider 实例。并发只以 PostgreSQL 分支为证据，SQLite 对应分支明确跳过 |
+| E4.3 正文读取回退 | `test_readability_fallback.py` 使用虚构初始资料、Mock 搜索/HTTP 和隔离 SQLite/PostgreSQL，验证原查询复用、跨组重复 URL、主源可读不回退、robots/验证码/超时全失败后同组回退、部分成功保留、备用空/失败后停止、已禁止路径不再请求、缓存零调用、预占与结算后断线/未知支出恢复、取消/预算/任务时限、旧初始事实及快照保留、非 owner 跨租户隔离。真实内容效果仍需另行批准的新单公司运行，不能用 Mock 通过改写原 0/1 |
 | 发布路由 | 安全 A/B 来源自动发布；链接未检查/失效、低置信度及高/极高风险只形成未确认线索；策略版本和原因可追溯 |
 | URL 验证 | 外部开关关闭时零网络；开启后限制每批次数；拒绝回环/私网；保存 HTTP 状态和最终 URL |
 | 审核状态 | 只有身份歧义默认创建新人工任务；既有驳回/纠错/撤回保留历史和理由 |

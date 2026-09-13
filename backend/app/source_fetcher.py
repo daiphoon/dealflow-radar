@@ -65,6 +65,16 @@ ROBOTS_CACHE_TTL = timedelta(minutes=15)
 RobotsRuleCache = MutableMapping[str, dict[str, str]]
 
 
+def robots_rule_allows(entry: dict[str, str], target_url: str, user_agent: str) -> bool:
+    if entry["status"] == "not_found_allow":
+        return True
+    if entry["status"] != "checked":
+        return False
+    parser = urllib.robotparser.RobotFileParser()
+    parser.parse(entry.get("rules", "").splitlines())
+    return parser.can_fetch(user_agent, target_url)
+
+
 def normalized_robots_rule_cache(value: object, user_agent: str) -> dict[str, dict[str, str]]:
     if not isinstance(value, dict):
         return {}
@@ -1100,17 +1110,7 @@ class TrustedSourceFetcher:
                 }
             self._robots[origin] = cached
         status = cached["status"]
-        parser = None
-        if status == "checked":
-            parser = urllib.robotparser.RobotFileParser()
-            parser.set_url(f"{origin}/robots.txt")
-            parser.parse(cached.get("rules", "").splitlines())
-        allowed = status == "not_found_allow" or (
-            status == "checked"
-            and parser is not None
-            and parser.can_fetch(self.policy.user_agent, target_url)
-        )
-        if not allowed:
+        if not robots_rule_allows(cached, target_url, self.policy.user_agent):
             raise SourceFetchError("robots_disallowed", "robots.txt does not allow this request")
         return status
 

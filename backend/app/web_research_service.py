@@ -60,6 +60,7 @@ from backend.app.source_fetcher import (
     UrlSafetyError,
     canonicalize_source_url,
     normalized_robots_rule_cache,
+    robots_rule_allows,
 )
 from backend.app.web_research_budget import WebResearchBudgetDeferred
 from backend.app.web_search import (
@@ -968,6 +969,7 @@ def _candidate_payload(
         "url": canonical_url,
         "discovered_by": [provider_code],
         "query_kind": query_kind,
+        "query_kinds": [query_kind],
         "coverage_category": _event_classification(result.title, result.snippet),
         "source_tier": source_rank.tier,
         "source_rank_reasons": list(source_rank.reasons),
@@ -1012,9 +1014,21 @@ def _cached_response(
     )
 
 
+def _incremental_time_exhausted(job: CompanyResearchJob, policy: WebResearchPolicy) -> bool:
+    started = _evidence_checked_at(job.coverage.get("started_at"))
+    return bool(
+        policy.incremental_research_enabled
+        and job.trigger_type != "watchlist"
+        and started is not None
+        and (utc_now() - started).total_seconds() >= policy.max_elapsed_seconds
+    )
+
+
 def _reserve_job_call(
     session, user, job, company, policy, *, provider, operation, token, calls, unit_price, metrics
 ):
+    if _incremental_time_exhausted(job, policy):
+        raise WebResearchBudgetDeferred("execution time limit reached")
     coverage = dict(job.coverage)
     baseline = coverage.setdefault("budget_baseline", dict(coverage.get("stats", {})))
     job.coverage = coverage
@@ -1409,6 +1423,7 @@ def _process_search_group(
     )
     groups[group_code] = {
         "status": "completed",
+        "query_text": query,
         "providers": provider_state,
         "attempted_at": utc_now().isoformat(),
         "checked_at": _aware(checked_at).isoformat() if checked_at is not None else None,
@@ -1426,7 +1441,7 @@ def _process_search_group(
         modules[module] = "search_completed"
     coverage["modules"] = modules
     existing_candidates = {
-        str(item.get("url")): item
+        str(item.get("url")): dict(item)
         for item in coverage.get("candidates", [])
         if isinstance(item, dict) and item.get("url")
     }
@@ -1439,13 +1454,18 @@ def _process_search_group(
         for provider_code in candidate.get("discovered_by", []):
             if provider_code not in discovered:
                 discovered.append(provider_code)
+        query_kinds = list(current.get("query_kinds", [current.get("query_kind")]))
+        if group_code not in query_kinds:
+            query_kinds.append(group_code)
         if _result_score(company, SearchResult.from_dict(candidate), policy) > _result_score(
             company, SearchResult.from_dict(current), policy
         ):
             candidate["discovered_by"] = discovered
+            candidate["query_kinds"] = query_kinds
             existing_candidates[canonical_url] = candidate
         else:
             current["discovered_by"] = discovered
+            current["query_kinds"] = query_kinds
     candidates = list(existing_candidates.values())
     candidates.sort(
         key=lambda item: _result_score(company, SearchResult.from_dict(item), policy),
@@ -1477,6 +1497,155 @@ def _process_search_group(
         stage=job.current_stage,
         external_calls=job.external_calls,
         cache_hits=cache_hits,
+    )
+
+
+def _readability_fallback_group(
+    coverage: dict[str, object], policy: WebResearchPolicy
+) -> str | None:
+    candidates = coverage.get("candidates", [])
+    stats = coverage.get("stats", {})
+    if (
+        int(coverage.get("candidate_index", 0)) < len(candidates)
+        or len(candidates) >= policy.max_candidate_urls
+        or int(stats.get("fetch_calls", 0)) >= policy.max_fetch_requests_per_job
+        or int(stats.get("downloaded_bytes", 0)) >= policy.max_download_bytes_per_job
+        or sum(
+            item.get("status") in {"created", "reused"} for item in coverage.get("documents", [])
+        )
+        >= policy.max_documents_per_job
+    ):
+        return None
+    documents = {item["url"]: item for item in coverage.get("documents", [])}
+    for code, _ in SEARCH_GROUPS:
+        group = coverage.get("search_groups", {}).get(code, {})
+        providers = group.get("providers", {})
+        if providers.get(policy.fallback_provider, {}).get("status") != "not_called":
+            continue
+        if (
+            providers.get(policy.primary_provider, {}).get("qualified_subject_results", 0)
+            < policy.fallback_min_subject_results
+        ):
+            continue
+        urls = {
+            item["url"]
+            for item in candidates
+            if code in item.get("query_kinds", [item.get("query_kind")])
+        }
+        if urls and all(documents.get(url, {}).get("status") == "failed" for url in urls):
+            return code
+    return None
+
+
+def _process_readability_fallback(session, user, job, company, policy, providers, group_code):
+    # Replay uses the original query/provider token, so a committed response or failure
+    # is reused even if the worker stopped before saving the next stage.
+    if (
+        not policy.incremental_research_enabled
+        or job.trigger_type == "watchlist"
+        or _readability_fallback_group(job.coverage, policy) != group_code
+    ):
+        return _finalize(session, job)
+    provider = providers[policy.fallback_provider]
+    query = job.coverage["search_groups"][group_code].get("query_text") or _query_for(
+        company, dict(SEARCH_GROUPS)[group_code]
+    )
+    response = None
+    cached = False
+    state = {"reason": "primary_documents_unreadable", "attempted_at": utc_now().isoformat()}
+    try:
+        response, cached = _provider_response(
+            session,
+            user,
+            job,
+            company,
+            provider,
+            query_kind=group_code,
+            query=query,
+            policy=policy,
+        )
+        state.update(
+            status="cache_hit" if cached else "completed",
+            results=len(response.results),
+            subject_results=sum(_subject_match(company, item) for item in response.results),
+            qualified_subject_results=sum(
+                _qualified_subject_result(company, item, policy) for item in response.results
+            ),
+            filter_reasons=_qualification_reason_counts(company, response.results, policy),
+        )
+    except SearchProviderError as error:
+        state.update(status="failed", error_code=error.code, http_status=error.http_status)
+    _restore_worker_context(session, user)
+    job = _refresh_job(session, job.id)
+    if _job_should_stop(session, job):
+        return _cancel_job(session, job)
+    coverage = dict(job.coverage)
+    candidates = list(coverage.get("candidates", []))
+    seen = {item["url"] for item in candidates}
+    robots = normalized_robots_rule_cache(coverage.get("_robots_rule_cache"), policy.user_agent)
+    added = []
+    excluded = {"duplicate_url": 0, "robots_disallowed": 0}
+    for result in response.results if response else []:
+        candidate = _candidate_payload(
+            company, result, provider_code=provider.code, query_kind=group_code, policy=policy
+        )
+        if candidate is None:
+            continue
+        url = candidate["url"]
+        if url in seen:
+            excluded["duplicate_url"] += 1
+            continue
+        seen.add(url)
+        parsed = urlsplit(url)
+        rule = robots.get(f"{parsed.scheme}://{parsed.netloc}")
+        if rule is not None and not robots_rule_allows(rule, url, policy.user_agent):
+            excluded["robots_disallowed"] += 1
+            continue
+        added.append(candidate)
+    added.sort(
+        key=lambda item: _result_score(company, SearchResult.from_dict(item), policy), reverse=True
+    )
+    added = added[: max(0, policy.max_candidate_urls - len(candidates))]
+    # All existing candidates were processed; never reorder that prefix or replace evidence.
+    coverage["candidates"] = [*candidates, *added]
+    state.update(candidate_count_added=len(added), excluded_candidates=excluded)
+    groups = dict(coverage["search_groups"])
+    group = dict(groups[group_code])
+    group["providers"] = {**group["providers"], provider.code: state}
+    group["cache_reused"] = bool(group.get("cache_reused") or cached)
+    if response is not None:
+        checked = session.scalar(
+            select(WebSearchCacheEntry.fetched_at).where(
+                WebSearchCacheEntry.company_id == company.id,
+                WebSearchCacheEntry.provider_code == provider.code,
+                WebSearchCacheEntry.query_hash == _sha256(query),
+                WebSearchCacheEntry.identity_fingerprint == _identity_fingerprint(company),
+            )
+        )
+        if checked is not None:
+            previous = _evidence_checked_at(group.get("checked_at"))
+            group["checked_at"] = max(_aware(checked), previous or _aware(checked)).isoformat()
+    group["subject_results"] = int(group.get("subject_results", 0)) + len(added)
+    group["qualified_subject_results"] = int(group.get("qualified_subject_results", 0)) + len(added)
+    groups[group_code] = group
+    coverage["search_groups"] = groups
+    job.coverage = coverage
+    job.current_stage = "fetch"
+    job.status = "partial"
+    job.leased_until = None
+    job.heartbeat_at = utc_now()
+    for request in _active_linked_requests(session, job.id):
+        request.status = "partial"
+        request.leased_until = None
+        request.heartbeat_at = job.heartbeat_at
+    session.commit()
+    return WebResearchWorkerResult(
+        status="partial",
+        job_id=job.id,
+        company_id=job.company_id,
+        stage="fetch",
+        external_calls=job.external_calls,
+        cache_hits=int(cached),
     )
 
 
@@ -2448,6 +2617,33 @@ def _fetch_candidate(
         or previous_downloaded_bytes >= policy.max_download_bytes_per_job
     )
     if index >= len(candidates) or successful >= policy.max_documents_per_job or limits_reached:
+        if policy.incremental_research_enabled and job.trigger_type != "watchlist":
+            group_code = (
+                _readability_fallback_group(coverage, policy)
+                if previous_search_calls < policy.max_search_calls_per_job
+                else None
+            )
+            # Incremental discovery stays within the original two query groups.
+            for kind in ("source_recovery", "gap_follow_up"):
+                previous = dict(coverage.get(kind, {}))
+                if previous.get("status") in {"not_requested", "pending"}:
+                    coverage[kind] = {
+                        **previous,
+                        "status": "skipped",
+                        "reason": "same_query_fallback_only",
+                    }
+            job.coverage = coverage
+            job.current_stage = f"readability_fallback:{group_code}" if group_code else "finalize"
+            job.status = "partial"
+            job.leased_until = None
+            session.commit()
+            return WebResearchWorkerResult(
+                status="partial",
+                job_id=job.id,
+                company_id=job.company_id,
+                stage=job.current_stage,
+                external_calls=job.external_calls,
+            )
         recovery = dict(coverage.get("source_recovery", {}))
         can_recover = (
             index >= len(candidates)
@@ -2595,6 +2791,16 @@ def _fetch_candidate(
             fetcher.bind_job_robots_cache(robots_cache)
             if job.trigger_type == "watchlist":
                 fetcher.bind_request_guard(monitoring.request_guard(session, user, job))
+            elif policy.incremental_research_enabled:
+
+                def within_deadline():
+                    if _incremental_time_exhausted(job, policy):
+                        raise SourceFetchError(
+                            "execution_time_limit_reached", "research deadline reached"
+                        )
+                    return True
+
+                fetcher.bind_request_guard(within_deadline)
             try:
                 result = fetcher.check(
                     source_type="single_page",
@@ -2945,7 +3151,13 @@ def _run_web_research_worker_once(
             session, job, WebResearchBudgetDeferred("uncertain spend requires reconciliation")
         )
     coverage = dict(job.coverage or {})
-    started_at_value = coverage.get("step_started_at")
+    incremental_bounded = policy.incremental_research_enabled and job.trigger_type != "watchlist"
+    if incremental_bounded:
+        coverage["follow_up_strategy_version"] = "same-query-readable-fallback-v1"
+        job.coverage = coverage
+        if job.current_stage in {"source_recovery", "gap_follow_up"}:
+            job.current_stage = "fetch"
+    started_at_value = coverage.get("started_at" if incremental_bounded else "step_started_at")
     try:
         started_at = datetime.fromisoformat(str(started_at_value))
     except (TypeError, ValueError):
@@ -2960,6 +3172,16 @@ def _run_web_research_worker_once(
         job = _refresh_job(session, job.id)
         return _finalize(session, job)
     try:
+        if job.current_stage.startswith("readability_fallback:"):
+            return _process_readability_fallback(
+                session,
+                user,
+                job,
+                company,
+                policy,
+                providers,
+                job.current_stage.split(":", 1)[1],
+            )
         if job.current_stage.startswith("search:"):
             group_code = job.current_stage.split(":", 1)[1]
             group = next((item for item in SEARCH_GROUPS if item[0] == group_code), None)
