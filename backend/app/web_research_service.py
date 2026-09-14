@@ -946,6 +946,8 @@ def _result_score(
     company: Company,
     result: SearchResult,
     policy: WebResearchPolicy,
+    *,
+    defer_static_pages: bool = False,
 ) -> tuple[int, float, str]:
     rank = _source_rank(company, result)
     score = rank.score
@@ -962,7 +964,23 @@ def _result_score(
         score += 25
     elif date_status in {"old", "future"}:
         score -= 1_000
+    if defer_static_pages and _static_page_url(result.url):
+        score -= 1_000
     return score, published_at.timestamp() if published_at else 0.0, result.url
+
+
+def _static_page_url(url: str) -> bool:
+    page = urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1].split(".", 1)[0].casefold()
+    return page in {
+        "about",
+        "about-us",
+        "contact",
+        "contact-us",
+        "faq",
+        "service",
+        "services",
+        "support",
+    }
 
 
 def _candidate_payload(
@@ -1490,7 +1508,16 @@ def _process_search_group(
             current["query_kinds"] = query_kinds
     candidates = list(existing_candidates.values())
     candidates.sort(
-        key=lambda item: _result_score(company, SearchResult.from_dict(item), policy),
+        key=lambda item: _result_score(
+            company,
+            SearchResult.from_dict(item),
+            policy,
+            defer_static_pages=(
+                policy.incremental_research_enabled
+                and job.trigger_type != "watchlist"
+                and coverage.get("query_strategy_version") == SHORT_QUERY_STRATEGY_VERSION
+            ),
+        ),
         reverse=True,
     )
     coverage["candidates"] = candidates[: policy.max_candidate_urls]
@@ -1528,7 +1555,10 @@ def _readability_fallback_group(
     candidates = coverage.get("candidates", [])
     stats = coverage.get("stats", {})
     if (
-        int(coverage.get("candidate_index", 0)) < len(candidates)
+        (
+            coverage.get("query_strategy_version") != SHORT_QUERY_STRATEGY_VERSION
+            and int(coverage.get("candidate_index", 0)) < len(candidates)
+        )
         or len(candidates) >= policy.max_candidate_urls
         or int(stats.get("fetch_calls", 0)) >= policy.max_fetch_requests_per_job
         or int(stats.get("downloaded_bytes", 0)) >= policy.max_download_bytes_per_job
@@ -1603,6 +1633,9 @@ def _process_readability_fallback(session, user, job, company, policy, providers
         return _cancel_job(session, job)
     coverage = dict(job.coverage)
     candidates = list(coverage.get("candidates", []))
+    index = min(int(coverage.get("candidate_index", 0)), len(candidates))
+    pending_by_url = {item["url"]: dict(item) for item in candidates[index:]}
+    recovered_pending = set()
     seen = {item["url"] for item in candidates}
     robots = normalized_robots_rule_cache(coverage.get("_robots_rule_cache"), policy.user_agent)
     added = []
@@ -1616,6 +1649,17 @@ def _process_readability_fallback(session, user, job, company, policy, providers
         url = candidate["url"]
         if url in seen:
             excluded["duplicate_url"] += 1
+            if url in pending_by_url:
+                current = pending_by_url[url]
+                current["query_kinds"] = list(
+                    dict.fromkeys(
+                        [*current.get("query_kinds", [current.get("query_kind")]), group_code]
+                    )
+                )
+                current["discovered_by"] = list(
+                    dict.fromkeys([*current.get("discovered_by", []), provider.code])
+                )
+                recovered_pending.add(url)
             continue
         seen.add(url)
         parsed = urlsplit(url)
@@ -1625,12 +1669,30 @@ def _process_readability_fallback(session, user, job, company, policy, providers
             continue
         added.append(candidate)
     added.sort(
-        key=lambda item: _result_score(company, SearchResult.from_dict(item), policy), reverse=True
+        key=lambda item: _result_score(
+            company,
+            SearchResult.from_dict(item),
+            policy,
+            defer_static_pages=coverage.get("query_strategy_version")
+            == SHORT_QUERY_STRATEGY_VERSION,
+        ),
+        reverse=True,
     )
     added = added[: max(0, policy.max_candidate_urls - len(candidates))]
-    # All existing candidates were processed; never reorder that prefix or replace evidence.
-    coverage["candidates"] = [*candidates, *added]
-    state.update(candidate_count_added=len(added), excluded_candidates=excluded)
+    # Keep the processed prefix stable across retries; recovered pages precede pending groups.
+    pending = [
+        *added,
+        *(item for url, item in pending_by_url.items() if url in recovered_pending),
+        *(item for url, item in pending_by_url.items() if url not in recovered_pending),
+    ]
+    if coverage.get("query_strategy_version") == SHORT_QUERY_STRATEGY_VERSION:
+        pending.sort(key=lambda item: _static_page_url(item["url"]))
+    coverage["candidates"] = [*candidates[:index], *pending]
+    state.update(
+        candidate_count_added=len(added),
+        candidate_count_reprioritized=len(recovered_pending),
+        excluded_candidates=excluded,
+    )
     groups = dict(coverage["search_groups"])
     group = dict(groups[group_code])
     group["providers"] = {**group["providers"], provider.code: state}
@@ -2638,13 +2700,20 @@ def _fetch_candidate(
         previous_fetch_calls >= policy.max_fetch_requests_per_job
         or previous_downloaded_bytes >= policy.max_download_bytes_per_job
     )
-    if index >= len(candidates) or successful >= policy.max_documents_per_job or limits_reached:
+    group_code = (
+        _readability_fallback_group(coverage, policy)
+        if policy.incremental_research_enabled
+        and job.trigger_type != "watchlist"
+        and previous_search_calls < policy.max_search_calls_per_job
+        else None
+    )
+    if (
+        group_code
+        or index >= len(candidates)
+        or successful >= policy.max_documents_per_job
+        or limits_reached
+    ):
         if policy.incremental_research_enabled and job.trigger_type != "watchlist":
-            group_code = (
-                _readability_fallback_group(coverage, policy)
-                if previous_search_calls < policy.max_search_calls_per_job
-                else None
-            )
             # Incremental discovery stays within the original two query groups.
             for kind in ("source_recovery", "gap_follow_up"):
                 previous = dict(coverage.get(kind, {}))
@@ -3184,7 +3253,11 @@ def _run_web_research_worker_once(
     coverage = dict(job.coverage or {})
     incremental_bounded = policy.incremental_research_enabled and job.trigger_type != "watchlist"
     if incremental_bounded:
-        coverage["follow_up_strategy_version"] = "same-query-readable-fallback-v1"
+        coverage["follow_up_strategy_version"] = (
+            "same-query-readable-fallback-v2"
+            if coverage.get("query_strategy_version") == SHORT_QUERY_STRATEGY_VERSION
+            else "same-query-readable-fallback-v1"
+        )
         job.coverage = coverage
         if job.current_stage in {"source_recovery", "gap_follow_up"}:
             job.current_stage = "fetch"

@@ -29,6 +29,7 @@ E3（EV13）：`test_watchlist_monitoring.py` 使用独立 SQLite/PostgreSQL 及
 | E2.2 费用与恢复 | `test_web_research_budget.py` 验证空价格/零价格与配置边界；`test_web_budget_delivery.py` 用 SQLite/PostgreSQL 验证预占、金额状态、结算幂等、取消与跨周期不确定支出、已知失败后的重试计数、跨租户并发争用次数及五层金额预算、账本 RLS、迁移保护和结果丢失恢复；`test_web_usage_reconciliation_cli.py` 验证默认只读、管理员核对、历史零值及零 Provider 实例。并发只以 PostgreSQL 分支为证据，SQLite 对应分支明确跳过 |
 | E4.3 正文读取回退 | `test_readability_fallback.py` 使用虚构初始资料、Mock 搜索/HTTP 和隔离 SQLite/PostgreSQL，验证原查询复用、跨组重复 URL、主源可读不回退、robots/验证码/超时全失败后同组回退、部分成功保留、备用空/失败后停止、已禁止路径不再请求、缓存零调用、预占与结算后断线/未知支出恢复、取消/预算/任务时限、旧初始事实及快照保留、非 owner 跨租户隔离。真实内容效果仍需另行批准的新单公司运行，不能用 Mock 通过改写原 0/1 |
 | E4.4 短查询与正文抽取 | `test_short_business_queries.py` 在 SQLite/PostgreSQL 验证查询冻结、回退一致、旧任务与缓存隔离及实际类别覆盖；`test_incremental_research_rules.py`、`test_web_search_providers.py` 验证短别名准入、近期参数、媒体频道范围、可见页头日期/错误页脚排除、双语品牌边界、重复融资标题和真实多事项歧义；`test_incremental_research.py` 验证不覆盖人工事实、追加观测及提取器版本。私有真实正文回放另验收证据→观测→详情和非 owner RLS，不能作为新联网召回 |
+| E4.4 按组提前回退 | `test_group_readability_fallback.py` 在 SQLite/PostgreSQL 用 Mock 验证融资组用完 6 次 HTTP 后提前回退，8/12 次配置均优先取得替代正文；已处理队列保持、服务页后置、最后候选名额优先文章、跨组排队 URL 合并且只读取一次、已结算搜索中断后不重发、备用空/仅服务页时继续其他业务候选、旧 v1 等待规则保留。封存真实队列仅作无网络路由对照；12 次测试配置不等于线上提额，Mock 正文不计真实召回 |
 | 发布路由 | 安全 A/B 来源自动发布；链接未检查/失效、低置信度及高/极高风险只形成未确认线索；策略版本和原因可追溯 |
 | URL 验证 | 外部开关关闭时零网络；开启后限制每批次数；拒绝回环/私网；保存 HTTP 状态和最终 URL |
 | 审核状态 | 只有身份歧义默认创建新人工任务；既有驳回/纠错/撤回保留历史和理由 |

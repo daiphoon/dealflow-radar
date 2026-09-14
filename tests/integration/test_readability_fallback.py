@@ -120,7 +120,7 @@ def research(database, tmp_path, monkeypatch):
                 incremental.curated.enter(session),
                 {"baidu": state.primary, "bocha": state.fallback},
                 state.policy,
-                fetcher_factory=factory,
+                fetcher_factory=state.fetcher_factory,
             )
 
         def run(stop_stage=None):
@@ -136,7 +136,7 @@ def research(database, tmp_path, monkeypatch):
                     return result
             pytest.fail("Worker did not reach the bounded stop")
 
-        state.job, state.step, state.run = job, step, run
+        state.job, state.step, state.run, state.fetcher_factory = job, step, run, factory
         yield state
 
 
