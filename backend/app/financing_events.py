@@ -9,6 +9,7 @@ from datetime import date
 from backend.app.research_subject import matched_name, normalize
 
 SCHEMA_VERSION = "financing-disclosure-v1"
+EXTRACTOR_VERSION = "financing-passages-v2"
 ROUND = r"(?:Pre[-－ ]?[A-F]|[A-F](?:\+|＋)?|天使|种子|战略)(?:轮)"
 AMOUNT = (
     r"(?:(?:近|约|超过|超|逾|数|数十|数百|数千|上)?"
@@ -66,6 +67,7 @@ def round_value(text: str) -> str | None:
 def amount_value(text: str) -> str | None:
     values = {
         m.group()
+        + (currency.group() if (currency := re.match(r"人民币|美元|港元", text[m.end() :])) else "")
         for m in re.finditer(AMOUNT, text)
         if len(m.group()) > 2 and not m.group().startswith(("美元", "人民币"))
     }
@@ -104,7 +106,15 @@ def extract_financing(company, body: str, published_on: date | None) -> Financin
         found.append((name, support))
     if not found:
         return None
-    name, support = found[0]
+    # 同一篇新闻的标题、正文和原标题可重复提及；优先使用字段更完整的连续正文。
+    name, support = max(
+        found,
+        key=lambda item: (
+            bool(re.search(r"由[^。；;]+(?:领投|跟投|参与投资)", item[1])),
+            bool(round_value(item[1])),
+            len(item[1]),
+        ),
+    )
     support = support[:1000]
     round_text = round_value(support)
     # 金额仅取融资句；下一句估值、营收、历史累计额不参与抽取。
@@ -134,7 +144,28 @@ def extract_financing(company, body: str, published_on: date | None) -> Financin
         else f"brand:{normalize(name)}"
     )
     issues = []
-    if len(found) > 1 or len(list(re.finditer(ROUND, support, re.I))) > 1:
+    rounds = {
+        re.sub(r"[ －-]", "", match.group()).upper().replace("＋", "+")
+        for _, text in found
+        for match in re.finditer(ROUND, text, re.I)
+    }
+    amounts = {value for _, text in found if (value := amount_value(re.split(r"[。；;]", text)[0]))}
+    dates = {
+        matched.group()
+        for _, text in found
+        if (matched := re.match(r"\d{4}年\d{1,2}月\d{1,2}日", text))
+    }
+    compatible_amounts = all(
+        left == right or left.removesuffix("人民币") == right.removesuffix("人民币")
+        for left in amounts
+        for right in amounts
+    )
+    if (
+        len({name for name, _ in found}) > 1
+        or len(rounds) > 1
+        or len(dates) > 1
+        or not compatible_amounts
+    ):
         issues.append("multiple_financing_mentions")
     if not round_text:
         issues.append("round_unknown")

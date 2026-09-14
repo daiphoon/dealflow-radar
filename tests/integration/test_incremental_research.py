@@ -29,14 +29,17 @@ from backend.app.models import (
     User,
 )
 from backend.app.personal_features import create_refresh_request
-from backend.app.research_subject import load_subject
+from backend.app.research_coverage import SHORT_SEARCH_TOPICS
+from backend.app.research_subject import (
+    SHORT_QUERY_STRATEGY_VERSION,
+    load_subject,
+    short_business_query,
+)
 from backend.app.services import AccessDeniedError, get_company_detail
 from backend.app.source_fetcher import DiscoveredDocument, TrustedSourceFetcher
 from backend.app.web_research_service import (
-    SEARCH_GROUPS,
     _candidate_event,
     _content_quality_decision,
-    _query_for,
     _raw_document,
     _source,
     prepare_pending_research_requests,
@@ -168,6 +171,33 @@ def test_baseline_new_sources_correction_and_retry_keep_one_event(database, tmp_
         assert session.scalar(select(func.count()).select_from(EventObservation)) == count
 
 
+def test_headline_and_body_repetition_appends_to_the_existing_curated_matter(database, tmp_path):
+    curated.curator(database)
+    with Session(database.app, expire_on_commit=False) as session:
+        user, company = initial(session, tmp_path)
+        baseline = session.scalar(
+            select(Event).where(
+                Event.company_id == company.id,
+                Event.visibility_scope == "platform_shared",
+                Event.published_on == DAY.date(),
+            )
+        )
+        original_facts = list(baseline.facts)
+        body = (
+            "示例山海完成A轮融资\n"
+            "示例山海宣布完成近一亿元A轮融资。本轮融资由示例资本领投。\n"
+            "原标题：示例山海完成A轮融资"
+        )
+        event, document, created = ingest(session, user, company, body)
+        assert not created and event.id == baseline.id
+        assert event.facts == original_facts
+        observation = session.scalar(
+            select(EventObservation).where(EventObservation.raw_document_id == document.id)
+        )
+        assert observation.candidate_payload["candidate"]["issues"] == []
+        assert observation.candidate_payload["extractor_version"] == "financing-passages-v2"
+
+
 def test_migration_retains_financing_observations(database, tmp_path):
     curated.curator(database)
     with Session(database.app, expire_on_commit=False) as session:
@@ -288,7 +318,8 @@ def test_worker_reads_late_alias_body_continues_after_captcha_and_keeps_baseline
             for i, path in enumerate(("blocked", "article"))
         ]
         primary = MockSearchProvider(
-            "baidu", {_query_for(subject, terms): rows for _, terms in SEARCH_GROUPS}
+            "baidu",
+            {short_business_query(subject, topic): rows for topic in SHORT_SEARCH_TOPICS.values()},
         )
         fallback = MockSearchProvider("bocha")
         seen = []
@@ -334,7 +365,7 @@ def test_worker_reads_late_alias_body_continues_after_captcha_and_keeps_baseline
         job = session.get(
             CompanyResearchJob, session.get(PersonalCompanyRequest, request.id).research_job_id
         )
-        assert job.coverage["query_strategy_version"] == "verified-business-names-v1"
+        assert job.coverage["query_strategy_version"] == SHORT_QUERY_STRATEGY_VERSION
         assert len(primary.calls) == 2 and not fallback.calls, job.coverage["documents"]
         assert "/blocked" in seen and "/article" in seen
         assert any(d.get("error_code") == "captcha_required" for d in job.coverage["documents"])
@@ -394,7 +425,7 @@ def test_curator_admitted_request_starts_only_enabled_business_path(database, tm
 
         preview = inspect_web_research_queue(session, user, POLICY)
         assert preview["pending_requests"] == 1 and preview["external_calls"] == 0
-        assert preview["query_strategy_version"] == "verified-business-names-v1"
+        assert preview["query_strategy_version"] == SHORT_QUERY_STRATEGY_VERSION
         assert prepare_pending_research_requests(session, user, POLICY) == 1
         user = curated.enter(session)
         assert request.research_job_id and request.external_calls == 16

@@ -43,15 +43,19 @@ from backend.app.research_coverage import (
     RESEARCH_MODULES,
     SEARCH_GROUP_MODULES,
     SEARCH_GROUPS,
+    SHORT_SEARCH_MODULES,
+    SHORT_SEARCH_TOPICS,
     category_coverage,
     source_routes,
 )
 from backend.app.research_subject import (
     QUERY_STRATEGY_VERSION,
+    SHORT_QUERY_STRATEGY_VERSION,
     BusinessExcerptSelector,
     load_subject,
     matched_name,
     query_subject,
+    short_business_query,
 )
 from backend.app.services import user_has_role
 from backend.app.source_fetcher import (
@@ -102,6 +106,7 @@ TRUSTED_MEDIA_DOMAINS = {
     "cnstock.com",
     "cs.com.cn",
     "eeo.com.cn",
+    "finance.eastmoney.com",
     "iyiou.com",
     "news.cn",
     "pedaily.cn",
@@ -490,12 +495,22 @@ def _identity_fingerprint(company: Company) -> str:
     )
 
 
-def _initial_coverage(policy: WebResearchPolicy) -> dict[str, object]:
+def _initial_coverage(policy: WebResearchPolicy, *, watchlist: bool = False) -> dict[str, object]:
+    short_topics = policy.incremental_research_enabled and not watchlist
     return {
         "policy_version": policy.version,
+        "query_strategy_version": SHORT_QUERY_STRATEGY_VERSION
+        if short_topics
+        else QUERY_STRATEGY_VERSION
+        if policy.incremental_research_enabled
+        else "legal-name-only",
         "evidence_routing_version": EVIDENCE_ROUTING_VERSION,
         "category_coverage_version": COVERAGE_VERSION,
-        "source_routes": source_routes(policy.primary_provider, policy.fallback_provider),
+        "source_routes": source_routes(
+            policy.primary_provider,
+            policy.fallback_provider,
+            short_topics=short_topics,
+        ),
         "modules": {module: "pending" for module in RESEARCH_MODULES},
         "search_groups": {
             code: {"status": "pending", "providers": {}} for code, _ in SEARCH_GROUPS
@@ -1231,7 +1246,9 @@ def _process_search_group(
     group_code: str,
     terms: str,
 ) -> WebResearchWorkerResult:
-    query = _query_for(company, terms)
+    query = job.coverage.get("search_groups", {}).get(group_code, {}).get(
+        "query_text"
+    ) or _query_for(company, terms)
     primary = providers[policy.primary_provider]
     fallback = providers[policy.fallback_provider]
     responses: list[SearchResponse] = []
@@ -1437,7 +1454,12 @@ def _process_search_group(
     }
     coverage["search_groups"] = groups
     modules = dict(coverage.get("modules", {}))
-    for module in SEARCH_GROUP_MODULES[group_code]:
+    group_modules = (
+        SHORT_SEARCH_MODULES
+        if coverage.get("query_strategy_version") == SHORT_QUERY_STRATEGY_VERSION
+        else SEARCH_GROUP_MODULES
+    )
+    for module in group_modules[group_code]:
         modules[module] = "search_completed"
     coverage["modules"] = modules
     existing_candidates = {
@@ -3140,7 +3162,16 @@ def _run_web_research_worker_once(
     if policy.incremental_research_enabled:
         company = load_subject(session, company)
         coverage = dict(job.coverage)
-        coverage["query_strategy_version"] = QUERY_STRATEGY_VERSION
+        coverage.setdefault("query_strategy_version", QUERY_STRATEGY_VERSION)
+        if (
+            coverage["query_strategy_version"] == SHORT_QUERY_STRATEGY_VERSION
+            and job.trigger_type != "watchlist"
+        ):
+            groups = {code: dict(state) for code, state in coverage["search_groups"].items()}
+            for code, topic in SHORT_SEARCH_TOPICS.items():
+                groups[code].setdefault("query_text", short_business_query(company, topic))
+                groups[code].setdefault("topic", topic)
+            coverage["search_groups"] = groups
         coverage["business_subject"] = {
             "legal_name": company.legal_name,
             "aliases": list(company.aliases),
@@ -3305,7 +3336,7 @@ def inspect_web_research_queue(
     return {
         "status": "dry_run",
         "incremental_research_enabled": policy.incremental_research_enabled,
-        "query_strategy_version": QUERY_STRATEGY_VERSION
+        "query_strategy_version": SHORT_QUERY_STRATEGY_VERSION
         if policy.incremental_research_enabled
         else "legal-name-only",
         "pending_requests": pending_requests,

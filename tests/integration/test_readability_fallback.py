@@ -24,12 +24,12 @@ from backend.app.models import (
     utc_now,
 )
 from backend.app.personal_features import cancel_personal_company_request, create_refresh_request
-from backend.app.research_subject import load_subject
+from backend.app.research_coverage import SHORT_SEARCH_TOPICS
+from backend.app.research_subject import load_subject, short_business_query
 from backend.app.services import get_company_detail
 from backend.app.source_fetcher import TrustedSourceFetcher
 from backend.app.web_research_service import (
     SEARCH_GROUPS,
-    _query_for,
     _store_search_response,
     run_web_research_worker_once,
 )
@@ -66,7 +66,7 @@ def research(database, tmp_path, monkeypatch):
         request = create_refresh_request(session, user, PersonalEntitlementPolicy(), company.id)
         user = incremental.curated.enter(session)
         subject = load_subject(session, company)
-        queries = [_query_for(subject, terms) for _, terms in SEARCH_GROUPS]
+        queries = [short_business_query(subject, topic) for topic in SHORT_SEARCH_TOPICS.values()]
         state = SimpleNamespace(
             session=session,
             company=company,

@@ -179,7 +179,7 @@ def queue_due_watch_checks(session, user, web_policy, *, dry_run=True, now=None)
             state.last_job_id, state.last_outcome = active.id, "queued"
             result["merged_count"] += 1
             continue
-        coverage = _initial_coverage(web_policy)
+        coverage = _initial_coverage(web_policy, watchlist=True)
         coverage["search_groups"] = {GROUP: coverage["search_groups"][GROUP]}
         coverage["source_routes"] = {
             category: route if category in CATEGORIES else None
