@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-09-15：E4.4 按组提前回退与网页请求额度评估
+
+- 任务/关键文件：按批准修改 `web_research_service.py`，短查询增量任务采用 `same-query-readable-fallback-v2`；已失败组提前回退，备用文章与已经排队的同 URL 优先读取，服务等固定页面在候选截断前后均后置，处理过的队列不改写。新增 `test_group_readability_fallback.py` 并允许既有 fixture 注入 Mock Fetcher；同步 README、看板、增量计划、来源/成本/测试说明，无迁移、依赖或前端修改。
+- 实际命令：`git switch -c codex/e44-group-fallback`；定向 Pytest 先复现旧序列失败，再用 Mock HTTP 和本机临时 PostgreSQL 非 owner 角色执行新/旧回退与短查询回归，最后执行既有 Worker/增量/预算/关注/抓取回归；私有 `run_tests.py final/related-final` 保存最终日志并清理临时库容器和凭据。`replay_recorded_queue.py` 对比部署版与新函数，真实封存输入零网络/零生产写入；Ruff、格式、本地链接/公开差异隐私/原材料 SHA-256 和 `git diff --check` 验证。
+- 结果：最终定向 72 通过、相关 199 通过/9 个既有条件分支跳过，共 271 通过/9 跳过；新增 16 个 SQLite/PostgreSQL 用例全部通过，保留既有 Starlette 弃用提示。8 次 HTTP 的 Mock 场景先读取替代融资正文，12 次场景再读取服务页；重复排队 URL 只读一次，结算后中断不重复搜索，初始事实与权限保持。封存真实队列在已用 6 次时可提前选择融资回退，但未执行新的真实搜索/读取，不宣称内容召回已通过。
+- 边界/停止：当前默认配置和生产上限保持 4 搜索/8 HTTP/2,000,000 字节/180 秒/模型与金额上限 0；12 HTTP 是下一单公司运行建议，尚未启用。原 Excel、固定基准及旧封存结果不变，本轮产品外部调用、生产访问、合并和部署为 0；工程 PR 基于未合并 PR #87 交付后停止，下一合并部署和受控复测待确认，EV14/M6B 未通过保持。私有回执在 `data/private/e4-validation/20260915-e44-group-fallback/`。
+
 ## 2026-09-14：E4.4 部署后的单次线上维护验证
 
 - 任务/关键文件：按已批准排程于 21:45 自动续作，正常冷却后通过原生流程新建一个申请；在已部署 `2074d81` 执行原公司两条短查询。同步 README、有效看板和本记录；私有回执位于 `data/private/e4-validation/20260914-e44-deployed/`，未修改产品代码或执行第二次研究。
