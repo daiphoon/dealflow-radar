@@ -6,7 +6,7 @@
 
 当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充个人安全查询、按需缓存、Mock Worker V1、人工研究导入 V1 与受控可信来源监测 V1：
 
-> **当前推进方向**：[ADR-0021](docs/DECISIONS/ADR-0021-incremental-event-delivery.md) 保留“增量交付＋局部重构”；[ADR-0022](docs/DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md) 采用“负责人复核初始资料＋按需增量研究”，经轻量校验即可按人工依据准入。E4.1/E4.2 及 E4.3 回退修复已部署；E4.4 短查询和正文识别修复待审查部署，隔离验证已取得两篇替代融资正文并通过落库/读取回放，轮次仍未知。原始盲测 0/1 保留，EV14 尚未通过。[完整计划](docs/15-incremental-event-delivery-plan.md)固定范围与验收，[实施看板](docs/10-implementation-plan.md)维护当前状态和下一唯一切片。
+> **当前推进方向**：[ADR-0021](docs/DECISIONS/ADR-0021-incremental-event-delivery.md) 保留“增量交付＋局部重构”；[ADR-0022](docs/DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md) 采用“负责人复核初始资料＋按需增量研究”，经轻量校验即可按人工依据准入。E4.1—E4.4 修复已部署；2026-09-14 21:45（北京时间）自动续作的原公司单次线上维护验证已结束，2 次搜索、8 次 HTTP 未形成新增可展示内容，原有 5 条初始资料保持。离线复现定位到全局候选队列延迟融资组回退，最后的服务页耗尽剩余读取额度；下一仅建议修复按组提前回退和非事件页面后置，待批准。运行与自动续作均已关闭，原始盲测 0/1 和 EV14 未通过保留。[完整计划](docs/15-incremental-event-delivery-plan.md)固定范围与验收，[实施看板](docs/10-implementation-plan.md)维护当前状态和下一唯一切片。
 
 - 10 家虚构公司及两个虚构租户/基金；
 - Mock 文档幂等导入、主体精确匹配、候选事件、证据和历史审核闭环；
