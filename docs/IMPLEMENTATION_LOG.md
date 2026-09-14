@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-09-15：PR #87 / #88 合并部署与 12 HTTP 单次复测排程
+
+- 任务/关键文件：按批准合并记录 PR #87，将修复 PR #88 调整到 `main`，最终 CI 通过后合并并于 06:51 部署 `d192516`；同步 README、看板、成本说明、增量计划和本记录。原公司冷却至 21:48:36，沿用自动续作偏好安排 21:50 一次 12 HTTP 验证，未新增产品代码。
+- 实际命令：`gh api` 精确提交 Squash Merge、`git rebase --onto`、`git diff --exit-code`、`git archive`；SSH/SCP 运行私有 `backup.sh`、`prepare.sh`、`deploy.sh`，Compose build/preflight/migrate/bootstrap-role/up；Mac `restore_local.py` 执行双哈希、隔离 PostgreSQL 恢复、迁移无漂移和非 owner 验收；`capture_case.py before-deployment/after-deployment`、`e4_preflight.py`、只读公司详情与 Chrome 刷新核对；自动续作工具更新并读回一次性排程；`validate_documents.py` 检查文档链接、公开差异和原材料哈希。
+- 结果：最终 `e003809` CI 后端 825 通过/16 跳过、前端 24 通过，依赖/风格/类型/构建/生产配置与镜像均通过；重排、合并文件树一致。新加密备份上传 COS，SSH 副本恢复通过，部署前后全表摘要一致、`0033` 保持、权限与健康通过。原公司 14 组历史记录、其他样本、150 条账本及 5 条可见资料保持；19 项持久化开关和 13 项运行开关关闭，默认 HTTP 8、金额上限零、无活动 Worker。69 个本地文档链接、公开差异隐私与 `git diff --check` 通过，原材料 6 份哈希保持；本次未重复 COS 直接下载。
+- 未执行/停止：仅已安排晚间一次新申请验证，当前新申请/搜索/正文抓取/模型调用为 0，12 次运行效果未知，旧 `0/1` 与 EV14/M6B 未通过保留。执行前重查免费配额、冷却与实际部署，独占记录防重复；完成或异常后停用自动续作，不自动二次研究、扩样、巡检或 E5。部署和交接回执存放于 Git 忽略的 `pr87-pr88-20260915` 与 `20260915-e44-12http` 私有目录；旧 `2074d81` 保留用于回退。
+
 ## 2026-09-15：E4.4 按组提前回退与网页请求额度评估
 
 - 任务/关键文件：按批准修改 `web_research_service.py`，短查询增量任务采用 `same-query-readable-fallback-v2`；已失败组提前回退，备用文章与已经排队的同 URL 优先读取，服务等固定页面在候选截断前后均后置，处理过的队列不改写。新增 `test_group_readability_fallback.py` 并允许既有 fixture 注入 Mock Fetcher；同步 README、看板、增量计划、来源/成本/测试说明，无迁移、依赖或前端修改。

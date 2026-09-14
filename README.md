@@ -6,7 +6,7 @@
 
 当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充个人安全查询、按需缓存、Mock Worker V1、人工研究导入 V1 与受控可信来源监测 V1：
 
-> **当前推进方向**：[ADR-0021](docs/DECISIONS/ADR-0021-incremental-event-delivery.md) 保留“增量交付＋局部重构”；[ADR-0022](docs/DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md) 采用“负责人复核初始资料＋按需增量研究”，经轻量校验即可按人工依据准入。E4.4 于 2026-09-14 的单次线上维护验证结束，2 次搜索、8 次 HTTP 未形成新增可展示内容，原有 5 条初始资料保持。9 月 15 日按批准完成按组提前回退与服务页后置的本地修复，已用封存队列及 Mock 验证，待 PR 审查和部署。当前默认仍是 4 次搜索、8 次网页 HTTP；12 次网页请求仅为下一单公司验证建议，尚未启用。本轮工程没有真实研究调用，原盲测 0/1 和 EV14 未通过保留。[完整计划](docs/15-incremental-event-delivery-plan.md)固定范围与验收，[实施看板](docs/10-implementation-plan.md)维护当前状态和下一唯一切片。
+> **当前推进方向**：[ADR-0021](docs/DECISIONS/ADR-0021-incremental-event-delivery.md) 保留“增量交付＋局部重构”；[ADR-0022](docs/DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md) 采用“负责人复核初始资料＋按需增量研究”。2026-09-15 已按批准合并 PR #87、#88，06:51（北京时间）部署 `d192516`，按组提前回退与固定服务页后置生效于后续受控增量任务。最终 CI、备份恢复、数据摘要、权限和页面核验通过，原 5 条初始资料保持。原公司正常冷却于今日 21:48:36 结束，已安排 21:50 自动续作一次：临时上限 4 次搜索、12 次网页 HTTP、2,000,000 字节、180 秒、模型与金额上限 0；长期默认 HTTP 仍为 8，调用开关关闭。此次复测尚未执行，旧正文支持输出 0/1 与 EV14/M6B 未通过保留。[完整计划](docs/15-incremental-event-delivery-plan.md)固定范围与验收，[实施看板](docs/10-implementation-plan.md)维护下一唯一切片。
 
 - 10 家虚构公司及两个虚构租户/基金；
 - Mock 文档幂等导入、主体精确匹配、候选事件、证据和历史审核闭环；
