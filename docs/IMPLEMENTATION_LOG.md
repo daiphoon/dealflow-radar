@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-09-14：PR #85 / #86 合并部署与单次线上验证排程
+
+- 任务/关键文件：按批准顺序合并 PR #85，PR #86 调整到 `main` 后以 `aa03fc2` 完整 CI 验收，合并部署 `2074d81`；同步 README、有效看板和本记录。原公司正常冷却于当天 21:44:05 结束，依据负责人明确选择安排 21:45 当前任务自动续作一次，私有交接固定原申请人、两条短查询、免费预算和终态停止条件；无产品代码改动。
+- 实际命令：GitHub 连接器精确提交合并、`git rebase --onto`、`git diff --exit-code`、`git archive`；SSH/SCP 上传已检查的控制脚本，Compose build/preflight/backup/migrate/bootstrap-role/up；Mac age 双哈希、隔离 PostgreSQL 恢复、`alembic upgrade head/check`、非 owner 只读验收；`capture_case.py before-deployment/after-deployment`、Chrome 现有公司页面核对；Codex 当前任务自动续作工具创建单次任务并读回配置。
+- 结果：最终 CI 后端 809 通过/16 跳过，前端 24 通过，迁移、部署配置与生产镜像均通过；12:06（北京时间）新版本健康上线，数据库保持 `0033`，13 项运行开关关闭、5 项金额上限零。初次切换因正常认证审计追加而自动中止，原审计摘要验证无改写；补做最新备份和恢复后切换成功，全表摘要、权限和健康检查通过。原目标 14 组记录不变，页面 5 条初始资料及日期口径保持；私有 `validate_documents.py` 检查 53 个本地链接、5 份原输入/封存哈希、公开差异隐私和 `git diff --check` 全通过。
+- 停止/未执行：产品新搜索、网页抓取和模型调用为 0；新申请尚未创建，已安排的 21:45 单次线上验证未执行，原 `0/1`、轮次缺口及 EV14/M6B 未通过保留。排程不会扩充样本或开启常驻研究，异常先查原任务与账本，不自动派发第二次；部署和排程回执留在 Git 忽略的私有目录，旧版本保留用于应用回退。
+
 ## 2026-09-14：E4.4 短业务查询与替代正文交付
 
 - 任务/关键文件：依批准实施两组短查询及冻结版本、博查最近一年参数；从失败后的可读正文定位并修复页头日期、双语品牌和重复融资提及识别，财经频道加入既有排序。关键代码为 `research_subject.py`、`research_coverage.py`、`web_research_service.py`、`web_search.py`、`source_fetcher.py`、`financing_events.py`、`financing_storage.py`；关注巡检保持旧查询。同步计划、看板、来源和测试说明，无迁移或新依赖。
