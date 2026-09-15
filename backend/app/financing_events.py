@@ -186,13 +186,9 @@ def extract_financing(company, body: str, published_on: date | None) -> Financin
 
 
 def same_matter(left: FinancingCandidate, right: FinancingCandidate) -> bool:
-    return (
-        not left.issues
-        and not right.issues
-        and left.subject_scope == right.subject_scope
-        and left.round == right.round
-        and left.disclosed_on == right.disclosed_on
-    )
+    from backend.app.financing_comparison import compare_financing
+
+    return compare_financing(left, right)["relation"] != "unlinked"
 
 
 def financing_observations(evidence_rows, visible_ids) -> list[dict]:

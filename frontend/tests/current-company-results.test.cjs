@@ -250,3 +250,27 @@ test("融资新来源和更正与初始事实分开展示，未知金额不显�
   assert.match(html, /尚未评分/);
   assert.doesNotMatch(html, /0\/100|>0%/);
 });
+
+test("缺轮次材料关联后保留未知字段和各自日期，补充信息不显示为冲突或新增融资", async () => {
+  const observation = { kind: "same_facts", fact_version: "partial", fields: {
+    subject_name: "示例品牌", subject_scope: "brand:示例品牌", round: null, amount_text: "近2亿元人民币",
+    investors: ["示例甲资本"], disclosed_on: "2026-06-02", occurred_on: null,
+  }, issues: ["round_unknown"], observed_at: "2026-09-15T00:00:00Z", evidence_id: "partial-evidence",
+    source_url: "https://example.com/finance", source_title: "示例公开融资报道", excerpt: "虚构正文片段", confirmed: false,
+    comparison: { version: "financing-comparison-v1", relation: "compatible_evidence", reasons: [],
+      fields: { round: "not_repeated", amount_text: "matched", investors: "additional", disclosed_on: "related_date", occurred_on: "not_disclosed" } },
+  };
+  const baseline = { ...event("baseline"), financing_observations: [observation] };
+  const data = company({ events: [baseline] });
+  const before = JSON.stringify(data);
+  const html = await render(data);
+  assert.match(overview(html), /已核实基础资料：1 条/);
+  assert.match(overview(html), /待核实线索：0 条/);
+  assert.match(html, /同一事项补充来源/);
+  assert.match(html, /轮次未知/);
+  assert.match(html, /投资方：新材料补充信息/);
+  assert.match(html, /相邻报道日期，各自保留/);
+  assert.match(html, /来源数量不代表独立确认/);
+  assert.doesNotMatch(html, /明确差异，待核实|新增融资线索/);
+  assert.equal(JSON.stringify(data), before);
+});

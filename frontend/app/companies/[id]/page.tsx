@@ -403,6 +403,17 @@ function EventCard({
               <p>披露主体：{observation.fields.subject_name}（{observation.fields.subject_scope.startsWith("brand:") ? "品牌口径，不代表法人实收" : "法人主体口径"}）</p>
               <p>公开金额：{observation.fields.amount_text ?? "未知 / 未披露"}；明确投资方：{observation.fields.investors.join("、") || "未知 / 未披露"}</p>
               <p>实际发生日期：{observation.fields.occurred_on ?? "未知"}；重要性、风险和置信度尚未评价。</p>
+              {observation.comparison?.relation === "compatible_evidence" ? (
+                <p>按相同主体、金额、共同投资方及相邻报道日期关联到已有融资；未披露的字段保持未知。</p>
+              ) : null}
+              {observation.comparison && Object.keys(observation.comparison.fields).length > 0 ? (
+                <ul aria-label="与已有融资逐字段比较">
+                  {Object.entries(observation.comparison.fields).map(([field, status]) => (
+                    <li key={field}>{({ subject_scope: "主体口径", round: "融资轮次", amount_text: "公开金额", investors: "投资方", disclosed_on: "报道日期", occurred_on: "发生日期" } as Record<string, string>)[field] ?? field}：{({ matched: "一致", not_disclosed: "双方均未披露", additional: "新材料补充信息", not_repeated: "新材料未完整重复披露", different: "明确差异，待核实", partial_overlap: "有共同投资方，各自名单仍保留", related_date: "相邻报道日期，各自保留" } as Record<string, string>)[status] ?? "未比较"}</li>
+                  ))}
+                </ul>
+              ) : null}
+              {observation.comparison ? <p>材料关联不改变人工确认事实；来源数量不代表独立确认。</p> : null}
               <p>{observation.excerpt}</p>
               <a href={observation.source_url} target="_blank" rel="noreferrer">{observation.source_title}</a>
             </details>
