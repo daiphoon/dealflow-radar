@@ -2079,7 +2079,8 @@ def _event_out(
             observation.evidence_ids = []
             observation.occurred_on = None
             observation.date_precision = "unknown"
-    withdrawn_financing = event.fingerprint_version == "financing-v1" and not financing
+    is_financing = event.fingerprint_version in {"financing-v1", "financing-v2"}
+    withdrawn_financing = is_financing and not financing
     return EventOut(
         id=event.id,
         event_type=event.event_type,
@@ -2095,9 +2096,7 @@ def _event_out(
         published_on=event.published_on,
         direction=event.direction,
         materiality_score=event.materiality_score,
-        risk_severity="unknown"
-        if curated or event.fingerprint_version == "financing-v1"
-        else event.risk_severity,
+        risk_severity="unknown" if curated or is_financing else event.risk_severity,
         confidence_score=event.confidence_score,
         source_quality=event.source_quality,
         title="融资线索证据暂不可用" if withdrawn_financing else event.title,

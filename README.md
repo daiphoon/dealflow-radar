@@ -6,7 +6,7 @@
 
 当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充个人安全查询、按需缓存、Mock Worker V1、人工研究导入 V1 与受控可信来源监测 V1：
 
-> **当前推进方向**：[ADR-0021](docs/DECISIONS/ADR-0021-incremental-event-delivery.md) 保留“增量交付＋局部重构”；[ADR-0022](docs/DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md) 采用“负责人复核初始资料＋按需增量研究”。PR #87、#88 已合并并部署 `d192516`。2026-09-15 经负责人批准冷却特例，原公司单次 12 HTTP 复测提前于 13:24（北京时间）完成，替代晚间排程。取得两篇正文并展示为两条未确认融资线索，金额与领投方匹配固定基准，轮次未知；不计为两笔融资或已确认变化。实际 1 次搜索、10 次 HTTP、15.108 秒、零模型、免费额度内现金费用零。原 5 条初始资料和历史结果保持，开关关闭、长期 HTTP 8/冷却 24 小时保持，自动任务暂停。下一建议仅将新来源关联到已有融资事项，待批准；完整轮次匹配与 EV14/M6B 尚未通过。[完整计划](docs/15-incremental-event-delivery-plan.md)固定范围，[实施看板](docs/10-implementation-plan.md)维护唯一停止点。
+> **当前推进方向**：[ADR-0021](docs/DECISIONS/ADR-0021-incremental-event-delivery.md) 保留“增量交付＋局部重构”；[ADR-0022](docs/DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md) 采用“负责人复核初始资料＋按需增量研究”。E4.4 已完成一次线上复测，提前回退取得两篇正文；**E4.5 融资自动比对与补充来源已完成本地工程验收**：缺轮次/隔日报道可在多字段一致且事项唯一时关联，缺项与冲突分开展示。真实封存回放为五条初始资料加两份关联材料，未新增事件；后端 195 通过/4 条件跳过，前端 25 通过、类型与构建通过，零研究网络/模型调用。工程 PR 未合并、未部署。线上仍为 `d192516`，原资料和历史结果不变、自动任务暂停，完整轮次支持及 EV14/M6B 未通过。[完整计划](docs/15-incremental-event-delivery-plan.md)固定范围，[实施看板](docs/10-implementation-plan.md)维护唯一停止点。
 
 - 10 家虚构公司及两个虚构租户/基金；
 - Mock 文档幂等导入、主体精确匹配、候选事件、证据和历史审核闭环；

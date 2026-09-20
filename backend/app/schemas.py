@@ -130,6 +130,24 @@ class FinancingFieldsOut(BaseModel):
     occurred_on: date | None
 
 
+class FinancingComparisonOut(BaseModel):
+    version: str
+    relation: Literal["exact_matter", "compatible_evidence", "unlinked"]
+    fields: dict[
+        str,
+        Literal[
+            "matched",
+            "not_disclosed",
+            "additional",
+            "not_repeated",
+            "different",
+            "partial_overlap",
+            "related_date",
+        ],
+    ]
+    reasons: list[str]
+
+
 class FinancingObservationOut(BaseModel):
     kind: Literal["initial", "same_facts", "correction_candidate", "conflicting", "incomplete"]
     fact_version: str
@@ -141,6 +159,7 @@ class FinancingObservationOut(BaseModel):
     source_title: str
     excerpt: str
     confirmed: Literal[False] = False
+    comparison: FinancingComparisonOut | None = None
 
 
 class CuratedVersionOut(BaseModel):

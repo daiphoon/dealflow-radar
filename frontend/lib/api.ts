@@ -97,6 +97,8 @@ export type FinancingObservation = {
   source_title: string;
   excerpt: string;
   confirmed: false;
+  comparison?: { version: string; relation: "exact_matter" | "compatible_evidence" | "unlinked";
+    fields: Record<string, string>; reasons: string[]; } | null;
 };
 
 export type Event = {

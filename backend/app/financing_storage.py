@@ -1,5 +1,6 @@
 """受限公开研究的融资观测；新增证据不覆盖已确认事实。"""
 
+import re
 from dataclasses import asdict, replace
 from datetime import date
 from decimal import Decimal
@@ -7,6 +8,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy import select, text
 
+from backend.app.financing_comparison import COMPARISON_VERSION, compare_financing
 from backend.app.financing_events import (
     EXTRACTOR_VERSION,
     SCHEMA_VERSION,
@@ -15,7 +17,6 @@ from backend.app.financing_events import (
     digest,
     extract_financing,
     round_value,
-    same_matter,
 )
 from backend.app.models import (
     Company,
@@ -55,8 +56,30 @@ def _curated_candidate(event, company, evidence):
         except (TypeError, ValueError):
             return None
         body = f"{event.title}。{event.summary}"
+        try:
+            occurred = date.fromisoformat(version.get("occurred_date_text")).isoformat()
+        except (TypeError, ValueError):
+            occurred = None
+        investors = []
+        for match in re.finditer(
+            r"(?:^|[，,。；;])([^，,。；;]{2,60}?)(?:联合领投|领投|跟投|参与投资)",
+            event.summary,
+        ):
+            names = re.sub(r"^(?:(?:本轮|此次|该轮)(?:融资)?)?由", "", match.group(1))
+            if "融资" not in names:
+                investors.extend(
+                    v.strip().removesuffix("等") for v in re.split(r"、|及|和|与", names)
+                )
         return FinancingCandidate(
-            name, scope, round_value(body), amount_value(event.summary), (), day, None, "", False
+            name,
+            scope,
+            round_value(body),
+            amount_value(body),
+            tuple(sorted(set(investors))),
+            day,
+            occurred,
+            "",
+            False,
         )
     return None
 
@@ -153,17 +176,25 @@ def persist_financing_document(session, supplied_company, supplied_document, sup
         evidence = list(
             session.scalars(select(EventEvidence).where(EventEvidence.event_id == event.id))
         )
+        readable_documents = {
+            row.raw_document_id
+            for row in evidence
+            if row.display_allowed
+            and row.display_license_status == "public"
+            and row.display_url_health_status == "healthy"
+        }
         old = (
             _curated_candidate(event, subject, evidence)
             if event.fingerprint_version == "curated-v1"
             else None
         )
-        if old is None and event.fingerprint_version == "financing-v1":
+        if old is None and event.fingerprint_version in {"financing-v1", "financing-v2"}:
             observation = session.scalar(
                 select(EventObservation)
                 .where(
                     EventObservation.event_id == event.id,
                     EventObservation.schema_version == SCHEMA_VERSION,
+                    EventObservation.raw_document_id.in_(readable_documents),
                 )
                 .order_by(EventObservation.created_at)
                 .limit(1)
@@ -173,19 +204,44 @@ def persist_financing_document(session, supplied_company, supplied_document, sup
                 payload["investors"] = tuple(payload["investors"])
                 payload["issues"] = tuple(payload["issues"])
                 old = FinancingCandidate(**payload)
-        if old and same_matter(old, candidate):
-            matches.append((event, old))
+        if old:
+            comparison = compare_financing(old, candidate)
+            if comparison["relation"] == "compatible_evidence":
+                # 不让最早的缺轮次观测成为桥梁，随后把已明确的不同轮次接到一起。
+                rounds = {
+                    row.candidate_payload.get("candidate", {}).get("round")
+                    for row in session.scalars(
+                        select(EventObservation).where(
+                            EventObservation.event_id == event.id,
+                            EventObservation.schema_version == SCHEMA_VERSION,
+                            EventObservation.raw_document_id.in_(readable_documents),
+                            EventObservation.observation_kind.in_(
+                                ["initial", "incomplete", "same_facts"]
+                            ),
+                        )
+                    )
+                } - {None}
+                if len(rounds) > 1 or (candidate.round and rounds - {candidate.round}):
+                    continue
+            if comparison["relation"] != "unlinked":
+                matches.append((event, comparison))
     created = len(matches) != 1
     if created:
         if len(matches) > 1:
             candidate = replace(candidate, issues=(*candidate.issues, "ambiguous_existing_matter"))
+        comparison = {
+            "version": COMPARISON_VERSION,
+            "relation": "unlinked",
+            "fields": {},
+            "reasons": ["ambiguous_existing_matter" if matches else "no_unique_compatible_matter"],
+        }
         fingerprint = digest(
             [
                 str(company.id),
                 candidate.subject_scope,
                 candidate.round,
                 candidate.disclosed_on,
-                str(document.id) if candidate.issues else None,
+                str(document.id),
             ]
         )
         event = Event(
@@ -210,7 +266,7 @@ def persist_financing_document(session, supplied_company, supplied_document, sup
             published_at=document.published_at,
             published_on=document.published_on,
             observed_at=document.observed_at,
-            fingerprint_version="financing-v1",
+            fingerprint_version="financing-v2",
             event_fingerprint=fingerprint,
             publication_route="unconfirmed_lead",
             publication_policy_version=SCHEMA_VERSION,
@@ -225,12 +281,9 @@ def persist_financing_document(session, supplied_company, supplied_document, sup
         session.flush()
         kind = "incomplete" if candidate.issues else "initial"
     else:
-        event, old = matches[0]
+        event, comparison = matches[0]
         # 已有资料未知的字段允许补充，实质差异独立保存，不改当前事实。
-        differences = any(
-            old.fields()[key] != candidate.fields()[key]
-            for key in ("amount_text", "investors", "occurred_on")
-        )
+        differences = "different" in comparison["fields"].values()
         kind = (
             "correction_candidate"
             if candidate.is_correction
@@ -245,7 +298,11 @@ def persist_financing_document(session, supplied_company, supplied_document, sup
         observation_kind=kind,
         occurred_on=date.fromisoformat(candidate.occurred_on) if candidate.occurred_on else None,
         date_precision="day" if candidate.occurred_on else "unknown",
-        candidate_payload={"candidate": asdict(candidate), "extractor_version": EXTRACTOR_VERSION},
+        candidate_payload={
+            "candidate": asdict(candidate),
+            "extractor_version": EXTRACTOR_VERSION,
+            "comparison": comparison,
+        },
         created_by=actor.id,
     )
     observed_at = utc_now()
@@ -282,6 +339,7 @@ def persist_financing_document(session, supplied_company, supplied_document, sup
                 "source_title": document.title,
                 "excerpt": candidate.evidence,
                 "confirmed": False,
+                "comparison": comparison,
             },
         },
     )
