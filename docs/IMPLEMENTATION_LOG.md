@@ -6,7 +6,7 @@
 - 实际命令：本地 PostgreSQL 16 隔离实例上 `DATABASE_ADMIN_URL=… pytest -q`；相关用例专项回归；`ruff check .`、`ruff format --check .`、`git diff --check`；前端 `npm test`、`npm run typecheck`、`npm run build`；`docker compose --env-file deploy/production.env.example -f compose.production.yml config --quiet`。私有 `validate_workbook.py`、`replay_queue.py`、`replay_first_failure.py` 仅操作本机临时库或封存副本。
 - 结果：首轮全量发现 3 处旧 Demo 兼容失败，修复后全量 874 通过/39 条件跳过，相关 50 通过/1 跳过；随后新增实际选择摘要修复另做完整导入与 Worker 配置专项，60 通过/3 条件跳过。前端 26 通过、类型和构建通过，格式/配置检查通过。39 条跳过包含未配置的既有专用 PostgreSQL RLS 环境等条件分支；CI 使用独立完整配置，不把本地跳过称为通过。
 - 资料/血缘：原 Excel 25 家、144 条事件、1 条单公司待核、3 条跨公司说明全部有接收去向。隔离受限角色先回放两份历史五条选择，再补齐全表、重复执行；原 10 条来源记录对应的 20 条私有/共享事件行及事实字段保留，重跑重复增量 0，研究任务/外部调用 0，原件哈希不变。固定 5 家、9 条确认事项分母和 1 条待核、窗口外排除理由均私有冻结；未运行真实发现，不声称 80% 已达标。
-- 回放/限制：原第二样本融资候选从第 4 位提前到第 1 位；首样本既有 6 HTTP 边界优先融资回退，8 HTTP 终态仍停止。只证明调度改善，不证明真实正文可用。默认 4 搜索/8 HTTP/2 MB/180 秒和新开关关闭保持；模型 0。生产仍未访问、未导入、未部署或启用；整体 PR 审查后再进入合并部署与固定样本受控验收，E4.7/EV14 尚未关闭。
+- 回放/限制：原第二样本融资候选从第 4 位提前到第 1 位；首样本既有 6 HTTP 边界优先融资回退，8 HTTP 终态仍停止。只证明调度改善，不证明真实正文可用。默认 4 搜索/8 HTTP/2 MB/180 秒和新开关关闭保持；模型 0。生产仍未访问、未导入、未部署或启用；[PR #93](https://github.com/daiphoon/dealflow-radar/pull/93) 已提交并关联任务，CI 以 GitHub 最终提交为准，临时 PostgreSQL 已停止并自动删除。整体 PR 审查后再进入合并部署与固定样本受控验收，E4.7/EV14 尚未关闭。
 
 
 ## 2026-09-20：E4.6 第二家公司单次维护验证

@@ -6,7 +6,7 @@
 
 当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充个人安全查询、按需缓存、Mock Worker V1、人工研究导入 V1 与受控可信来源监测 V1：
 
-> **当前推进方向**：[ADR-0021](docs/DECISIONS/ADR-0021-incremental-event-delivery.md) 保留“增量交付＋局部重构”；[ADR-0022](docs/DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md) 采用“负责人复核初始资料＋按需增量研究”。已批准 [E4.7](docs/DECISIONS/ADR-0023-research-delivery-and-stale-refresh.md)：全表资料接收、八类主题规划、目标正文与有界补查、过期访问自动入队。现有 25 家资料已通过隔离库接收和重复检查；109 家可后续增补，无每公司五条限制。本地整体回归及新增批次选择修复专项复核已通过；尚未部署、未导入生产或开启自动更新；E4.6 融资正文失败保留，不能以离线通过代替真实召回。线上仍以已核验的 `10baf8d` 为基线。[完整计划](docs/15-incremental-event-delivery-plan.md)固定范围，[实施看板](docs/10-implementation-plan.md)维护唯一推进点。
+> **当前推进方向**：[ADR-0021](docs/DECISIONS/ADR-0021-incremental-event-delivery.md) 保留“增量交付＋局部重构”；[ADR-0022](docs/DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md) 采用“负责人复核初始资料＋按需增量研究”。已批准 [E4.7](docs/DECISIONS/ADR-0023-research-delivery-and-stale-refresh.md)：全表资料接收、八类主题规划、目标正文与有界补查、过期访问自动入队。现有 25 家资料已通过隔离库接收和重复检查；109 家可后续增补，无每公司五条限制。[PR #93](https://github.com/daiphoon/dealflow-radar/pull/93) 已提交，本地整体回归及新增批次选择修复专项复核已通过；尚未部署、未导入生产或开启自动更新；E4.6 融资正文失败保留，不能以离线通过代替真实召回。线上仍以已核验的 `10baf8d` 为基线。[完整计划](docs/15-incremental-event-delivery-plan.md)固定范围，[实施看板](docs/10-implementation-plan.md)维护唯一推进点。
 
 - 10 家虚构公司及两个虚构租户/基金；
 - Mock 文档幂等导入、主体精确匹配、候选事件、证据和历史审核闭环；
