@@ -23,7 +23,7 @@ export default async function EvidenceDetailPage({
     const evidence = await getEvidenceDetail(id);
     return (
       <main className="shell page-stack detail-shell evidence-detail-shell">
-        <Link className="back-link" href={`/companies/${evidence.company_id}`}>
+        <Link prefetch={false} className="back-link" href={`/companies/${evidence.company_id}`}>
           ← 返回公司详情
         </Link>
         <section className="hero compact-hero">

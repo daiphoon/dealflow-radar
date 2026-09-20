@@ -31,7 +31,7 @@ export default async function PersonalReportDetailPage({
           <Link className="back-link" href="/reports">
             ← 返回我的报告
           </Link>
-          <Link className="back-link" href={`/companies/${report.company_id}`}>
+          <Link prefetch={false} className="back-link" href={`/companies/${report.company_id}`}>
             返回公司详情
           </Link>
         </div>

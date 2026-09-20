@@ -20,6 +20,7 @@ import {
 import { redirectIfAuthenticationRequired } from "@/lib/auth-navigation";
 
 import { PersonalChangePanel } from "./personal-change-panel";
+import { RequestStatusRefresher } from "@/app/watchlist/request-status-refresher";
 
 export const dynamic = "force-dynamic";
 
@@ -548,6 +549,12 @@ export default async function CompanyDetailPage({
             <span className={`status status-${company.freshness_status}`}>
               {freshnessLabels[company.freshness_status] ?? company.freshness_status}
             </span>
+            {company.automatic_refresh ? (
+              <>
+                <p role="status" className="muted">{company.automatic_refresh.message}</p>
+                <RequestStatusRefresher active={["queued", "refreshing"].includes(company.automatic_refresh.status)} />
+              </>
+            ) : null}
             {company.is_platform_shared ? (
               <>
                 <form action={isFollowed ? unfollowCompany : followCompany}>

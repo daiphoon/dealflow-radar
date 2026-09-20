@@ -52,8 +52,11 @@ def _validate_worker_safety(settings: Settings) -> None:
         raise RuntimeError("WEB_RESEARCH_CALLS_ENABLED must be true")
     if not settings.paid_api_calls_enabled:
         raise RuntimeError("PAID_API_CALLS_ENABLED must be true for metered search APIs")
-    if settings.auto_refresh_enabled:
-        raise RuntimeError("AUTO_REFRESH_ENABLED must remain false")
+    if settings.auto_refresh_enabled and not (
+        settings.web_research_policy.incremental_research_enabled
+        and settings.web_research_policy.topic_planning_enabled
+    ):
+        raise RuntimeError("AUTO_REFRESH_ENABLED requires incremental topic planning")
     if settings.publication_policy.enabled:
         raise RuntimeError("AUTO_PUBLISH_ENABLED must remain false")
     if settings.trusted_source_calls_enabled or settings.source_monitor_scheduler_enabled:

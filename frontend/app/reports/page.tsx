@@ -56,7 +56,7 @@ export default async function PersonalReportsPage() {
                   </div>
                   <div className="report-list-actions">
                     <Link href={`/reports/${report.id}`}>查看报告</Link>
-                    <Link href={`/companies/${report.company_id}`}>公司详情</Link>
+                    <Link prefetch={false} href={`/companies/${report.company_id}`}>公司详情</Link>
                   </div>
                 </article>
               ))}

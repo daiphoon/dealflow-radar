@@ -22,6 +22,14 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
     documents = [item for item in coverage.get("documents", []) if isinstance(item, dict)]
     errors = {item.get("error_code") for item in documents}
     limitations: list[str] = []
+    stop_messages = {
+        "http_limit_reached": "本轮网页请求额度已用完，仍有主题或候选资料未完成检查。",
+        "byte_limit_reached": "本轮下载量达到上限，已保留取得的资料。",
+        "document_limit_reached": "本轮保存文档达到上限，不能视为所有主题检查完成。",
+        "max_elapsed_seconds_reached": "本轮执行时间达到上限，未完成的检查已记录。",
+    }
+    if coverage.get("stop_reason") in stop_messages:
+        limitations.append(stop_messages[coverage["stop_reason"]])
     if coverage.get("stop_reason") == "reconciled_result_unavailable":
         limitations.append(
             "本轮调用中断后的费用已核对，但部分结果未能保存，未自动重复调用；资料覆盖不完整。"

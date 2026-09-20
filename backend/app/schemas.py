@@ -272,6 +272,7 @@ class CategoryCoverageOut(BaseModel):
         "unknown",
     ]
     route: Literal["business_capital", "technology_risk_exit"] | None = None
+    topic: str | None = None
     last_attempt_at: datetime | None = None
     search_checked_at: datetime | None = None
     evidence_checked_at: datetime | None = None
@@ -316,6 +317,7 @@ class CompanyDetail(BaseModel):
     private_events: list[EventOut]
     unconfirmed_leads: list[EventOut]
     personal_research_result: ResearchResultOut | None = None
+    automatic_refresh: dict[str, str | None] | None = None
 
 
 class WatchlistMonitorOut(BaseModel):

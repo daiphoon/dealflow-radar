@@ -3327,6 +3327,7 @@ def get_company_detail(
     policy: RefreshPolicy,
     *,
     auto_refresh_enabled: bool,
+    shared_research_refresh: bool = False,
 ) -> CompanyDetail:
     investment_rows = _authorized_investments(session, user.id, company_id)
     company = session.get(Company, company_id)
@@ -3480,7 +3481,12 @@ def get_company_detail(
             for event in unconfirmed_leads
         ],
     )
-    if investment_rows and auto_refresh_enabled and freshness_status in {"stale", "unknown"}:
+    if (
+        investment_rows
+        and not (shared_company and shared_research_refresh)
+        and auto_refresh_enabled
+        and freshness_status in {"stale", "unknown"}
+    ):
         _create_or_merge_refresh_job(
             session,
             user.tenant_id,

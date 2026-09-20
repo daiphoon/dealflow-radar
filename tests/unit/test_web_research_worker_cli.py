@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 import scripts.run_web_research_worker as worker_cli
-from backend.app.config import PublicationPolicy, Settings
+from backend.app.config import PublicationPolicy, Settings, WebResearchPolicy
 
 
 def _safe_settings() -> Settings:
@@ -110,3 +110,35 @@ def test_web_research_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch) ->
     assert settings.paid_api_calls_enabled is False
     assert settings.auto_refresh_enabled is False
     assert settings.publication_policy.enabled is False
+
+
+def test_stale_refresh_and_topic_worker_can_run_together_without_auto_publication():
+    settings = replace(
+        _safe_settings(),
+        auto_refresh_enabled=True,
+        web_research_policy=WebResearchPolicy(
+            incremental_research_enabled=True, topic_planning_enabled=True
+        ),
+    )
+    worker_cli._validate_worker_safety(settings)
+    with pytest.raises(RuntimeError, match="EXTERNAL_CALLS_ENABLED"):
+        worker_cli._validate_worker_safety(replace(settings, external_calls_enabled=False))
+
+
+def test_topic_worker_uses_same_ttl_and_cooldown_as_visit_policy(monkeypatch):
+    monkeypatch.setenv("WEB_RESEARCH_INCREMENTAL_ENABLED", "true")
+    monkeypatch.setenv("WEB_RESEARCH_TOPIC_PLANNING_ENABLED", "true")
+    monkeypatch.setenv("RECENT_QUERY_TTL_DAYS", "21")
+    monkeypatch.setenv("PERSONAL_REQUEST_COOLDOWN_HOURS", "36")
+    settings = Settings.from_env()
+    assert settings.web_research_policy.topic_planning_enabled
+    assert (
+        settings.web_research_policy.company_check_ttl_days
+        == settings.refresh_policy.recent_query_ttl_days
+        == 21
+    )
+    assert (
+        settings.web_research_policy.company_cooldown_hours
+        == settings.personal_entitlement_policy.request_cooldown_hours
+        == 36
+    )

@@ -218,6 +218,9 @@ def _optional_cost(name: str) -> Decimal | None:
 @dataclass(frozen=True)
 class WebResearchPolicy:
     incremental_research_enabled: bool = False
+    topic_planning_enabled: bool = False
+    company_cooldown_hours: int = 24
+    company_check_ttl_days: int = 14
     version: str = "bounded-web-v3"
     primary_provider: str = "baidu"
     fallback_provider: str = "bocha"
@@ -257,6 +260,8 @@ class WebResearchPolicy:
         if self.primary_provider == self.fallback_provider:
             raise ValueError("web research primary and fallback providers must differ")
         for name, value in (
+            ("PERSONAL_REQUEST_COOLDOWN_HOURS", self.company_cooldown_hours),
+            ("RECENT_QUERY_TTL_DAYS", self.company_check_ttl_days),
             ("WEB_RESEARCH_SEARCH_CACHE_TTL_DAYS", self.search_cache_ttl_days),
             ("WEB_RESEARCH_DOCUMENT_CACHE_TTL_DAYS", self.document_cache_ttl_days),
             ("WEB_RESEARCH_MAX_SEARCH_CALLS_PER_JOB", self.max_search_calls_per_job),
@@ -518,6 +523,11 @@ class Settings:
                 ),
             ),
             web_research_policy=WebResearchPolicy(
+                company_cooldown_hours=_as_positive_int("PERSONAL_REQUEST_COOLDOWN_HOURS", 24),
+                company_check_ttl_days=_as_positive_int("RECENT_QUERY_TTL_DAYS", 14),
+                topic_planning_enabled=_as_bool(
+                    os.getenv("WEB_RESEARCH_TOPIC_PLANNING_ENABLED", "false")
+                ),
                 incremental_research_enabled=_as_bool(
                     os.getenv("WEB_RESEARCH_INCREMENTAL_ENABLED", "false")
                 ),

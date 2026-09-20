@@ -278,6 +278,12 @@ uv run --frozen python -m scripts.import_curated_workbook --file reviewed-compan
 
 ### 业务发现与融资增量 E4.2
 
+E4.7 扩展：`WEB_RESEARCH_TOPIC_PLANNING_ENABLED=true` 与增量开关共同启用新主题研究。API 的 `AUTO_REFRESH_ENABLED=true` 才允许过期访问自动入队；`RECENT_QUERY_TTL_DAYS` 默认 14，`PERSONAL_REQUEST_COOLDOWN_HOURS` 默认 24。同步仍不联网。生产 Compose 已传递主题开关和 TTL；Worker 容器继续使用独立联网开关，其 `AUTO_REFRESH_ENABLED=false` 不影响处理 API 已入队任务。直接启动 CLI 若共享自动更新环境，只允许增量主题模式，自动发布、其他来源监控和模型分析仍关闭。新策略关闭后恢复原路径，新增证据/资料保留，不回退数据库历史。
+
+批量人工入口在原 `scripts.import_curated_workbook` 增加 `--all-companies`；先预览，再携相同确认时间、理由、文件及 `--preview-hash` 执行 `--apply`。批次内每家公司独立事务，冲突只阻塞对应公司，回执保留全表问题和跨公司说明。已有不同资料库标识可用 `--dataset-map` 指向私有 JSON（公司键→原 dataset key），映射属于预览哈希；不得换 key 制造重复事实。选择摘要使用 v2，包含实际选中记录及说明，避免先选五条后补全时误判整表已经导入；旧回执不改写，旧事项仍按稳定指纹复用。确认者必须有权限，单公司旧模式保持。生产导入前检查已有记录和映射，真实原表、预览和回执不得进入 Git。
+
+首次启用顺序：整体代码通过并合并→备份/受限角色/部署检查→生产资料预览及有权导入→核对固定样本和免费额度/金额预算→受控启用 Worker 和 API 自动更新→核对内容、重复、隐私、费用及停止状态。合并部署与真实运行以有效看板授权为准，本地测试通过不自动打开开关。普通未访问未关注公司不扫描；关注巡检仍单独配置。Compose 默认 `--drain` 供单次受控验收；后续长期自动更新需要显式运行不带 `--once/--drain` 的现有 Worker 常驻模式，并验证空队列之后的新申请能被消费。它遇到失败或预算延后会停止，须处理原因，不能自动扩大预算。关闭 API 自动更新只停止新访问入队，停止已排任务还须关闭/停止 Worker。
+
 新路径由 `WEB_RESEARCH_INCREMENTAL_ENABLED` 控制，默认 `false`；它不替代外部调用、Worker、预算及监控总开关。现有 Worker `--dry-run` 输出是否采用增量路径、查询策略版本及原调用上限，包含已人工准入、等待业务更新的申请；预览仍为零写入/零调用。正式运行须使用迁移至 `0033` 的非 owner 应用连接和有效平台管理员上下文。
 
 开启后的业务步骤使用工商全称与最多 3 个唯一、共享且已确认的适用别名，保留原两个检索组和上限；不会读取初始事件答案来编排盲测查询。普通更新申请沿用去重、预算、取消与恢复；已明确人工绑定的等待申请可进入业务队列，已取消或终态申请不重启。
@@ -343,7 +349,7 @@ docker compose -f compose.production.yml -f deploy/compose.single-host.yml \
   python -m scripts.run_web_research_worker --dry-run
 ```
 
-真实运行前，把 `BAIDU_SEARCH_API_KEY` 和 `BOCHA_SEARCH_API_KEY` 只写入权限受限且 Git 忽略的生产环境文件，不得粘贴到命令、聊天、日志或 Git。更换 Key 时使用终端不回显输入并要求重复确认，原子替换前创建 `0600` 回退备份；完成后只记录不可逆短指纹，不打印或通过命令参数传递 Key。四个 Worker 专用开关必须同时临时设为 true：`WEB_RESEARCH_WORKER_ENABLED`、`WEB_RESEARCH_EXTERNAL_CALLS_ENABLED`、`WEB_RESEARCH_WORKER_CALLS_ENABLED`、`WEB_RESEARCH_PAID_API_CALLS_ENABLED`。最后一个开关表示“这是受额度或可能计费的调用，需要明确批准”，不表示本次一定收费。`AUTO_REFRESH_ENABLED`、`AUTO_PUBLISH_ENABLED`、可信来源调度和投资解读 Agent 必须继续为 false。
+真实运行前，把 `BAIDU_SEARCH_API_KEY` 和 `BOCHA_SEARCH_API_KEY` 只写入权限受限且 Git 忽略的生产环境文件，不得粘贴到命令、聊天、日志或 Git。更换 Key 时使用终端不回显输入并要求重复确认，原子替换前创建 `0600` 回退备份；完成后只记录不可逆短指纹，不打印或通过命令参数传递 Key。四个 Worker 专用开关必须同时临时设为 true：`WEB_RESEARCH_WORKER_ENABLED`、`WEB_RESEARCH_EXTERNAL_CALLS_ENABLED`、`WEB_RESEARCH_WORKER_CALLS_ENABLED`、`WEB_RESEARCH_PAID_API_CALLS_ENABLED`。最后一个开关表示“这是受额度或可能计费的调用，需要明确批准”，不表示本次一定收费。旧受控模式的 `AUTO_REFRESH_ENABLED` 必须为 false；E4.7 API 过期入队按上文启用。`AUTO_PUBLISH_ENABLED`、可信来源调度和投资解读 Agent 继续为 false。
 
 首次生产验收只处理一个已批准申请，并用 `--once` 单步观察 `company_research_jobs`、个人申请进度、`usage_ledger`、搜索缓存、原网页主体匹配和候选作用域：
 

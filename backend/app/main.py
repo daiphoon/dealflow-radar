@@ -908,13 +908,23 @@ def create_app(
     ) -> CompanyDetail:
         try:
             settings = app.state.settings
-            return get_company_detail(
+            shared_research_refresh = (
+                settings.web_research_policy.incremental_research_enabled
+                and settings.web_research_policy.topic_planning_enabled
+            )
+            detail = get_company_detail(
                 session,
                 user,
                 company_id,
                 settings.refresh_policy,
                 auto_refresh_enabled=settings.auto_refresh_enabled,
+                shared_research_refresh=shared_research_refresh,
             )
+            if detail.is_platform_shared and shared_research_refresh:
+                from backend.app.company_refresh import schedule_stale_company
+
+                detail.automatic_refresh = schedule_stale_company(session, user, detail, settings)
+            return detail
         except NotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
 

@@ -138,7 +138,7 @@ export default async function WatchlistPage({
                     </span>
                     <span className="muted">关注于 {formatDate(company.followed_at)}</span>
                   </div>
-                  <Link href={`/companies/${company.company_id}`}>
+                  <Link prefetch={false} href={`/companies/${company.company_id}`}>
                     <h3>{company.legal_name}</h3>
                   </Link>
                   <p className="card-event">
@@ -150,7 +150,7 @@ export default async function WatchlistPage({
                   <form action={unfollowCompany} className="card-footer">
                     <input name="company_id" type="hidden" value={company.company_id} />
                     <input name="return_to" type="hidden" value="watchlist" />
-                    <Link href={`/companies/${company.company_id}`}>查看公司档案</Link>
+                    <Link prefetch={false} href={`/companies/${company.company_id}`}>查看公司档案</Link>
                     <button className="text-button" type="submit">
                       取消关注
                     </button>
@@ -220,7 +220,7 @@ export default async function WatchlistPage({
                   <div className="request-card-footer">
                     <span className="muted">申请状态更新于 {formatDate(request.updated_at)}</span>
                     {request.company_id && !request.current_company_content ? (
-                      <Link href={`/companies/${request.company_id}`}>查看公司档案</Link>
+                      <Link prefetch={false} href={`/companies/${request.company_id}`}>查看公司档案</Link>
                     ) : null}
                   </div>
                   {request.can_cancel ? (

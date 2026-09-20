@@ -18,7 +18,7 @@ function load(file, mocks) {
 }
 const mocks = {
   "@/components/research-coverage": load(path.join(__dirname, "../components/research-coverage.tsx"), {}),
-  "next/link": { default: ({ children, ...props }) => React.createElement("a", props, children) },
+  "next/link": { default: ({ children, prefetch, ...props }) => React.createElement("a", props, children) },
 };
 const pageDir = path.join(__dirname, "../app/watchlist");
 const component = load(path.join(pageDir, "request-research-result.tsx"), mocks);

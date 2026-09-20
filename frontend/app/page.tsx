@@ -134,7 +134,7 @@ export default async function CompanyListPage({
                   <p>没有完全相同的名称，请从以下已核验公司中选择：</p>
                   <div className="company-suggestion-grid">
                     {suggestionResults.map((company) => (
-                      <Link
+                      <Link prefetch={false}
                         className="company-suggestion-card"
                         href={`/companies/${company.id}`}
                         key={company.id}
@@ -187,7 +187,7 @@ export default async function CompanyListPage({
               ) : (
                 <div className="company-grid">
                   {searchResults.map((company) => (
-                    <Link
+                    <Link prefetch={false}
                       className="company-card search-result-card"
                       href={`/companies/${company.id}`}
                       key={company.id}
@@ -230,7 +230,7 @@ export default async function CompanyListPage({
           ) : (
             <div className="company-grid">
               {companies.map((company) => (
-                <Link className="company-card" href={`/companies/${company.id}`} key={company.id}>
+                <Link prefetch={false} className="company-card" href={`/companies/${company.id}`} key={company.id}>
                   <div className="card-topline">
                     <span className={`status status-${company.freshness_status}`}>
                       {freshnessLabels[company.freshness_status] ?? company.freshness_status}

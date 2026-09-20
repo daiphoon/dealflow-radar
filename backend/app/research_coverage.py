@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from backend.app import research_plan as planning
 from backend.app.schemas import CategoryCoverageOut
 
 COVERAGE_VERSION = "category-source-checks-v1"
@@ -105,6 +106,15 @@ def category_coverage(coverage: dict[str, object]) -> list[CategoryCoverageOut]:
     for category in RESEARCH_MODULES:
         route = routes.get(category) if isinstance(routes, dict) else None
         group_code = route.get("search_group") if isinstance(route, dict) else None
+        if planning.planned(coverage) and category in planning.TOPICS and group_code is None:
+            result.append(
+                CategoryCoverageOut(
+                    category=category,
+                    status="not_checked",
+                    gaps=["本轮预算分配给其他主题，本类尚未检查；后续任务按历史缺口轮换。"],
+                )
+            )
+            continue
         if group_code not in SEARCH_GROUP_MODULES or not route.get("providers"):
             result.append(
                 CategoryCoverageOut(
@@ -124,7 +134,15 @@ def category_coverage(coverage: dict[str, object]) -> list[CategoryCoverageOut]:
         succeeded = any(item.get("status") in SUCCESSFUL_SEARCHES for item in states)
         search_failed = sum(item.get("status") == "failed" for item in states)
         docs = [item for item in documents if item.get("coverage_category") == category]
-        readable = [item for item in docs if item.get("status") in {"created", "reused"}]
+        readable = [
+            item
+            for item in docs
+            if (
+                planning.eligible_document(item)
+                if planning.planned(coverage)
+                else item.get("status") in {"created", "reused"}
+            )
+        ]
         blocked = sum(_blocked_document(item) for item in docs)
         failed = sum(
             item.get("status") == "failed" and not _blocked_document(item) for item in docs
@@ -171,6 +189,7 @@ def category_coverage(coverage: dict[str, object]) -> list[CategoryCoverageOut]:
                 category=category,
                 status=status,
                 route=group_code,
+                topic=group.get("topic") if planning.planned(coverage) else None,
                 last_attempt_at=_latest(
                     [group.get("attempted_at"), *[d.get("attempted_at") for d in docs]]
                 ),
