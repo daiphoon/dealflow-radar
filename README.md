@@ -6,7 +6,7 @@
 
 当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充个人安全查询、按需缓存、Mock Worker V1、人工研究导入 V1 与受控可信来源监测 V1：
 
-> **当前推进方向**：[ADR-0021](docs/DECISIONS/ADR-0021-incremental-event-delivery.md) 保留“增量交付＋局部重构”；[ADR-0022](docs/DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md) 采用“负责人复核初始资料＋按需增量研究”。E4.4 已完成一次线上复测，提前回退取得两篇正文；**E4.5 融资自动比对与补充来源已完成本地工程验收**：缺轮次/隔日报道可在多字段一致且事项唯一时关联，缺项与冲突分开展示。真实封存回放为五条初始资料加两份关联材料，未新增事件；后端 195 通过/4 条件跳过，前端 25 通过、类型与构建通过，零研究网络/模型调用。工程 PR 未合并、未部署。线上仍为 `d192516`，原资料和历史结果不变、自动任务暂停，完整轮次支持及 EV14/M6B 未通过。[完整计划](docs/15-incremental-event-delivery-plan.md)固定范围，[实施看板](docs/10-implementation-plan.md)维护唯一停止点。
+> **当前推进方向**：[ADR-0021](docs/DECISIONS/ADR-0021-incremental-event-delivery.md) 保留“增量交付＋局部重构”；[ADR-0022](docs/DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md) 采用“负责人复核初始资料＋按需增量研究”。**E4.5 已于 2026-09-20 合并部署为 `10baf8d`**：缺轮次/隔日报道可在多字段一致且事项唯一时关联，缺项与冲突分开展示。按批准关联原公司的两份既有材料，线上验收为 5 条初始资料、2 份融资对照材料、0 条重复线索；原事实、未知字段与证据历史保留。最终 CI 后端 868 通过/17 跳过、前端 25 通过；备份恢复、权限和页面验收通过。本轮没有新搜索或模型调用，研究开关关闭、自动任务暂停。E4 整体价值及 EV14/M6B 尚未通过；下一建议第二家公司受控验证，待批准后开展。[完整计划](docs/15-incremental-event-delivery-plan.md)固定范围，[实施看板](docs/10-implementation-plan.md)维护唯一停止点。
 
 - 10 家虚构公司及两个虚构租户/基金；
 - Mock 文档幂等导入、主体精确匹配、候选事件、证据和历史审核闭环；
