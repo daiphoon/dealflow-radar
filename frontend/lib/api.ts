@@ -306,6 +306,7 @@ export type Investment = {
 };
 
 export type CategoryCoverage = {
+  topic?: string | null;
   category: string;
   status: "not_configured" | "not_checked" | "blocked" | "failed" | "no_records"
     | "candidates_only" | "evidence_obtained" | "unknown";
@@ -330,6 +331,7 @@ export type ResearchResult = {
 };
 
 export type CompanyDetail = {
+  automatic_refresh?: { status: string; message: string; request_id: string | null } | null;
   id: string;
   is_platform_shared: boolean;
   legal_name: string;

@@ -42,8 +42,11 @@ async function render(data, newEvents = [], { failed = false, loading = false } 
   const mocks = {
     "@/components/research-coverage": load(path.join(__dirname, "../components/research-coverage.tsx"), {}),
     "@/components/tender-observations": load(path.join(__dirname, "../components/tender-observations.tsx"), {}),
-    "next/link": { default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "next/link": { default: ({ children, prefetch, ...props }) => React.createElement("a", props, children) },
     "@/app/personal-actions": {},
+    "@/app/watchlist/request-status-refresher": {
+      RequestStatusRefresher: ({ active }) => React.createElement("i", { "data-update-active": active }),
+    },
     "@/lib/auth-navigation": { redirectIfAuthenticationRequired: async () => {} },
     "@/lib/api": {
       getCompany: async () => data, getPersonalWatchlist: async () => [],
@@ -60,6 +63,20 @@ async function render(data, newEvents = [], { failed = false, loading = false } 
   return renderToStaticMarkup(await Page({ params: Promise.resolve({ id: data.id }), searchParams: Promise.resolve({}) }));
 }
 const overview = (html) => html.match(/<section[^>]*aria-label="当前可查看内容"[^>]*>(.*?)<\/section>/s)?.[1];
+
+test("过期访问显示自动排队并刷新状态，冷却或结束停止刷新且保留原资料", async () => {
+  const data = company({ events: [event("existing")], automatic_refresh: {
+    status: "queued", message: "资料已过保鲜期，已自动安排后台更新；当前展示原资料。", request_id: "request",
+  } });
+  let html = await render(data);
+  assert.match(html, /已自动安排后台更新/);
+  assert.match(html, /data-update-active="true"/);
+  assert.match(html, /测试条目-existing/);
+  data.automatic_refresh = { status: "cooldown", message: "冷却期内保留现有结果", request_id: null };
+  html = await render(data);
+  assert.match(html, /data-update-active="false"/);
+  assert.match(html, /测试条目-existing/);
+});
 
 test("公司详情展示本人的类别检查历史，不把检查成功计入当前事实", async () => {
   const data = company({ personal_research_result: { ...history, category_coverage: [{
@@ -211,7 +228,7 @@ test("已有共享版本的审核页仍能核实新更正，表单只带所选�
     observation_kind: "correction_candidate", facts: [{ name: "中标金额", value: "12000000", unit: "CNY" }],
     evidence_ids: ["new-evidence"] };
   const mocks = {
-    "next/link": { default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "next/link": { default: ({ children, prefetch, ...props }) => React.createElement("a", props, children) },
     "@/components/tender-observations": load(path.join(__dirname, "../components/tender-observations.tsx"), {}),
     "@/lib/auth-navigation": { redirectIfAuthenticationRequired: async () => {} },
     "./actions": {},

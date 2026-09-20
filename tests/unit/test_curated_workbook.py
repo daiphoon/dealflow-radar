@@ -92,3 +92,40 @@ def test_duplicate_record_ids_are_isolated_instead_of_last_row_winning(tmp_path)
     result = load(workbook_file(tmp_path / "fixture.xlsx", change=change))
     assert len(result.records) == 1 and result.records[0].sheet == "待核事项"
     assert len(result.issues) == 2
+
+
+def test_eight_categories_and_more_than_five_records_are_preserved(tmp_path):
+    from copy import deepcopy
+
+    from backend.app.research_plan import TOPICS
+
+    def change(data):
+        first = data["事件明细"][0]
+        data["事件明细"] = [
+            {**deepcopy(first), "事件ID": f"E{i}", "事件类别": category}
+            for i, category in enumerate(TOPICS)
+        ]
+        data["待核事项"].extend(
+            [
+                {
+                    "线索ID": "N1",
+                    "公司ID": "多家",
+                    "待核主题": "全表说明",
+                    "目前信息": "保留来源口径",
+                },
+                {
+                    "线索ID": "N2",
+                    "公司ID": "C001/C001",
+                    "待核主题": "适用公司",
+                    "目前信息": "不自动生成事件",
+                },
+            ]
+        )
+
+    result = load(workbook_file(tmp_path / "fixture.xlsx", change=change))
+    assert not result.issues
+    assert len(result.records) == 9 and len(result.notes) == 2
+    assert set(r.event_type for r in result.records if r.sheet == "事件明细") == set(TOPICS)
+    assert result.notes[0]["kind"] == "dataset_note"
+    assert result.notes[1]["company_keys"] == ["C001", "C001"]
+    assert load(tmp_path / "fixture.xlsx", "identity_only").notes == ()

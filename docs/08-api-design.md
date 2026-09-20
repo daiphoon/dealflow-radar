@@ -247,3 +247,8 @@ Schema 版本、taxonomy 版本、事件指纹版本和 prompt 版本分别保�
 ## 5. 错误与安全响应
 
 使用稳定错误码：`unauthorized`、`forbidden_scope`、`not_found`、`validation_failed`、`conflict_active_job`、`cooldown_deferred`、`budget_deferred`、`external_disabled`、`provider_deferred`。响应不暴露租户是否存在、Secret、私密字段、原始全文或内部异常堆栈；所有写请求带请求关联 ID并进入审计日志。
+
+
+### E4.7 公司详情过期更新
+
+启用增量主题策略后，已有 `GET /api/v1/companies/{id}` 对授权的已核验共享公司返回 `automatic_refresh`（`status/message/request_id`）。自动更新关闭、资料未过期、配额不足或冷却时不新增研究；已过期则写入或复用个人申请，仍立即返回原快照、事件及各自日期。状态包括 `disabled/not_eligible/not_due/queued/refreshing/cooldown/budget_deferred`。GET 不搜索、不读外站、不调用模型；Worker 最终合并公司任务。公司链接显式禁止预加载，列表与报表不批量触发更新。该字段不表示已有事实重新验证，更不能把部分主题检查当全部新鲜。

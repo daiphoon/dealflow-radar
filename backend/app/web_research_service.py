@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from backend.app import research_plan as planning
 from backend.app import watchlist_monitoring as monitoring
 from backend.app import web_research_budget as budget
 from backend.app.config import SourceMonitoringPolicy, WebResearchPolicy
@@ -590,6 +591,51 @@ def prepare_pending_research_requests(
             continue
         if job is None:
             coverage = _initial_coverage(policy)
+            if policy.topic_planning_enabled and policy.incremental_research_enabled:
+                histories = session.scalars(
+                    select(CompanyResearchJob)
+                    .where(
+                        CompanyResearchJob.company_id == company.id,
+                        CompanyResearchJob.status.in_(["completed", "failed", "cancelled"]),
+                    )
+                    .order_by(CompanyResearchJob.created_at.desc())
+                    .limit(32)
+                ).all()
+                # 在管理员 Worker 内跨申请复用检查，普通查询不扩大任务表读取权限。
+                latest = histories[0] if histories else None
+                checks = planning.successful_topic_checks(
+                    [j.coverage for j in histories if j.status == "completed"]
+                )
+                fresh = set(checks) == set(planning.TOPICS) and all(
+                    checked + timedelta(days=policy.company_check_ttl_days) > utc_now()
+                    for checked in checks.values()
+                )
+                cooling = latest and (
+                    _aware(latest.created_at) + timedelta(hours=policy.company_cooldown_hours)
+                    > utc_now()
+                )
+                if latest and (fresh or cooling):
+                    request.research_job_id = latest.id
+                    request.status = "completed" if latest.status == "completed" else "failed"
+                    request.last_error_code = latest.last_error_code
+                    request.leased_until = None
+                    prepared += 1
+                    continue
+                assignments = planning.plan_topics([j.coverage for j in reversed(histories)])
+                coverage["query_strategy_version"] = planning.VERSION
+                coverage["source_routes"] = planning.coverage_routes(
+                    assignments, policy.primary_provider, policy.fallback_provider
+                )
+                coverage["search_groups"] = {
+                    code: {
+                        "status": "pending",
+                        "providers": {},
+                        "topic_category": category,
+                        "topic": planning.TOPICS[category],
+                    }
+                    for code, category in assignments.items()
+                }
+                coverage["document_limit"] = policy.max_candidate_urls
             identity = session.get(IdentityResearchState, request.id)
             if identity:
                 # Identity and business research have separate task caps. Preserve
@@ -1457,6 +1503,7 @@ def _process_search_group(
         else None
     )
     groups[group_code] = {
+        **groups.get(group_code, {}),
         "status": "completed",
         "query_text": query,
         "providers": provider_state,
@@ -1477,7 +1524,11 @@ def _process_search_group(
         if coverage.get("query_strategy_version") == SHORT_QUERY_STRATEGY_VERSION
         else SEARCH_GROUP_MODULES
     )
-    for module in group_modules[group_code]:
+    for module in (
+        [groups[group_code]["topic_category"]]
+        if planning.planned(coverage)
+        else group_modules[group_code]
+    ):
         modules[module] = "search_completed"
     coverage["modules"] = modules
     existing_candidates = {
@@ -1520,6 +1571,15 @@ def _process_search_group(
         ),
         reverse=True,
     )
+    if planning.planned(coverage):
+        candidates = planning.order_candidates(candidates, coverage)
+        coverage["deferred_candidates"] = [
+            *coverage.get("deferred_candidates", []),
+            *[
+                {**c, "deferred_reason": "candidate_queue_limit"}
+                for c in candidates[policy.max_candidate_urls :]
+            ],
+        ]
     coverage["candidates"] = candidates[: policy.max_candidate_urls]
     job.coverage = coverage
     group_codes = (
@@ -1557,15 +1617,21 @@ def _readability_fallback_group(
     if (
         (
             coverage.get("query_strategy_version") != SHORT_QUERY_STRATEGY_VERSION
+            and not planning.planned(coverage)
             and int(coverage.get("candidate_index", 0)) < len(candidates)
         )
-        or len(candidates) >= policy.max_candidate_urls
+        or (
+            int(coverage.get("candidate_index", 0))
+            if planning.planned(coverage)
+            else len(candidates)
+        )
+        >= policy.max_candidate_urls
         or int(stats.get("fetch_calls", 0)) >= policy.max_fetch_requests_per_job
         or int(stats.get("downloaded_bytes", 0)) >= policy.max_download_bytes_per_job
         or sum(
             item.get("status") in {"created", "reused"} for item in coverage.get("documents", [])
         )
-        >= policy.max_documents_per_job
+        >= planning.document_limit(coverage, policy)
     ):
         return None
     documents = {item["url"]: item for item in coverage.get("documents", [])}
@@ -1573,6 +1639,19 @@ def _readability_fallback_group(
         group = coverage.get("search_groups", {}).get(code, {})
         providers = group.get("providers", {})
         if providers.get(policy.fallback_provider, {}).get("status") != "not_called":
+            continue
+        if planning.planned(coverage):
+            category = group.get("topic_category")
+            if any(planning.eligible_document(d, category) for d in coverage.get("documents", [])):
+                continue
+            target_urls = {
+                item["url"]
+                for item in candidates
+                if item.get("coverage_category") == category
+                and not planning.directory_page(item["url"])
+            }
+            if not target_urls or all(url in documents for url in target_urls):
+                return code
             continue
         if (
             providers.get(policy.primary_provider, {}).get("qualified_subject_results", 0)
@@ -1602,9 +1681,28 @@ def _process_readability_fallback(session, user, job, company, policy, providers
     query = job.coverage["search_groups"][group_code].get("query_text") or _query_for(
         company, dict(SEARCH_GROUPS)[group_code]
     )
+    if planning.planned(job.coverage):
+        coverage = dict(job.coverage)
+        groups = {code: dict(item) for code, item in coverage["search_groups"].items()}
+        group = groups[group_code]
+        query = group.setdefault(
+            "fallback_query_text",
+            short_business_query(
+                company, planning.recovery_terms(group["topic_category"], coverage["candidates"])
+            ),
+        )
+        coverage["search_groups"] = groups
+        job.coverage = coverage
+        session.commit()
+        _restore_worker_context(session, user)
+        job = _refresh_job(session, job.id)
     response = None
     cached = False
-    state = {"reason": "primary_documents_unreadable", "attempted_at": utc_now().isoformat()}
+    state = {
+        "reason": "primary_documents_unreadable",
+        "attempted_at": utc_now().isoformat(),
+        "query_text": query,
+    }
     try:
         response, cached = _provider_response(
             session,
@@ -1678,14 +1776,25 @@ def _process_readability_fallback(session, user, job, company, policy, providers
         ),
         reverse=True,
     )
-    added = added[: max(0, policy.max_candidate_urls - len(candidates))]
+    if not planning.planned(coverage):
+        added = added[: max(0, policy.max_candidate_urls - len(candidates))]
     # Keep the processed prefix stable across retries; recovered pages precede pending groups.
     pending = [
         *added,
         *(item for url, item in pending_by_url.items() if url in recovered_pending),
         *(item for url, item in pending_by_url.items() if url not in recovered_pending),
     ]
-    if coverage.get("query_strategy_version") == SHORT_QUERY_STRATEGY_VERSION:
+    if planning.planned(coverage):
+        pending = planning.order_candidates(pending, coverage)
+        available = max(0, policy.max_candidate_urls - index)
+        deferred = pending[available:]
+        if deferred:
+            coverage["deferred_candidates"] = [
+                *coverage.get("deferred_candidates", []),
+                *[{**c, "deferred_reason": "topic_recovery_queue_limit"} for c in deferred],
+            ]
+        pending = pending[:available]
+    elif coverage.get("query_strategy_version") == SHORT_QUERY_STRATEGY_VERSION:
         pending.sort(key=lambda item: _static_page_url(item["url"]))
     coverage["candidates"] = [*candidates[:index], *pending]
     state.update(
@@ -1708,7 +1817,9 @@ def _process_readability_fallback(session, user, job, company, policy, providers
         )
         if checked is not None:
             previous = _evidence_checked_at(group.get("checked_at"))
-            group["checked_at"] = max(_aware(checked), previous or _aware(checked)).isoformat()
+            group["checked_at"] = (min if planning.planned(coverage) else max)(
+                _aware(checked), previous or _aware(checked)
+            ).isoformat()
     group["subject_results"] = int(group.get("subject_results", 0)) + len(added)
     group["qualified_subject_results"] = int(group.get("qualified_subject_results", 0)) + len(added)
     groups[group_code] = group
@@ -2696,6 +2807,10 @@ def _fetch_candidate(
     previous_downloaded_bytes = int(stats.get("downloaded_bytes", 0))
     previous_search_calls = int(stats.get("search_calls", 0))
     successful = sum(1 for item in documents if item.get("status") in {"created", "reused"})
+    document_limit = planning.document_limit(coverage, policy)
+    if planning.planned(coverage):
+        candidates = [*candidates[:index], *planning.order_candidates(candidates[index:], coverage)]
+        coverage["candidates"] = candidates
     limits_reached = (
         previous_fetch_calls >= policy.max_fetch_requests_per_job
         or previous_downloaded_bytes >= policy.max_download_bytes_per_job
@@ -2707,13 +2822,18 @@ def _fetch_candidate(
         and previous_search_calls < policy.max_search_calls_per_job
         else None
     )
-    if (
-        group_code
-        or index >= len(candidates)
-        or successful >= policy.max_documents_per_job
-        or limits_reached
-    ):
+    if group_code or index >= len(candidates) or successful >= document_limit or limits_reached:
         if policy.incremental_research_enabled and job.trigger_type != "watchlist":
+            if planning.planned(coverage) and not group_code:
+                coverage["stop_reason"] = (
+                    "http_limit_reached"
+                    if previous_fetch_calls >= policy.max_fetch_requests_per_job
+                    else "byte_limit_reached"
+                    if previous_downloaded_bytes >= policy.max_download_bytes_per_job
+                    else "document_limit_reached"
+                    if successful >= document_limit
+                    else "candidate_queue_exhausted"
+                )
             # Incremental discovery stays within the original two query groups.
             for kind in ("source_recovery", "gap_follow_up"):
                 previous = dict(coverage.get(kind, {}))
@@ -2721,7 +2841,9 @@ def _fetch_candidate(
                     coverage[kind] = {
                         **previous,
                         "status": "skipped",
-                        "reason": "same_query_fallback_only",
+                        "reason": "bounded_topic_recovery_only"
+                        if planning.planned(coverage)
+                        else "same_query_fallback_only",
                     }
             job.coverage = coverage
             job.current_stage = f"readability_fallback:{group_code}" if group_code else "finalize"
@@ -3232,7 +3354,12 @@ def _run_web_research_worker_once(
         company = load_subject(session, company)
         coverage = dict(job.coverage)
         coverage.setdefault("query_strategy_version", QUERY_STRATEGY_VERSION)
-        if (
+        if planning.planned(coverage) and job.trigger_type != "watchlist":
+            groups = {code: dict(state) for code, state in coverage["search_groups"].items()}
+            for state in groups.values():
+                state.setdefault("query_text", short_business_query(company, state["topic"]))
+            coverage["search_groups"] = groups
+        elif (
             coverage["query_strategy_version"] == SHORT_QUERY_STRATEGY_VERSION
             and job.trigger_type != "watchlist"
         ):
@@ -3254,7 +3381,9 @@ def _run_web_research_worker_once(
     incremental_bounded = policy.incremental_research_enabled and job.trigger_type != "watchlist"
     if incremental_bounded:
         coverage["follow_up_strategy_version"] = (
-            "same-query-readable-fallback-v2"
+            "topic-readable-recovery-v1"
+            if planning.planned(coverage)
+            else "same-query-readable-fallback-v2"
             if coverage.get("query_strategy_version") == SHORT_QUERY_STRATEGY_VERSION
             else "same-query-readable-fallback-v1"
         )
@@ -3409,7 +3538,10 @@ def inspect_web_research_queue(
     return {
         "status": "dry_run",
         "incremental_research_enabled": policy.incremental_research_enabled,
-        "query_strategy_version": SHORT_QUERY_STRATEGY_VERSION
+        "topic_planning_enabled": policy.topic_planning_enabled,
+        "query_strategy_version": planning.VERSION
+        if policy.incremental_research_enabled and policy.topic_planning_enabled
+        else SHORT_QUERY_STRATEGY_VERSION
         if policy.incremental_research_enabled
         else "legal-name-only",
         "pending_requests": pending_requests,
@@ -3417,7 +3549,9 @@ def inspect_web_research_queue(
         "primary_provider": policy.primary_provider,
         "fallback_provider": policy.fallback_provider,
         "max_search_calls_per_job": policy.max_search_calls_per_job,
-        "max_documents_per_job": policy.max_documents_per_job,
+        "max_documents_per_job": policy.max_candidate_urls
+        if policy.incremental_research_enabled and policy.topic_planning_enabled
+        else policy.max_documents_per_job,
         "identity_budget": {
             "max_search_calls": min(6, policy.identity_max_search_calls),
             "max_fetch_requests": policy.identity_max_fetch_requests,

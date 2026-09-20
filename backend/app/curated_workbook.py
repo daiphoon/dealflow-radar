@@ -6,7 +6,7 @@ import hashlib
 import io
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
@@ -83,7 +83,22 @@ CATEGORY_MAP = {
     "融资": "financing_cap_table",
     "股权/股东变化": "financing_cap_table",
     "IPO进度": "exit_liquidity",
+    "经营与财务": "financial_operation",
+    "经营财务": "financial_operation",
+    "融资与股权": "financing_cap_table",
+    "合同与商业进展": "contract_commercial",
+    "合同商业": "contract_commercial",
+    "产品与技术": "product_technology",
+    "产品技术": "product_technology",
+    "治理与人员": "governance_people",
+    "治理人员": "governance_people",
+    "司法与合规": "legal_compliance",
+    "司法合规": "legal_compliance",
+    "产能与资产": "capacity_assets",
+    "产能资产": "capacity_assets",
+    "退出进程": "exit_liquidity",
 }
+CATEGORY_MAP.update({value: value for value in tuple(CATEGORY_MAP.values())})
 
 
 def digest(value: object) -> str:
@@ -214,10 +229,21 @@ class LoadedCuratedWorkbook:
     companies: tuple[CuratedCompany, ...]
     records: tuple[CuratedRecord, ...]
     issues: tuple[WorkbookIssue, ...]
+    notes: tuple[dict[str, object], ...] = ()
 
     @property
     def selection_key(self) -> str:
-        return digest([self.dataset_key, self.mode, self.company_keys])
+        # 同一原文件可先导入选中记录再补齐全表；历史回执保留，事项指纹仍稳定。
+        return digest(
+            [
+                "curated-selection-v2",
+                self.dataset_key,
+                self.mode,
+                self.company_keys,
+                sorted((r.sheet, r.key, digest(asdict(r))) for r in self.records),
+                self.notes,
+            ]
+        )
 
 
 def _rows(workbook, sheet: str):
@@ -298,7 +324,7 @@ class CuratedWorkbookProvider:
         workbook = load_workbook(
             io.BytesIO(content), read_only=True, data_only=False, keep_links=False
         )
-        issues, companies, records = [], [], []
+        issues, companies, records, notes = [], [], [], []
         try:
             for row, raw in _rows(workbook, "公司总表"):
                 key = str(raw["公司ID"] or "").strip()
@@ -345,6 +371,32 @@ class CuratedWorkbookProvider:
                 for sheet in ("事件明细", "待核事项"):
                     for row, raw in _rows(workbook, sheet):
                         key = str(raw["公司ID"] or "").strip()
+                        if sheet == "待核事项" and (key == "多家" or "/" in key):
+                            references = tuple(key.split("/")) if key != "多家" else ()
+                            if (
+                                self.company_keys
+                                and references
+                                and not set(references).intersection(self.company_keys)
+                            ):
+                                continue
+                            try:
+                                if any(reference not in known_keys for reference in references):
+                                    raise ValueError("跨公司说明包含未知公司引用")
+                                values = {k: _text(v) for k, v in raw.items()}
+                                notes.append(
+                                    {
+                                        "sheet": sheet,
+                                        "row": row,
+                                        "company_keys": list(references),
+                                        "values": values,
+                                        "kind": "dataset_note"
+                                        if not references
+                                        else "company_note",
+                                    }
+                                )
+                            except ValueError as error:
+                                issues.append(WorkbookIssue(sheet, row, key, str(error)))
+                            continue
                         if self.company_keys and key not in self.company_keys:
                             continue
                         try:
@@ -476,6 +528,7 @@ class CuratedWorkbookProvider:
                 tuple(selected),
                 tuple(records),
                 tuple(issues),
+                tuple(notes),
             )
         finally:
             workbook.close()

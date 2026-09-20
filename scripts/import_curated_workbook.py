@@ -6,8 +6,10 @@ import argparse
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 from uuid import UUID
 
+from backend.app.curated_batch import apply_curated_batch, preview_curated_batch
 from backend.app.curated_import import apply_curated_import, preview_curated_import
 from backend.app.curated_workbook import CuratedWorkbookProvider
 from backend.app.database import build_engine, build_session_factory, set_request_context
@@ -20,6 +22,10 @@ def main() -> None:
     parser.add_argument("--dataset-key", required=True, help="同一资料库的稳定标识，更正版继续沿用")
     parser.add_argument("--company-key", action="append", default=[])
     parser.add_argument(
+        "--dataset-map", help="整批导入时沿用已存在的公司资料库标识；本地 JSON 映射"
+    )
+    parser.add_argument("--all-companies", action="store_true", help="明确接收整批公司，不触发联网")
+    parser.add_argument(
         "--mode", choices=["identity_only", "initial_data"], default="identity_only"
     )
     parser.add_argument("--confirmed-at", required=True, type=datetime.fromisoformat)
@@ -30,6 +36,13 @@ def main() -> None:
     args = parser.parse_args()
     if args.apply and not args.preview_hash:
         parser.error("--apply requires the reviewed --preview-hash")
+    if args.all_companies and (args.company_key or args.request_id):
+        parser.error("--all-companies cannot be combined with company-key or request-id")
+    if args.dataset_map and not args.all_companies:
+        parser.error("--dataset-map requires --all-companies")
+    dataset_keys = json.loads(Path(args.dataset_map).read_text()) if args.dataset_map else {}
+    if not isinstance(dataset_keys, dict):
+        parser.error("--dataset-map must be a JSON object")
     database_url, user_id = os.environ.get("DATABASE_URL"), os.environ.get("IMPORT_USER_ID")
     tenant_id = os.environ.get("IMPORT_TENANT_ID")
     if not database_url or not user_id or not tenant_id:
@@ -52,7 +65,18 @@ def main() -> None:
                 "reason": args.reason,
                 "request_id": args.request_id,
             }
-            if args.apply:
+            if args.all_companies:
+                kwargs.pop("request_id")
+                kwargs["dataset_keys"] = dataset_keys
+                if args.apply:
+                    result = apply_curated_batch(
+                        session, user, loaded, preview_hash=args.preview_hash, **kwargs
+                    )
+                else:
+                    with session.no_autoflush:
+                        result = preview_curated_batch(session, user, loaded, **kwargs)
+                    session.rollback()
+            elif args.apply:
                 result = apply_curated_import(
                     session, user, loaded, preview_hash=args.preview_hash, **kwargs
                 )

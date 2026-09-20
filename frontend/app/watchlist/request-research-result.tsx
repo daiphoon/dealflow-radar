@@ -55,7 +55,7 @@ export function RequestResearchResult({ request }: { request: PersonalCompanyReq
                 : "当前暂无可展示的共享事实或线索，不代表公司没有重要变化。"}
             </p>
           ) : null}
-          <Link href={`/companies/${request.company_id}`}>查看当前公司内容</Link>
+          <Link prefetch={false} href={`/companies/${request.company_id}`}>查看当前公司内容</Link>
         </section>
       ) : null}
 

@@ -30,7 +30,7 @@ export function ResearchCoverage({ items }: { items?: CategoryCoverage[] }) {
     <section className="research-coverage" aria-label="本次类别来源覆盖">
       <h3>本次类别来源覆盖</h3>
       <p className="muted">
-        以下是当次有限检索的记录。多个类别共用一次组合检索，不代表逐类查全；
+        以下是当次有限检索的记录，未检查的类别会单独标明。部分历史任务中，多个类别共用一次组合检索，不代表逐类查全；
         取得正文不等于事实已核实，未检出记录也不代表公司没有风险。
       </p>
       <div className="research-coverage-grid">
@@ -40,7 +40,7 @@ export function ResearchCoverage({ items }: { items?: CategoryCoverage[] }) {
               <strong>{categoryLabels[item.category] ?? "未分类"}</strong>
               <span>{statusLabels[item.status] ?? "检查记录不足"}</span>
             </div>
-            {item.route ? <p className="muted">范围：{routeLabels[item.route]}</p> : null}
+            {item.route ? <p className="muted">范围：{item.topic ?? routeLabels[item.route]}</p> : null}
             {item.evidence_count !== null ? (
               <p>相关正文 {item.evidence_count} 份 · 受阻 {item.blocked_count} 项 · 失败 {item.failed_count} 项</p>
             ) : null}
