@@ -961,3 +961,11 @@
 - 实际命令：关闭外部调用的定向 `pytest -q`；私有 `run_tests.py` 定向；`prepare_full.py --fresh` 重建本轮一次性测试基库，`run_full_grouped.py` 收集完整测试集并按模块分组运行；前端 `npm test`、`npm run typecheck`；Ruff/格式、`git diff --check`、差异密钥模式及代码哈希检查。
 - 测试结果：最终后端 1039 通过、19 条件跳过（完整 1058 项，三组退出码均为 0）；定向 118 通过/1 跳过不累加，真实 PostgreSQL/RLS 已执行。前端 28 通过、类型检查通过，源码未改而复用上轮构建；静态检查通过。失败复现、首次完整及最终完整结果分别保存在 `data/private/reliability-review-20260923/`，不覆盖上一轮日志。
 - 未解决边界：真实召回未复测，E4 不关闭；未推送、建 PR、部署或访问生产。没有真实 Provider 调用或付费消耗；新事项可选模型解读和生产旧数据影响扫描仍后置。下一建议为受控提交及待审查 PR，尚无本轮发布授权。
+
+## 2026-09-23｜A→B→C 整批改造待审查 PR
+
+- 任务：按负责人批准，将已审查的整批改造从最新 main 建立独立交付分支，检查公开仓库凭据与私有路径，推送并创建待审查 PR。
+- 关键文件：本批 35 个代码、测试与文档文件；本轮状态更新为 `README.md`、`docs/10-implementation-plan.md`、`docs/16-matter-reliability-delivery.md` 和本实施记录。
+- 实际命令：`git fetch origin main`、`git switch -c codex/matter-reliability origin/main`、定点 `git add`、`git diff --cached --check`、`git commit`、`git push -u origin codex/matter-reliability`、`gh pr create`；提交前核对 35 个路径、密钥模式、隐藏邮箱及 `main` 父提交。
+- 测试结果：本轮仅文档状态更新，代码沿用 1039 通过/19 条件跳过、前端 28 通过及类型检查；[PR #96](https://github.com/daiphoon/dealflow-radar/pull/96) 已创建。最终 CI 以 PR 最后推送的提交为准，不把本地结果当作远端检查结果。
+- 未解决边界：待 PR 检查与审查；未合并、部署、访问生产或真实复测，E4 价值验收未通过。
