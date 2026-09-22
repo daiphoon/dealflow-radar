@@ -1,5 +1,19 @@
 # 实施记录
 
+## 2026-09-22：E4.8 交付审查与新留出样本准备
+
+- 任务/关键文件：审查完整 E4.8 差异；修复 `research_matters.py` 中曾用名口径丢失与相近主体误绑定，以及 `research_extraction.py` 异常响应解析；增加 7 项回归。看板记录四家新样本、封存规则和建议预算，私有答案不进入 Git 或检索输入。
+- 实际命令：`pytest tests/unit/test_research_matters.py tests/integration/test_research_matter_storage.py tests/integration/test_migrations.py -q`（临时 PostgreSQL 非 owner）、全套 `pytest -q`、`ruff check` / `ruff format --check`、SQLite 与 PostgreSQL `alembic upgrade head/check`、SQLite `downgrade base`；前端 `npm test/typecheck/build`；两套生产 Compose `config -q`；封存材料 `replay.py`；新增内容对照本地密钥及私有公司名称/代码扫描。
+- 已验证：本轮完整后端及 PostgreSQL 权限回归 969 通过/18 条件跳过；随后最终代码定向 55 通过（包含模型异常响应补充，计数不累加）。前端 27 通过及类型/构建通过，Ruff/迁移/配置检查通过；13 份原文的 8 组错误回归通过，141 个封存文件哈希不变。私有日志 `data/private/e4-validation/20260922-e48-review/`。
+- 边界：本轮研究外部调用与生产写入均为 0；用户授权推送/待审查 PR，不合并或部署。排除原五家及名称冲突后，原窗口只剩四家/四条可确认基准，已独立封存；整次建议 16 搜索/32 网页/12 模型、最多 96 Tavily credits、1 元现金硬上限，未执行。原 3/9、六类真实样本缺口、长期更新关闭不变。
+
+## 2026-09-22：E4.8 搜索、正文获取与封存抽取对照
+
+- 任务/文件：新增隔离评估 CLI `scripts/research_benchmark.py`、Mock 测试和 ADR-0024，同步看板、增量计划、ADR 索引及 README。默认 dry-run，无业务数据库接线；固定输入哈希、预算预留、调用前落盘、未知支出不重试、响应上限和私有回执。
+- 实际命令：`PYTHONPATH=. .venv/bin/python -m scripts.research_benchmark <私有清单>` 预览；私有 `run_local.py tavily direct`、更新凭据后 `run_local.py deepseek`；SSH 运行临时容器 `server_launcher.py baidu/bocha/direct`；`analyze.py` 校验 67 个分环境回执及结果哈希；Chrome 核对调用前后免费配额。`.venv/bin/pytest -q tests/unit/test_research_benchmark.py tests/unit/test_web_search_providers.py`、`ruff check`、`ruff format --check`。
+- 验证/结果：41 测试通过、Ruff 通过。三家各 10 搜索，基准相关线索 5/7/5（非交付召回）；已知网址直接获取 7/8、Tavily 8/8；13 模型调用有 12 份原文位置检查通过、1 拒绝，语义审阅发现估值/融资额、股份/金额、辅导日期、聆讯/问询及否认信息错误，不能自动发布。完整结论与逐条证据留私有目录 `data/private/e4-validation/20260922-e48-evaluation/`。
+- 用量/限制：百度 50→40、博查 958→948、Tavily 82→105，均免费；直接 HTTP 16。模型输入 17,177/输出 4,990 tokens，高峰价估算 0.074274 元，余额显示减少 0.04 元。Tavily 首次解析 ValueError 未重跑，修复单条 URL 影响整批解析并保留失败；Mac DNS 非公网导致 8 次零 HTTP 拦截，香港同网址完成控制组，未弱化网络安全；容器首次挂载权限失败在调用前修正；旧模型凭据 401 仅余额检查，负责人更新本地密钥后完成调用。临时容器退出，生产原四服务保持，无生产配置/数据库写入，旧 3/9 不变。下一唯一工程见看板，不把评估完成当 E4 完成。
+
 ## 2026-09-20：E4.7 合并部署、整表接收与固定五家验收
 
 - 任务/文件：按批准依次合并 PR #91/#92/#93，部署 `de50fe4`，整表预览/接收及固定五家独立发现；更新 README、有效看板、增量计划与本记录，无新增产品代码或迁移。
@@ -910,3 +924,12 @@
 - 实际命令：Ruff 与格式检查；SQLite `base → 0022 → base` 和 Schema 漂移；一次性 PostgreSQL 16 的带数据 `0021 → 0022 → 0021 → 0022`、专用 RLS 策略检查和完整应用/RLS 测试；前端依赖审计、TypeScript 和 Next.js 生产构建；生产 Compose 解析、配置预检及 API/前端/备份镜像构建；活动入口与敏感信息检索；生产数据库只读影响统计；Codex Security 差异审查；`git diff --check`。
 - 测试结果：Ruff、格式、SQLite/PostgreSQL 迁移、Schema 漂移和生产配置通过；PostgreSQL 带数据验证确认旧来源独占事实撤回、旧身份降级、旧证据停止展示、历史记录保留且 downgrade 不会重新发布；完整 PostgreSQL 测试 246 项通过，仅有既有 FastAPI TestClient 上游弃用警告。前端依赖审计为 0 个已知漏洞，类型检查、生产构建和三类生产镜像构建通过。本机没有旧供应商 CLI 或 skill，用户级凭据文件已删除；仓库活动运行目录不再包含旧 Provider、Worker、CLI、开关或缓存挂载。业务外部调用、模型 Token、费用、自动刷新和自动发布均为 0。
 - 未解决阻塞：PR #44 尚未合并，生产仍在 `0021`。只读核查确认预计处置 12 个旧依据身份、21 条旧来源独占非撤回事件和 4 个关联已完成申请；4 份个人报告均不含旧供应商名称且未引用这些事件。生产 Secret、13 个私有缓存文件和旧部署环境变量必须等合并后完成升级前备份、`0022` 部署、真实账号/RLS 回归及升级后备份，再无输出地删除；必要审计和最近可回滚 release 不提前清理。搜索源准入与 R3 研究 Agent 继续后置。
+
+
+## 2026-09-22 E4.8 事项研究闭环本地工程
+
+- 任务：按批准接通专业获取、受限模型提议、类型/语义校验、已有事项追加观测和页面展示；默认关闭新通道，原 E4.7 的 3/9 保持。
+- 关键文件：`research_acquisition.py`、`research_matters.py`、`research_extraction.py`、`research_matter_storage.py`、Worker/预算/查询计划、迁移 `0034`、公司详情/API 和配置模板；同步 ADR-0024、成本/运维说明及看板。无新依赖、无历史迁移修改。
+- 实际命令：`.venv/bin/pytest -q --disable-warnings`（临时本地 PostgreSQL）；单独 `pytest -q tests/integration/test_postgres_rls.py`（完整隔离夹具）；最终 `pytest -q tests/integration/test_research_matter_storage.py tests/unit/test_research_matters.py tests/integration/test_migrations.py`；另跑现有预算回归；`npm test`、`npm run typecheck`、`npm run build`；`ruff check`、`ruff format --check`、`git diff --check`；使用虚构必填值执行 Compose `config --quiet`；私有 `replay.py` 零联网回放。
+- 结果：完整后端 935 通过/39 跳过，其中 21 个缺 PostgreSQL 配置的权限检查单独补跑通过；最终定向 48 通过；预算相关 67 通过/6 条件跳过；前端 27 通过，类型/构建及静态检查通过。计数有重叠不累加。13 份正文、8 组已知错误回归通过；141 个封存哈希不变；来源日期 5/8 可解析、3 份保留未知。早期长度/RLS/事务问题已修复；RLS 补跑的夹具漏装及重复数据失败保留，最终全新完整夹具 21 通过。日志在忽略目录 `20260922-e48-engineering/`。
+- 边界：真实外部调用/生产写入为 0；未推送、新建 PR、合并或部署。模型新提示词未联网验证，其余六类无真实覆盖结论；下一步为审查交付后冻结新留出样本，不自动恢复历史任务或扩大巡检。回退保留新格式读取/撤证兼容，有观测时不降级 0034。

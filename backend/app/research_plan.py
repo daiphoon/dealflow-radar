@@ -18,6 +18,15 @@ TOPICS = {
 GROUPS = ("business_capital", "technology_risk_exit")
 
 
+def topic_terms(category, policy):
+    if policy.matter_processing_enabled:
+        return {
+            "financing_cap_table": "融资 对外投资 基金认缴 股权",
+            "exit_liquidity": "IPO 辅导 备案 聆讯 上市 并购",
+        }.get(category, TOPICS[category])
+    return TOPICS[category]
+
+
 def planned(coverage):
     return coverage.get("query_strategy_version") == VERSION
 

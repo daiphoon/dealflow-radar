@@ -1931,7 +1931,9 @@ def _event_out(
         )
     from backend.app.curated_publication import curated_versions
     from backend.app.financing_events import financing_observations
+    from backend.app.research_matter_storage import visible_observations
 
+    matters = visible_observations(evidence_rows, {item.id for item in evidence_items})
     financing = financing_observations(evidence_rows, {item.id for item in evidence_items})
     curated = curated_versions(session, event, {item.id for item in evidence_items})
     if curated and event.visibility_scope == PLATFORM_SHARED_SCOPE:
@@ -1941,6 +1943,7 @@ def _event_out(
             if version.is_current and version.evidence_available
             for evidence_id in version.evidence_ids
         }
+        current_evidence_ids.update(item["evidence_id"] for item in matters)
         evidence_items = [item for item in evidence_items if item.id in current_evidence_ids]
     observations = tender_observations(session, event, {item.id for item in evidence_items})
     current_observation = next(
@@ -2080,6 +2083,8 @@ def _event_out(
             observation.occurred_on = None
             observation.date_precision = "unknown"
     is_financing = event.fingerprint_version in {"financing-v1", "financing-v2"}
+    is_matter = event.fingerprint_version == "matter-v1"
+    withdrawn_matter = is_matter and not matters
     withdrawn_financing = is_financing and not financing
     return EventOut(
         id=event.id,
@@ -2092,20 +2097,25 @@ def _event_out(
         tender_observations=observations,
         curated_versions=curated,
         financing_observations=financing,
+        matter_observations=matters,
         published_at=event.published_at,
         published_on=event.published_on,
         direction=event.direction,
         materiality_score=event.materiality_score,
-        risk_severity="unknown" if curated or is_financing else event.risk_severity,
+        risk_severity="unknown" if curated or is_financing or is_matter else event.risk_severity,
         confidence_score=event.confidence_score,
         source_quality=event.source_quality,
-        title="融资线索证据暂不可用" if withdrawn_financing else event.title,
+        title="事项证据暂不可用"
+        if withdrawn_matter
+        else "融资线索证据暂不可用"
+        if withdrawn_financing
+        else event.title,
         summary=(
             "该版本证据已撤回或不可用，暂不作为已核实事实展示。"
-            if withdrawn_tender or withdrawn_financing
+            if withdrawn_tender or withdrawn_financing or withdrawn_matter
             else event.summary
         ),
-        facts=[] if withdrawn_tender or withdrawn_financing else event.facts,
+        facts=[] if withdrawn_tender or withdrawn_financing or withdrawn_matter else event.facts,
         uncertainties=event.uncertainties,
         status=event.status,
         publication_route=event.publication_route,
@@ -2113,7 +2123,9 @@ def _event_out(
         publication_reasons=event.publication_reasons,
         observed_at=event.observed_at,
         evidence=evidence_items,
-        fact_ledger=[] if withdrawn_tender or withdrawn_financing else fact_ledger,
+        fact_ledger=[]
+        if withdrawn_tender or withdrawn_financing or withdrawn_matter
+        else fact_ledger,
         visibility_scope=event.visibility_scope,
         analysis=analysis_output,
         research_analysis=research_analysis_output,

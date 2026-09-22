@@ -435,3 +435,23 @@ uv run python -m scripts.queue_due_source_checks
 ## 7. 变更控制
 
 更新频率、事件分类、评分、权限、Provider、成本上限、重大负面规则、财务口径或 Kimi 边界发生变化时，先更新 ADR、迁移/配置和测试，再部署。历史迁移不回改。实施命令、结果和阻塞只写入简洁的[实施记录](IMPLEMENTATION_LOG.md)。
+
+
+### E4.8 事项研究通道（默认关闭）
+
+`WEB_RESEARCH_MATTERS_ENABLED` 依赖已有增量开关；启用前先升级到 `0034`，不修改历史迁移。Tavily 与模型各有独立开关，配置模板均默认关闭，真实 `.env` 不由开发测试修改。
+
+| 配置 | 作用 |
+| --- | --- |
+| `WEB_RESEARCH_TAVILY_ENABLED`、`WEB_RESEARCH_TAVILY_ALLOWED_DOMAINS` | 显式启用专业获取和获准来源域名；空域名表不执行正文获取。配置不是绕过来源限制的授权 |
+| `WEB_RESEARCH_PRIMARY_PROVIDER` / `FALLBACK_PROVIDER` | 可选 baidu / bocha / tavily，默认仍为百度/博查；选择 Tavily 需先启用 |
+| `TAVILY_API_KEY` | 仅研究 Worker 读取，不进入前端；dry-run 不需要密钥 |
+| `WEB_RESEARCH_TAVILY_PRICE_PER_CALL` / `TAVILY_EXTRACT_PRICE_PER_CALL` | CNY/调用；未知留空并使用已批准的保守价格上界。只有已核对免费配额才填 0；调用次数仍记账 |
+| `WEB_RESEARCH_EXTRACTION_ENABLED` / `EXTRACTION_MODEL` | 显式启用模型及配置名称；通过现有 `DEEPSEEK_API_KEY` 调用，不与辅助投资分析开关混用 |
+| `WEB_RESEARCH_MAX_MODEL_CALLS_PER_JOB` | 默认 3，允许 1—12；共用单公司和系统金额预算，不扩大网页额度 |
+| `WEB_RESEARCH_MAX_MODEL_INPUT_TOKENS` / `MAX_MODEL_OUTPUT_TOKENS` | 默认 16000/2000；输入按 UTF-8 字节和固定余量保守预检，超长只走规则 |
+| `WEB_RESEARCH_MODEL_INPUT_PRICE_PER_MILLION` / `MODEL_OUTPUT_PRICE_PER_MILLION` | CNY/百万 tokens，启用前须设置正的保守单价；记录实际返回 tokens 和估算费用 |
+
+使用现有 `python -m scripts.run_web_research_worker --dry-run` 检查通道、来源域名、单任务次数/Token/费用上界；仍需原有研究、外部调用、可能计费的总开关及金额预算。默认模板不能发起真实付费请求。专业 Extract 计入现有网页请求上限；缓存正文不重复记作 HTTP 下载，新鲜度沿用原获取时间。模型在独立账本预占、派发及结算，正文读取在调用模型前结算；失败/断线的未知支出不得改成零或直接重跑。
+
+回退关闭 `MATTERS_ENABLED` / `EXTRACTION_ENABLED` / `TAVILY_ENABLED`，将搜索配置恢复百度/博查并停止 Worker，保留现有事件、证据、观测及预算账本。`0034` 下已有新观测时不执行 downgrade；旧版应用若不识别 `matter-v1`，不得直接用于新数据的展示/撤证。

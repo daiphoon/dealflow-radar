@@ -51,6 +51,8 @@ class SearchResult:
     snippet: str
     source_name: str | None
     published_at: str | None
+    source_body: str | None = None
+    body_provider: str | None = None
 
     def to_dict(self) -> dict[str, str | None]:
         return {
@@ -60,6 +62,11 @@ class SearchResult:
             "snippet": self.snippet,
             "source_name": self.source_name,
             "published_at": self.published_at,
+            **(
+                {"source_body": self.source_body, "body_provider": self.body_provider}
+                if self.source_body
+                else {}
+            ),
         }
 
     @classmethod
@@ -74,6 +81,10 @@ class SearchResult:
             snippet=_optional_text(value.get("snippet"), 2_000) or "",
             source_name=_optional_text(value.get("source_name"), 200),
             published_at=_optional_text(value.get("published_at"), 80),
+            source_body=value.get("source_body")[:6000]
+            if isinstance(value.get("source_body"), str)
+            else None,
+            body_provider=_optional_text(value.get("body_provider"), 40),
         )
 
 

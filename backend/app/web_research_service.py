@@ -390,9 +390,13 @@ class _ContentQualityDecision:
     recency_cutoff_at: datetime
     occurred_at: datetime | None = None
     event_date_status: str = "unknown"
+    matters_created: int = 0
+    matters_linked: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "matters_created": self.matters_created,
+            "matters_linked": self.matters_linked,
             "version": CONTENT_QUALITY_GATE_VERSION,
             "change_recognition_version": "explicit-change-v2",
             "status": "eligible" if self.eligible else "internal_only",
@@ -435,8 +439,8 @@ class WebResearchWorkerResult:
             "cache_hits": self.cache_hits,
             "documents_created": self.documents_created,
             "events_created": self.events_created,
-            "input_tokens": 0,
-            "output_tokens": 0,
+            "input_tokens": self.cost_summary.get("input_tokens", 0) if self.cost_summary else 0,
+            "output_tokens": self.cost_summary.get("output_tokens", 0) if self.cost_summary else 0,
             "estimated_cost": (
                 self.cost_summary["amount"]
                 if self.cost_summary
@@ -631,7 +635,7 @@ def prepare_pending_research_requests(
                         "status": "pending",
                         "providers": {},
                         "topic_category": category,
-                        "topic": planning.TOPICS[category],
+                        "topic": planning.topic_terms(category, policy),
                     }
                     for code, category in assignments.items()
                 }
@@ -1044,7 +1048,11 @@ def _candidate_payload(
         return None
     source_rank = _source_rank(company, result)
     return {
-        **result.to_dict(),
+        **{
+            key: value
+            for key, value in result.to_dict().items()
+            if key not in {"source_body", "body_provider"}
+        },
         "url": canonical_url,
         "discovered_by": [provider_code],
         "query_kind": query_kind,
@@ -1126,8 +1134,19 @@ def _reserve_job_call(
         unit_price=unit_price,
         task_limit=policy.max_search_calls_per_job
         if is_search
+        else policy.max_model_calls_per_job
+        if operation == "matter_extraction"
         else policy.max_fetch_requests_per_job,
-        task_baseline=int(baseline.get("search_calls" if is_search else "fetch_calls", 0)),
+        task_baseline=int(
+            baseline.get(
+                "search_calls"
+                if is_search
+                else "model_calls"
+                if operation == "matter_extraction"
+                else "fetch_calls",
+                0,
+            )
+        ),
         metrics=metrics,
     )
 
@@ -2120,7 +2139,9 @@ def _raw_document(
     if existing is not None:
         _ensure_entity_mention(session, existing, company)
         return existing, False
-    excerpt = (discovered.excerpt or "").strip()[:1500]
+    excerpt = (discovered.excerpt or "").strip()[
+        : 6000 if getattr(job, "coverage", {}).get("matter_processing") else 1500
+    ]
     document = RawDocument(
         source_id=source.id,
         research_import_id=None,
@@ -2149,7 +2170,9 @@ def _raw_document(
                 "checked_at": utc_now().isoformat(),
                 "http_status": discovered.http_status,
                 "final_url": canonical_url,
-                "reason": "bounded_fetch_completed",
+                "reason": "provider_source_text"
+                if discovered.metadata.get("acquisition_provider")
+                else "bounded_fetch_completed",
                 "external_calls": 0,
             },
         },
@@ -2170,6 +2193,7 @@ def _candidate_event(
     new_document: bool,
     actor: User | None = None,
     allowed_categories: tuple[str, ...] | None = None,
+    job: CompanyResearchJob | None = None,
 ) -> tuple[Event | None, bool, _ContentQualityDecision]:
     excerpt = str(document.payload.get("excerpt") or "").strip()
     quality = _content_quality_decision(
@@ -2184,6 +2208,32 @@ def _candidate_event(
         quality = replace(
             quality, eligible=False, reasons=(*quality.reasons, "category_outside_monitoring_scope")
         )
+    if policy.matter_processing_enabled:
+        from backend.app.financing_storage import authorized_research_evidence
+        from backend.app.research_extraction import document_matters
+        from backend.app.research_matter_storage import persist_matters
+
+        authorized = authorized_research_evidence(session, company, document, source, actor)
+        if authorized is None:
+            return None, False, replace(quality, eligible=False)
+        verified_company, document, source, actor = authorized
+        company = load_subject(session, verified_company)
+        matters = document_matters(
+            session, actor, job, company, document, policy, session.info.get("matter_provider")
+        )
+        if allowed_categories is not None:
+            matters = [m for m in matters if m.category in allowed_categories]
+        events, created, linked = persist_matters(
+            session, company, document, source, actor, matters, policy
+        )
+        quality = replace(
+            quality,
+            eligible=bool(events) and quality.eligible,
+            matters_created=created,
+            matters_linked=linked,
+            reasons=(*quality.reasons, "typed_matter_processing"),
+        )
+        return events[0] if events else None, bool(created), quality
     if not quality.eligible or quality.event_type is None or quality.supporting_excerpt is None:
         return None, False, quality
     event_type = quality.event_type
@@ -2786,6 +2836,52 @@ def _fetch_policy(
     )
 
 
+def _professional_fetcher(session, company, candidate, policy, remaining_bytes):
+    from backend.app.research_acquisition import ProviderDocumentFetcher, allowed_url
+
+    url = str(candidate.get("url") or "")
+    if not policy.tavily_enabled or not allowed_url(url, policy.tavily_allowed_domains):
+        return None
+    # 明确受限来源不得通过切换获取方重试。只对事先批准的来源选择专业获取。
+    if candidate.get("source_access_status") in {
+        SOURCE_ACCESS_ROBOTS_BLOCKED,
+        SOURCE_ACCESS_MANUAL_IMPORT,
+    }:
+        return None
+    cached = None
+    cached_at = None
+    entries = session.scalars(
+        select(WebSearchCacheEntry)
+        .where(
+            WebSearchCacheEntry.company_id == company.id,
+            WebSearchCacheEntry.provider_code == "tavily",
+            WebSearchCacheEntry.identity_fingerprint == _identity_fingerprint(company),
+            WebSearchCacheEntry.expires_at > utc_now(),
+            WebSearchCacheEntry.fetched_at
+            > utc_now() - timedelta(days=policy.search_cache_ttl_days),
+        )
+        .order_by(WebSearchCacheEntry.fetched_at.desc())
+    )
+    for entry in entries:
+        for raw in entry.results:
+            if (
+                raw.get("source_body")
+                and raw.get("body_provider") == "tavily"
+                and _canonical_candidate_url(raw.get("url", "")) == url
+            ):
+                cached = SearchResult.from_dict(raw)
+                cached_at = _aware(entry.fetched_at)
+                break
+        if cached:
+            break
+    provider = session.info.get("document_provider")
+    if cached is None and provider is None:
+        return None
+    return ProviderDocumentFetcher(
+        provider, url, str(candidate.get("title") or "公开资料"), remaining_bytes, cached, cached_at
+    )
+
+
 def _fetch_candidate(
     session: Session,
     user: User,
@@ -2926,6 +3022,7 @@ def _fetch_candidate(
     error_code: str | None = None
     http_status: int | None = None
     usage = None
+    fetch_accounted = False
     if cached_document is not None:
         extraction = cached_document.payload.get("content_extraction", {})
         is_official_pdf = bool(
@@ -2943,9 +3040,12 @@ def _fetch_candidate(
             policy,
             new_document=False,
             actor=user,
+            job=job,
             allowed_categories=monitoring.CATEGORIES if job.trigger_type == "watchlist" else None,
         )
-        events_created += int(event_created)
+        events_created += (
+            quality.matters_created if policy.matter_processing_enabled else int(event_created)
+        )
         quality_gate_passed += int(quality.eligible)
         internal_candidates += int(not quality.eligible)
         documents.append(
@@ -2977,24 +3077,37 @@ def _fetch_candidate(
         else:
             host = (urlsplit(url).hostname or "").lower().rstrip(".")
             root_domain = host.removeprefix("www.")
-            usage = _reserve_job_call(
+            professional = _professional_fetcher(
                 session,
-                user,
-                job,
                 company,
+                candidate,
                 policy,
-                provider="public_web_fetch",
-                operation="evidence_fetch",
-                token=f"fetch:{_sha256(url)}",
-                calls=policy.max_fetch_requests_per_job - previous_fetch_calls,
-                unit_price=Decimal("0"),
-                metrics={
-                    "download_bytes_limit": policy.max_download_bytes_per_job
-                    - previous_downloaded_bytes
-                },
+                policy.max_download_bytes_per_job - previous_downloaded_bytes,
             )
-            coverage["budget_baseline"] = job.coverage["budget_baseline"]
-            fetcher = fetcher_factory(
+            cached_body = professional is not None and professional.cached is not None
+            if not cached_body:
+                usage = _reserve_job_call(
+                    session,
+                    user,
+                    job,
+                    company,
+                    policy,
+                    provider="web_extract_tavily" if professional else "public_web_fetch",
+                    operation="evidence_fetch",
+                    token=f"fetch:{_sha256(url)}",
+                    calls=1
+                    if professional
+                    else policy.max_fetch_requests_per_job - previous_fetch_calls,
+                    unit_price=policy.cost.tavily_extract_price_per_call
+                    if professional
+                    else Decimal("0"),
+                    metrics={
+                        "download_bytes_limit": policy.max_download_bytes_per_job
+                        - previous_downloaded_bytes
+                    },
+                )
+                coverage["budget_baseline"] = job.coverage["budget_baseline"]
+            fetcher = professional or fetcher_factory(
                 _fetch_policy(
                     policy,
                     remaining_requests=policy.max_fetch_requests_per_job - previous_fetch_calls,
@@ -3022,7 +3135,11 @@ def _fetch_candidate(
                     retention_policy="minimal_excerpt",
                     conditional_state={},
                     **(
-                        {"excerpt_selector": BusinessExcerptSelector(company)}
+                        {
+                            "excerpt_selector": BusinessExcerptSelector(
+                                company, 6000 if policy.matter_processing_enabled else 1500
+                            )
+                        }
                         if policy.incremental_research_enabled
                         else {}
                     ),
@@ -3070,6 +3187,31 @@ def _fetch_candidate(
                                 quality,
                             )
                             documents_created += int(document_created)
+                            if policy.matter_model_enabled:
+                                # 获取已成功，先结算并持久化，再预占独立的模型预算。
+                                # 模型中断不得把已成功的读取变成不明支出。
+                                if usage is not None:
+                                    budget.settle(
+                                        session,
+                                        usage,
+                                        calls=fetch_calls,
+                                        metrics={
+                                            "status": "completed",
+                                            "downloaded_bytes": downloaded_bytes,
+                                        },
+                                    )
+                                    usage = None
+                                job.external_calls += fetch_calls
+                                fetch_accounted = True
+                                job.coverage = {
+                                    **job.coverage,
+                                    "stats": {
+                                        **job.coverage.get("stats", {}),
+                                        "fetch_calls": previous_fetch_calls + fetch_calls,
+                                        "downloaded_bytes": previous_downloaded_bytes
+                                        + downloaded_bytes,
+                                    },
+                                }
                             _, event_created, quality = _candidate_event(
                                 session,
                                 company,
@@ -3078,11 +3220,16 @@ def _fetch_candidate(
                                 policy,
                                 new_document=document_created,
                                 actor=user,
+                                job=job,
                                 allowed_categories=monitoring.CATEGORIES
                                 if job.trigger_type == "watchlist"
                                 else None,
                             )
-                            events_created += int(event_created)
+                            events_created += (
+                                quality.matters_created
+                                if policy.matter_processing_enabled
+                                else int(event_created)
+                            )
                             quality_gate_passed += int(quality.eligible)
                             internal_candidates += int(not quality.eligible)
                             documents.append(
@@ -3096,11 +3243,21 @@ def _fetch_candidate(
                                     "coverage_category": quality.event_type,
                                     "attempted_at": utc_now().isoformat(),
                                     "checked_at": (
-                                        document.payload["_source_verification"]["checked_at"]
+                                        professional.cached_at.isoformat()
+                                        if professional is not None and professional.cached_at
+                                        else document.payload["_source_verification"]["checked_at"]
                                         if document_created
                                         else utc_now().isoformat()
                                     ),
-                                    "cache_reused": False,
+                                    "cache_reused": bool(
+                                        professional is not None
+                                        and professional.cached_at
+                                        and professional.cached_at
+                                        < (
+                                            _evidence_checked_at(job.coverage.get("started_at"))
+                                            or utc_now()
+                                        )
+                                    ),
                                 }
                             )
             except SourceFetchError as error:
@@ -3110,7 +3267,8 @@ def _fetch_candidate(
                 http_status = error.http_status
             finally:
                 fetcher.close()
-        job.external_calls += fetch_calls
+        if not fetch_accounted:
+            job.external_calls += fetch_calls
         if usage is not None:
             budget.settle(
                 session,
@@ -3155,6 +3313,12 @@ def _fetch_candidate(
                     "cache_reused": False,
                 }
             )
+    if policy.matter_processing_enabled:
+        coverage["budget_baseline"] = job.coverage.get("budget_baseline", {})
+        coverage["stats"] = {
+            **coverage.get("stats", {}),
+            "model_calls": job.coverage.get("stats", {}).get("model_calls", 0),
+        }
     stats = dict(coverage.get("stats", {}))
     stats["fetch_calls"] = int(stats.get("fetch_calls", 0)) + fetch_calls
     stats["downloaded_bytes"] = int(stats.get("downloaded_bytes", 0)) + downloaded_bytes
@@ -3282,8 +3446,18 @@ def _defer_budget(
 
 
 def run_web_research_worker_once(
-    session, user, providers, policy, *, fetcher_factory=None, watchlist_gate=None
+    session,
+    user,
+    providers,
+    policy,
+    *,
+    fetcher_factory=None,
+    watchlist_gate=None,
+    document_provider=None,
+    matter_provider=None,
 ):
+    session.info["document_provider"] = document_provider
+    session.info["matter_provider"] = matter_provider
     session.info["watchlist_gate"] = watchlist_gate or (lambda: policy.watchlist.enabled)
     session.info["watchlist_user_id"] = user.id
     session.info["watchlist_policy"] = policy.watchlist
@@ -3299,6 +3473,8 @@ def run_web_research_worker_once(
                 return replace(result, cost_summary=_job_cost_summary(session, job))
         return result
     finally:
+        session.info.pop("document_provider", None)
+        session.info.pop("matter_provider", None)
         session.info.pop("watchlist_gate", None)
         session.info.pop("watchlist_user_id", None)
         session.info.pop("watchlist_policy", None)
@@ -3353,6 +3529,7 @@ def _run_web_research_worker_once(
     if policy.incremental_research_enabled:
         company = load_subject(session, company)
         coverage = dict(job.coverage)
+        coverage["matter_processing"] = policy.matter_processing_enabled
         coverage.setdefault("query_strategy_version", QUERY_STRATEGY_VERSION)
         if planning.planned(coverage) and job.trigger_type != "watchlist":
             groups = {code: dict(state) for code, state in coverage["search_groups"].items()}
@@ -3546,6 +3723,24 @@ def inspect_web_research_queue(
         else "legal-name-only",
         "pending_requests": pending_requests,
         "queued_jobs": queued_jobs,
+        "matter_processing_enabled": policy.matter_processing_enabled,
+        "tavily_enabled": policy.tavily_enabled,
+        "tavily_allowed_domains": list(policy.tavily_allowed_domains),
+        "model_extraction": {
+            "enabled": policy.matter_model_enabled,
+            "model": policy.extraction_model,
+            "max_calls": policy.max_model_calls_per_job,
+            "max_input_tokens_per_call": policy.max_model_input_tokens,
+            "max_output_tokens_per_call": policy.max_model_output_tokens,
+            "upper_cost_per_job": str(
+                policy.max_model_calls_per_job
+                * (
+                    policy.max_model_input_tokens * policy.model_input_price_per_million
+                    + policy.max_model_output_tokens * policy.model_output_price_per_million
+                )
+                / Decimal(1_000_000)
+            ),
+        },
         "primary_provider": policy.primary_provider,
         "fallback_provider": policy.fallback_provider,
         "max_search_calls_per_job": policy.max_search_calls_per_job,
@@ -3577,6 +3772,12 @@ def inspect_web_research_queue(
                 if policy.cost.bocha_price_per_call is not None
                 else None
             ),
+            "tavily_price_per_call": str(policy.cost.tavily_price_per_call)
+            if policy.cost.tavily_price_per_call is not None
+            else None,
+            "tavily_extract_price_per_call": str(policy.cost.tavily_extract_price_per_call)
+            if policy.cost.tavily_extract_price_per_call is not None
+            else None,
             "unknown_price_upper_bound": (
                 str(policy.cost.unknown_price_upper_bound)
                 if policy.cost.unknown_price_upper_bound is not None

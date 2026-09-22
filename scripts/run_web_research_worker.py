@@ -124,20 +124,33 @@ def main() -> None:
 
     _validate_worker_safety(settings)
     policy = settings.web_research_policy
-    providers = {
-        "baidu": BaiduSearchProvider(
-            _required("BAIDU_SEARCH_API_KEY"),
-            timeout_seconds=policy.timeout_seconds,
-            max_response_bytes=policy.max_response_bytes,
-            user_agent=policy.user_agent,
-        ),
-        "bocha": BochaSearchProvider(
-            _required("BOCHA_SEARCH_API_KEY"),
-            timeout_seconds=policy.timeout_seconds,
-            max_response_bytes=policy.max_response_bytes,
-            user_agent=policy.user_agent,
-        ),
+    from backend.app.research_acquisition import TavilyDocumentProvider, TavilySearchProvider
+    from backend.app.research_extraction import DeepSeekMatterProvider
+
+    factories = {
+        "baidu": BaiduSearchProvider,
+        "bocha": BochaSearchProvider,
+        "tavily": TavilySearchProvider,
     }
+    providers = {
+        code: factories[code](
+            _required(f"{code.upper()}_SEARCH_API_KEY" if code != "tavily" else "TAVILY_API_KEY"),
+            timeout_seconds=policy.timeout_seconds,
+            max_response_bytes=policy.max_response_bytes,
+            user_agent=policy.user_agent,
+        )
+        for code in (policy.primary_provider, policy.fallback_provider)
+    }
+    document_provider = (
+        TavilyDocumentProvider(_required("TAVILY_API_KEY"), policy)
+        if policy.tavily_enabled and policy.tavily_allowed_domains
+        else None
+    )
+    matter_provider = (
+        DeepSeekMatterProvider(_required("DEEPSEEK_API_KEY"), policy)
+        if policy.matter_model_enabled
+        else None
+    )
 
     def run_step() -> dict[str, object]:
         return _with_worker_session(
@@ -150,6 +163,8 @@ def main() -> None:
                 providers,
                 policy,
                 watchlist_gate=_watchlist_gate,
+                document_provider=document_provider,
+                matter_provider=matter_provider,
             ).to_dict(),
         )
 

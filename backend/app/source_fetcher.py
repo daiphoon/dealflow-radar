@@ -607,7 +607,9 @@ def _html_document(
                 "source has no usable static body",
             )
     selected_excerpt = (
-        (excerpt_selector(visible_text) if excerpt_selector else visible_text)[:1500]
+        (excerpt_selector(visible_text) if excerpt_selector else visible_text)[
+            : min(6000, getattr(excerpt_selector, "max_excerpt_chars", 1500))
+        ]
         if keep_excerpt and visible_text
         else None
     )
@@ -615,6 +617,10 @@ def _html_document(
     date_metadata = {}
     if published_at is None and excerpt_selector is not None and not identity_mode:
         published_at, date_metadata = _visible_article_date(title, body_text)
+        if published_at is None and getattr(excerpt_selector, "max_excerpt_chars", 1500) > 1500:
+            from backend.app.research_acquisition import source_date
+
+            published_at, date_metadata = source_date(body_text)
     hash_input = visible_text or response.body
     document = DiscoveredDocument(
         canonical_url=canonical_url,

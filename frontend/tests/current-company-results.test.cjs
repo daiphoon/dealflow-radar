@@ -291,3 +291,24 @@ test("缺轮次材料关联后保留未知字段和各自日期，补充信息�
   assert.doesNotMatch(html, /明确差异，待核实|新增融资线索/);
   assert.equal(JSON.stringify(data), before);
 });
+
+
+test("事项补充区分资金角色和计划，未知日期不补造且不改人工事实", async () => {
+  const record = { ...event("typed"), publication_policy_version: "matter-v1", matter_observations: [{
+    evidence_id: "evidence", label: "招股发行", status_label: "计划", kind: "conflicting",
+    subject: "示例山海", scope: "brand:示例山海", field_labels: { share_quantity: "股份数量" },
+    fields: { share_quantity: { value: "不超过400万股", role: "share_quantity" } },
+    issues: ["rejected_field:amount"], excerpt: "示例山海拟发行不超过400万股", source_title: "公开来源",
+    observed_at: "2026-09-20T00:00:00Z", confirmed: false,
+  }] };
+  const data = company({ platform_unconfirmed_leads: [record] });
+  const before = JSON.stringify(data);
+  const html = await render(data);
+  assert.match(html, /招股发行 · 计划 · 字段差异待核实/);
+  assert.match(html, /股份数量：不超过400万股/);
+  assert.match(html, /实际发生日：未知/);
+  assert.match(html, /部分提议字段未通过原文与语义校验/);
+  assert.match(html, /风险尚未评价/);
+  assert.doesNotMatch(html, /融资金额：400/);
+  assert.equal(JSON.stringify(data), before);
+});

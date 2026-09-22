@@ -128,8 +128,9 @@ class BusinessExcerptSelector:
 
     preserve_identity_fields = False
 
-    def __init__(self, company):
+    def __init__(self, company, max_excerpt_chars=1500):
         self.company = company
+        self.max_excerpt_chars = min(6000, max(1500, max_excerpt_chars))
         self.metadata: dict[str, object] = {}
 
     def __call__(self, body: str) -> str:
@@ -155,7 +156,7 @@ class BusinessExcerptSelector:
                 ):
                     start += sentence.start()
                     break
-        excerpt = body[start : start + 1500]
+        excerpt = body[start : start + self.max_excerpt_chars]
         self.metadata = {
             "excerpt_start": start,
             "excerpt_end": start + len(excerpt),

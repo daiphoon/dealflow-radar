@@ -84,9 +84,10 @@ def _curated_candidate(event, company, evidence):
     return None
 
 
-def persist_financing_document(session, supplied_company, supplied_document, supplied_source, user):
+def authorized_research_evidence(
+    session, supplied_company, supplied_document, supplied_source, user
+):
     from backend.app.services import AccessDeniedError, user_has_role
-    from backend.app.web_research_service import _source_quality
 
     if user is None:
         raise AccessDeniedError("financing observations require an authenticated worker")
@@ -136,7 +137,19 @@ def persist_financing_document(session, supplied_company, supplied_document, sup
         )
     )
     if not mentions or any(m.candidate_company_id != company.id for m in mentions):
+        return None
+    return company, document, source, actor
+
+
+def persist_financing_document(session, supplied_company, supplied_document, supplied_source, user):
+    from backend.app.web_research_service import _source_quality
+
+    checked = authorized_research_evidence(
+        session, supplied_company, supplied_document, supplied_source, user
+    )
+    if checked is None:
         return None, False
+    company, document, source, actor = checked
     subject = load_subject(session, company)
     source_quality = _source_quality(company, document.canonical_url)
     candidate = extract_financing(
