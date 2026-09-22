@@ -102,6 +102,8 @@ export type FinancingObservation = {
 };
 
 export type MatterObservation = {
+  temporal_status?: string; source_channel?: string; source_published_on?: string | null;
+  information_status?: string; processing_version?: string; merge_decision?: string;
   kind: string; fact_version: string; category: string; subtype: string; label: string;
   status: string; status_label: string; subject: string; scope: string;
   field_labels: Record<string, string>;
@@ -111,6 +113,7 @@ export type MatterObservation = {
 };
 
 export type Event = {
+  information_status?: string | null; temporal_status?: string | null;
   id: string;
   event_type: string;
   event_subtype: string;

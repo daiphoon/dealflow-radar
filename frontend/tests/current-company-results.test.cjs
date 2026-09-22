@@ -312,3 +312,25 @@ test("事项补充区分资金角色和计划，未知日期不补造且不改�
   assert.doesNotMatch(html, /融资金额：400/);
   assert.equal(JSON.stringify(data), before);
 });
+
+test("事项原文支持、历史时间与来源载体分别展示，撤证后不使用旧金额", async () => {
+  const item = { ...event("matter", "unconfirmed_lead"),
+    publication_policy_version: "matter-v1", information_status: "source_supported_unconfirmed",
+    temporal_status: "historical", occurred_at: "2020-01-01",
+    matter_observations: [{ kind: "same_facts", fact_version: "fixture", category: "financing_cap_table",
+      subtype: "company_financing", label: "获得融资", status: "reported", status_label: "来源报道",
+      subject: "示例甲", scope: "brand:示例甲", field_labels: { financing: "融资金额" },
+      fields: { financing: { value: "1亿元", role: "financing", quote: "示例甲完成1亿元融资" } },
+      issues: [], excerpt: "示例甲完成1亿元融资", source_url: "https://example.invalid/test",
+      source_title: "示例材料", observed_at: "2026-09-22", evidence_id: "fixture-evidence",
+      source_channel: "generated_commentary", source_published_on: "2026-09-22", confirmed: false }],
+  };
+  const html = await render(company({ platform_unconfirmed_leads: [item] }));
+  assert.match(html, /原文支持的未确认事项/);
+  assert.match(html, /历史资料补充，不代表近期新事件/);
+  assert.match(html, /AI 生成或解读内容/);
+  assert.match(html, /引文支持不等于事实已确认/);
+  item.matter_observations = []; item.facts = []; item.summary = "证据已撤回";
+  const revoked = await render(company({ platform_unconfirmed_leads: [item] }));
+  assert.doesNotMatch(revoked, /1亿元/);
+});

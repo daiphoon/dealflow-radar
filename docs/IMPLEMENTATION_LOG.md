@@ -1,5 +1,14 @@
 # 实施记录
 
+## 2026-09-22：E4.8 合并部署与四家单次验收
+
+- 任务/文件：按本轮批准依次合并 #94/#95、受控部署、四家一次独立发现及零联网维护；更新 README、看板、增量计划和本记录，无新产品代码。main `31243a7` 与线上审查提交 `0482cce` 文件树一致，数据库 `0034`。
+- 实际命令：`gh pr merge --merge --match-head-commit`、`gh pr edit --base main`、`gh pr ready`、`gh run view --log`；私有 `prepare.sh/backup.sh/deploy.sh/restore_local.py`、`remote_runner.py preview/create/run/capture`、`export_discovery.py`、`maintenance_replay_v2.py`、两份 `render_*.cjs`、`archive_isolated.py`、`post-backup.sh/verify_post_backup.py/final_checks.py`。Chrome 核对免费额度，DeepSeek 官方余额端点只读核对。
+- 验证：最终 CI 后端 973 通过/18 跳过、前端 27 通过及类型/构建通过；部署前恢复、旧行保护、非 owner/RLS 和 HTTP 通过。独立发现 1/4 未达到 4/4，10 条未确认线索至少 3 组重复；发现交易方向/金额角色/历史时间错误。2 家完成、1 家响应流中断后取消、1 家模型上限暂停后封存，不再运行。
+- 维护：全部旧事实及快照保持、重复处理增量 0、普通用户原文权限通过。人工初始资料自动新增材料 0；本轮新融资线索之间关联 1，不混作维护成功。已生成 8 个实际 API 投影的离线前端页面。回放脚本误复制身份文档导致外键失败，筛除身份资料后在新隔离库验证；产品规则和封存发现输出不变，失败日志/库保留。
+- 用量：11 次搜索、9 次模型，16,899/11,835 tokens、估算 0.128478 元，账户余额显示减少 0.04 元；博查 948→940、Tavily 105→112 免费 credits，PAYG 关闭。24 次网页已结算，另 1—5 次免费 HTTP 不确定，共 25—29 次；36 条账本中 1 条免费抓取 uncertain 如实保留，无不确定付费调用，不伪造精确总量。
+- 收尾/限制：生产 17 开关、两份配置各 23 开关关闭，5 金额上限零；生产数据摘要与测试前一致，无新研究任务，暂停排程保持。前后备份上传 COS、SSH 副本双哈希，部署前恢复通过；三隔离库加密归档/双哈希后清理临时容器、网络和凭据。私有回执在 `data/private/e4-validation/20260922-e48-heldout-live/`、`data/private/deployment/pr94-pr95-20260922/`。E4/EV14/M6B 不关闭，下一建议 E4.9 待批准，不扩大真实调用。
+
 ## 2026-09-22：E4.8 交付审查与新留出样本准备
 
 - 任务/关键文件：审查完整 E4.8 差异；修复 `research_matters.py` 中曾用名口径丢失与相近主体误绑定，以及 `research_extraction.py` 异常响应解析；增加 7 项回归。看板记录四家新样本、封存规则和建议预算，私有答案不进入 Git 或检索输入。
@@ -934,3 +943,21 @@
 - 实际命令：`.venv/bin/pytest -q --disable-warnings`（临时本地 PostgreSQL）；单独 `pytest -q tests/integration/test_postgres_rls.py`（完整隔离夹具）；最终 `pytest -q tests/integration/test_research_matter_storage.py tests/unit/test_research_matters.py tests/integration/test_migrations.py`；另跑现有预算回归；`npm test`、`npm run typecheck`、`npm run build`；`ruff check`、`ruff format --check`、`git diff --check`；使用虚构必填值执行 Compose `config --quiet`；私有 `replay.py` 零联网回放。
 - 结果：完整后端 935 通过/39 跳过，其中 21 个缺 PostgreSQL 配置的权限检查单独补跑通过；最终定向 48 通过；预算相关 67 通过/6 条件跳过；前端 27 通过，类型/构建及静态检查通过。计数有重叠不累加。13 份正文、8 组已知错误回归通过；141 个封存哈希不变；来源日期 5/8 可解析、3 份保留未知。早期长度/RLS/事务问题已修复；RLS 补跑的夹具漏装及重复数据失败保留，最终全新完整夹具 21 通过。日志在忽略目录 `20260922-e48-engineering/`。
 - 边界：真实外部调用/生产写入为 0；未推送、新建 PR、合并或部署。模型新提示词未联网验证，其余六类无真实覆盖结论；下一步为审查交付后冻结新留出样本，不自动恢复历史任务或扩大巡检。回退保留新格式读取/撤证兼容，有观测时不降级 0034。
+
+
+## 2026-09-22｜A→B→C 资料到事项可靠性改造
+
+- 任务：按负责人附件及补充复现脚本修正证据字节哈希、字段支持与撤证，独立校验模型提议，分离事项身份与字段差异，并保留历史/未知日期的有据未确认事项；保留既有未提交文档修改。
+- 关键文件：`evidence_integrity.py`、`matter_validation.py`、`matter_comparison.py`、`matter_retention.py`、`matter_dispositions.py`、抽取/存储/账本/读取链路、迁移 `0035`、公司详情、只读扫描及离线演示脚本、对应测试、ADR-0025 和交付记录 16。
+- 实际命令：各批定向 Pytest；`.venv/bin/python data/private/reliability-local/run_full_grouped.py`（内部收集完整测试集并按模块分组三次执行 `python -m pytest -q`）；`.venv/bin/python -m scripts.demo_matter_reliability`；`npm test`、`npm run typecheck`、`npm run build`；`ruff check backend migrations scripts tests`、`ruff format --check backend migrations scripts tests`、`git diff --check`。
+- 测试结果：完整 1041 项中 1022 通过、19 条件跳过；真实 PostgreSQL 权限、并发、迁移及 SQLite 虚构场景通过；前端 28 通过，类型/构建、Ruff/格式及差异检查通过。初次失败、修复与分组原始日志保留于私有忽略目录；计数不累加定向测试。外部 Provider 调用、生产写入和付费消耗为 0。
+- 未解决边界：真实召回未复测，原 3/9、1/4 保留，E4 不关闭；生产旧哈希影响数量未知，新事项可选模型解读暂不启用。仅交付本地改造，未推送、建 PR 或部署，不自动进入下一阶段。
+
+
+## 2026-09-23｜A→B→C 整批审查与五项修正
+
+- 任务：审查证据/旧账本、撤证与反证、角色/字段/归并、缓存预算、幂等、迁移权限及 API/前端链路；先复现后修正旧账本无签名失效、否认误支持、买方误作标的、资本前后值颠倒、等价金额误冲突五项问题。
+- 关键文件：`fact_support.py`、`services.py`、`matter_validation.py`、`research_matters.py`、两份可靠性回归测试、交付记录 16、README 和看板；迁移、前端及运行配置未改。
+- 实际命令：关闭外部调用的定向 `pytest -q`；私有 `run_tests.py` 定向；`prepare_full.py --fresh` 重建本轮一次性测试基库，`run_full_grouped.py` 收集完整测试集并按模块分组运行；前端 `npm test`、`npm run typecheck`；Ruff/格式、`git diff --check`、差异密钥模式及代码哈希检查。
+- 测试结果：最终后端 1039 通过、19 条件跳过（完整 1058 项，三组退出码均为 0）；定向 118 通过/1 跳过不累加，真实 PostgreSQL/RLS 已执行。前端 28 通过、类型检查通过，源码未改而复用上轮构建；静态检查通过。失败复现、首次完整及最终完整结果分别保存在 `data/private/reliability-review-20260923/`，不覆盖上一轮日志。
+- 未解决边界：真实召回未复测，E4 不关闭；未推送、建 PR、部署或访问生产。没有真实 Provider 调用或付费消耗；新事项可选模型解读和生产旧数据影响扫描仍后置。下一建议为受控提交及待审查 PR，尚无本轮发布授权。

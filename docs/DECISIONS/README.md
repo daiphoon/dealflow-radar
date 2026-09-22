@@ -26,6 +26,7 @@
 | [ADR-0022](ADR-0022-curated-baseline-and-incremental-research.md) | 负责人确认资料经轻量校验形成初始数据，用户按需触发后台增量研究；人工确认、原来源及抓取状态分开，独立检索与导入维护分开验收 |
 | [ADR-0023](ADR-0023-research-delivery-and-stale-refresh.md) | 多维初始资料、按需研究与过期访问更新整体交付；固定分母验收和后台启用分开 |
 | [ADR-0024](ADR-0024-research-acquisition-and-extraction-evaluation.md) | 先比较专业搜索、正文获取与有证据约束的抽取，再按实测完成事项维护闭环；不全量盲换供应商 |
+| [ADR-0025](ADR-0025-matter-reliability-contract.md) | 资料到公司事项的证据、独立校验、事项身份比较、观测版本及历史/未知日期保留契约；仅本地工程授权 |
 
 当前有效决策适用于 `DEMO / VALIDATION`。ADR-0014 取代 ADR-0013 的短期地域与备案主体路线；ADR-0018 取代 ADR-0010，并部分取代 ADR-0015、ADR-0016 的供应商专用实现方向，仍保留其通用队列、缓存、取消恢复和证据分层原则。历史理由不回改。
 

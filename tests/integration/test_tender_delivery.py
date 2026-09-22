@@ -454,7 +454,7 @@ def test_review_migration_binds_the_right_event_and_guards_history(database, cli
             session.add(EventSharingDecision(**values))
             session.flush()
         session.rollback()
-    with pytest.raises(RuntimeError, match="Observation reviews exist"):
+    with pytest.raises(RuntimeError, match="Event observations exist"):
         command.downgrade(Config("alembic.ini"), "0028")
     with Session(database.owner) as session:
         assert session.scalar(select(func.count()).select_from(EventSharingDecision)) == 1

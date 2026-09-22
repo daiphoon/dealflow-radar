@@ -2139,9 +2139,18 @@ def _raw_document(
     if existing is not None:
         _ensure_entity_mention(session, existing, company)
         return existing, False
-    excerpt = (discovered.excerpt or "").strip()[
-        : 6000 if getattr(job, "coverage", {}).get("matter_processing") else 1500
-    ]
+    excerpt = discovered.excerpt or ""
+    source_windows = []
+    if getattr(job, "coverage", {}).get("matter_processing"):
+        from backend.app.matter_dispositions import relevant_windows
+
+        source_windows, truncated = relevant_windows(
+            excerpt, [company.legal_name, *getattr(company, "aliases", ())], max_chars=12000
+        )
+        excerpt = "\n".join(w["text"] for w in source_windows)
+    else:
+        excerpt = excerpt.strip()[:1500]
+        truncated = len(discovered.excerpt or "") > 1500
     document = RawDocument(
         source_id=source.id,
         research_import_id=None,
@@ -2161,6 +2170,8 @@ def _raw_document(
         payload={
             "retention": "minimal_excerpt",
             "excerpt": excerpt,
+            "source_windows": [{k: v for k, v in w.items() if k != "text"} for w in source_windows],
+            "input_truncated": truncated,
             "discovered_by": candidate.get("discovered_by", []),
             "research_job_id": str(job.id),
             "content_extraction": dict(discovered.metadata),
@@ -2222,6 +2233,17 @@ def _candidate_event(
             session, actor, job, company, document, policy, session.info.get("matter_provider")
         )
         if allowed_categories is not None:
+            from backend.app.matter_dispositions import record
+
+            for candidate_matter in matters:
+                if candidate_matter.category not in allowed_categories:
+                    record(
+                        document,
+                        "candidate_validation",
+                        "excluded",
+                        "outside_current_topic_scope",
+                        category=candidate_matter.category,
+                    )
             matters = [m for m in matters if m.category in allowed_categories]
         events, created, linked = persist_matters(
             session, company, document, source, actor, matters, policy
@@ -3314,6 +3336,7 @@ def _fetch_candidate(
                 }
             )
     if policy.matter_processing_enabled:
+        coverage["matter_dispositions"] = job.coverage.get("matter_dispositions", [])
         coverage["budget_baseline"] = job.coverage.get("budget_baseline", {})
         coverage["stats"] = {
             **coverage.get("stats", {}),

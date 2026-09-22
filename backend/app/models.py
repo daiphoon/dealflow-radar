@@ -1299,7 +1299,12 @@ class EventObservation(Base):
     __table_args__ = (
         UniqueConstraint("id", "event_id", name="uq_event_observation_id_event"),
         UniqueConstraint(
-            "event_id", "raw_document_id", "schema_version", name="uq_event_observation_document"
+            "event_id",
+            "raw_document_id",
+            "schema_version",
+            "observation_key",
+            "processing_version",
+            name="uq_event_observation_document",
         ),
         CheckConstraint(
             "observation_kind IN ('initial', 'same_facts', 'correction_candidate', "
@@ -1317,6 +1322,8 @@ class EventObservation(Base):
     event_id: Mapped[UUID] = mapped_column(ForeignKey("events.id"), index=True)
     raw_document_id: Mapped[UUID] = mapped_column(ForeignKey("raw_documents.id"), index=True)
     schema_version: Mapped[str] = mapped_column(String(64))
+    observation_key: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    processing_version: Mapped[str] = mapped_column(String(64), default="", server_default="")
     fact_version: Mapped[str] = mapped_column(String(64))
     observation_kind: Mapped[str] = mapped_column(String(32))
     occurred_on: Mapped[date | None] = mapped_column(Date)

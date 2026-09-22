@@ -204,7 +204,7 @@ def test_migration_retains_financing_observations(database, tmp_path):
         user, company = initial(session, tmp_path)
         ingest(session, user, company, "示例山海完成B轮融资。")
         session.commit()
-    with pytest.raises(RuntimeError, match="Retain financing observations"):
+    with pytest.raises(RuntimeError, match="Event observations exist"):
         command.downgrade(Config("alembic.ini"), "0032")
     with Session(database.owner) as session:
         assert (

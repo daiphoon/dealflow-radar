@@ -6,7 +6,7 @@ from threading import Barrier
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
@@ -493,10 +493,12 @@ def test_migration_round_trip_and_no_destructive_downgrade(database, tmp_path):
     curator(database)
     with Session(database.app) as session:
         apply(session, loaded(tmp_path))
-    with pytest.raises(RuntimeError, match="Cannot downgrade 0032"):
+    with pytest.raises(RuntimeError, match="Event observations exist; Retain matter observations"):
+        # 0035 提前阻止跨版本降级；不能先移除当前模型字段再等待旧迁移报错。
         command.downgrade(Config("alembic.ini"), "0031")
     with Session(database.owner) as session:
         assert session.scalar(select(func.count()).select_from(ResearchImport)) == 1
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "0035"
 
 
 def test_cancelled_request_cannot_be_reopened_by_curated_admission(database, tmp_path):

@@ -85,3 +85,25 @@ def migrated_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Fa
 def client(migrated_app: FastAPI) -> Iterator[TestClient]:
     with TestClient(migrated_app) as test_client:
         yield test_client
+
+
+@pytest.fixture(autouse=True)
+def block_real_http_by_default(monkeypatch, request):
+    import os
+
+    import httpx
+
+    if (
+        request.node.get_closest_marker("external")
+        and os.environ.get("RUN_EXTERNAL_TESTS") == "true"
+    ):
+        return
+
+    def blocked(*args, **kwargs):
+        pytest.fail("Real HTTP disabled in offline tests; inject a mock provider")
+
+    async def blocked_async(*args, **kwargs):
+        pytest.fail("Real HTTP disabled in offline tests; inject a mock provider")
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", blocked)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked_async)
