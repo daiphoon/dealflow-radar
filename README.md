@@ -4,6 +4,8 @@
 
 ## 当前状态
 
+2026-09-22：E4.8 对照和事项维护工程已本地验证，已推送待审查 [PR #95](https://github.com/daiphoon/dealflow-radar/pull/95)（依赖 #94，尚未合并/部署），见 [ADR-0024](docs/DECISIONS/ADR-0024-research-acquisition-and-extraction-evaluation.md)及[有效看板](docs/10-implementation-plan.md#2-有效执行检查点)。实测支持保留现有搜索、评估 Tavily 正文补充，并重构事项字段语义与归并；评估工具尚未接入生产，旧 3/9 验收结论不变。
+
 当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充个人安全查询、按需缓存、Mock Worker V1、人工研究导入 V1 与受控可信来源监测 V1：
 
 > **当前推进方向**：[ADR-0021](docs/DECISIONS/ADR-0021-incremental-event-delivery.md) 保留“增量交付＋局部重构”，[ADR-0022](docs/DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md) 采用“负责人复核初始资料＋按需增量研究”。E4.7 工程已随 PR #91/#92/#93 合并部署为 `de50fe4`；生产接收 24 家、139 条资料，另 1 家的 6 条因现有全称差异单独待确认，无每公司五条限制。固定 5 家独立发现使用 17 搜索/40 HTTP/零模型，合格正文支持输出 **3/9**，未达 80% 目标；零联网维护回放验证实际新正文能补充已有事项、旧事实保持。长期自动更新仍关闭，E4/EV14/M6B 尚未通过。[完整计划](docs/15-incremental-event-delivery-plan.md)固定范围，[实施看板](docs/10-implementation-plan.md)维护唯一推进点。
@@ -279,3 +281,5 @@ GitHub CI 在 Pull Request 和 `main` 推送时使用临时 PostgreSQL 16，一�
 | 离线测试与验收 | [测试策略](docs/11-test-strategy.md) |
 | 部署、恢复与故障处置 | [运维手册](docs/12-operations-runbook.md) |
 | 已确认架构决定 | [ADR 索引](docs/DECISIONS/README.md) |
+
+E4.8 事项研究工程已本地验证：可选专业获取、受限抽取与事项维护/展示默认关闭，迁移 `0034` 保留受限观测权限。启用与回退见 [运维手册](docs/12-operations-runbook.md)，真实价值验收及下一步仍以[实施看板](docs/10-implementation-plan.md)为准。

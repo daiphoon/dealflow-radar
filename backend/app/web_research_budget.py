@@ -14,7 +14,7 @@ from backend.app.web_search import MockSearchProvider
 
 SCOPE = "platform_web"
 HELD = ("reserved", "in_flight", "uncertain")
-SEARCH_PROVIDERS = ("web_search_baidu", "web_search_bocha")
+SEARCH_PROVIDERS = ("web_search_baidu", "web_search_bocha", "web_search_tavily")
 
 
 class WebResearchBudgetDeferred(RuntimeError):
@@ -339,6 +339,20 @@ def summary(session, task_key, *, legacy_calls=0):
         Decimal("0"),
     )
     return {
+        **(
+            {
+                key: None
+                if any(
+                    r.usage_state in ("in_flight", "uncertain")
+                    and r.operation == "matter_extraction"
+                    for r in rows
+                )
+                else sum(getattr(r, key) or 0 for r in rows)
+                for key in ("input_tokens", "output_tokens")
+            }
+            if any(r.operation == "matter_extraction" for r in rows)
+            else {}
+        ),
         "currency": "CNY",
         "status": "unknown"
         if unknown
@@ -446,11 +460,12 @@ def reconcile(session, user, usage_id, *, calls, actual_cost, reference, reason)
             for key, operation in (
                 ("search_calls", "company_discovery"),
                 ("fetch_calls", "evidence_fetch"),
+                ("model_calls", "matter_extraction"),
             ):
                 stats[key] = int(baseline.get(key, 0)) + sum(
                     item.external_calls or 0 for item in rows if item.operation == operation
                 )
-            job.external_calls = stats["search_calls"] + stats["fetch_calls"]
+            job.external_calls = stats["search_calls"] + stats["fetch_calls"] + stats["model_calls"]
             job.coverage = {
                 **job.coverage,
                 "stats": stats,

@@ -101,6 +101,15 @@ export type FinancingObservation = {
     fields: Record<string, string>; reasons: string[]; } | null;
 };
 
+export type MatterObservation = {
+  kind: string; fact_version: string; category: string; subtype: string; label: string;
+  status: string; status_label: string; subject: string; scope: string;
+  field_labels: Record<string, string>;
+  fields: Record<string, { value: string; role: string; quote: string; iso?: string }>;
+  issues: string[]; excerpt: string; source_url: string; source_title: string;
+  observed_at: string; evidence_id: string; confirmed: false;
+};
+
 export type Event = {
   id: string;
   event_type: string;
@@ -112,6 +121,7 @@ export type Event = {
   tender_observations?: TenderObservation[];
   curated_versions?: CuratedVersion[];
   financing_observations?: FinancingObservation[];
+  matter_observations?: MatterObservation[];
   published_at: string | null;
   published_on: string | null;
   direction: string;

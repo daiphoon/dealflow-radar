@@ -186,6 +186,27 @@ class CuratedVersionOut(BaseModel):
     evidence_available: bool = True
 
 
+class MatterObservationOut(BaseModel):
+    kind: Literal["initial", "same_facts", "correction_candidate", "conflicting", "incomplete"]
+    fact_version: str
+    category: str
+    subtype: str
+    label: str
+    status: str
+    status_label: str
+    subject: str
+    scope: str
+    field_labels: dict[str, str]
+    fields: dict[str, dict[str, str]]
+    issues: list[str]
+    excerpt: str
+    source_url: str
+    source_title: str
+    observed_at: datetime
+    evidence_id: UUID
+    confirmed: Literal[False] = False
+
+
 class EventOut(BaseModel):
     id: UUID
     event_type: str
@@ -197,6 +218,7 @@ class EventOut(BaseModel):
     tender_observations: list[TenderObservationOut] = Field(default_factory=list)
     curated_versions: list[CuratedVersionOut] = Field(default_factory=list)
     financing_observations: list[FinancingObservationOut] = Field(default_factory=list)
+    matter_observations: list[MatterObservationOut] = Field(default_factory=list)
     published_at: datetime | None
     published_on: date | None
     direction: str

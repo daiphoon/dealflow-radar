@@ -183,6 +183,8 @@ class WebResearchCostPolicy:
     version: str = "web-cost-v1"
     baidu_price_per_call: Decimal | None = None
     bocha_price_per_call: Decimal | None = None
+    tavily_price_per_call: Decimal | None = None
+    tavily_extract_price_per_call: Decimal | None = None
     unknown_price_upper_bound: Decimal | None = None
     task_limit: Decimal = Decimal("0")
     company_daily_limit: Decimal = Decimal("0")
@@ -219,6 +221,16 @@ def _optional_cost(name: str) -> Decimal | None:
 class WebResearchPolicy:
     incremental_research_enabled: bool = False
     topic_planning_enabled: bool = False
+    matter_processing_enabled: bool = False
+    matter_model_enabled: bool = False
+    tavily_enabled: bool = False
+    tavily_allowed_domains: tuple[str, ...] = ()
+    extraction_model: str = ""
+    max_model_calls_per_job: int = 3
+    max_model_input_tokens: int = 16000
+    max_model_output_tokens: int = 2000
+    model_input_price_per_million: Decimal = Decimal("0")
+    model_output_price_per_million: Decimal = Decimal("0")
     company_cooldown_hours: int = 24
     company_check_ttl_days: int = 14
     version: str = "bounded-web-v3"
@@ -253,10 +265,32 @@ class WebResearchPolicy:
     def __post_init__(self) -> None:
         if not self.version.strip():
             raise ValueError("WEB_RESEARCH_POLICY_VERSION must not be empty")
-        if self.primary_provider not in {"baidu", "bocha"}:
-            raise ValueError("WEB_RESEARCH_PRIMARY_PROVIDER must be baidu or bocha")
-        if self.fallback_provider not in {"baidu", "bocha"}:
-            raise ValueError("WEB_RESEARCH_FALLBACK_PROVIDER must be baidu or bocha")
+        if self.primary_provider not in {"baidu", "bocha", "tavily"}:
+            raise ValueError("WEB_RESEARCH_PRIMARY_PROVIDER must be baidu, bocha or tavily")
+        if self.fallback_provider not in {"baidu", "bocha", "tavily"}:
+            raise ValueError("WEB_RESEARCH_FALLBACK_PROVIDER must be baidu, bocha or tavily")
+        if "tavily" in (self.primary_provider, self.fallback_provider) and not self.tavily_enabled:
+            raise ValueError("Tavily provider requires explicit enablement")
+        if self.matter_processing_enabled and not self.incremental_research_enabled:
+            raise ValueError("matter processing requires incremental research")
+        if self.matter_model_enabled and (
+            not self.matter_processing_enabled or not self.extraction_model
+        ):
+            raise ValueError("model extraction requires matter processing and configured model")
+        for price in (self.model_input_price_per_million, self.model_output_price_per_million):
+            if not price.is_finite() or price < 0 or (self.matter_model_enabled and price == 0):
+                raise ValueError("model prices must be explicit positive conservative prices")
+        if not (
+            1 <= self.max_model_calls_per_job <= 12
+            and 100 <= self.max_model_output_tokens <= 4000
+            and 1000 <= self.max_model_input_tokens <= 40000
+        ):
+            raise ValueError("model limits outside bounded range")
+        if any(
+            not re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.[a-z]{2,}", d)
+            for d in self.tavily_allowed_domains
+        ):
+            raise ValueError("Tavily domains must be explicit public hostnames")
         if self.primary_provider == self.fallback_provider:
             raise ValueError("web research primary and fallback providers must differ")
         for name, value in (
@@ -523,6 +557,32 @@ class Settings:
                 ),
             ),
             web_research_policy=WebResearchPolicy(
+                matter_processing_enabled=_as_bool(
+                    os.getenv("WEB_RESEARCH_MATTERS_ENABLED", "false")
+                ),
+                matter_model_enabled=_as_bool(
+                    os.getenv("WEB_RESEARCH_EXTRACTION_ENABLED", "false")
+                ),
+                tavily_enabled=_as_bool(os.getenv("WEB_RESEARCH_TAVILY_ENABLED", "false")),
+                tavily_allowed_domains=tuple(
+                    d.strip().lower()
+                    for d in os.getenv("WEB_RESEARCH_TAVILY_ALLOWED_DOMAINS", "").split(",")
+                    if d.strip()
+                ),
+                extraction_model=os.getenv("WEB_RESEARCH_EXTRACTION_MODEL", "").strip(),
+                max_model_calls_per_job=_as_positive_int("WEB_RESEARCH_MAX_MODEL_CALLS_PER_JOB", 3),
+                max_model_input_tokens=_as_positive_int(
+                    "WEB_RESEARCH_MAX_MODEL_INPUT_TOKENS", 16000
+                ),
+                max_model_output_tokens=_as_positive_int(
+                    "WEB_RESEARCH_MAX_MODEL_OUTPUT_TOKENS", 2000
+                ),
+                model_input_price_per_million=_as_non_negative_decimal(
+                    "WEB_RESEARCH_MODEL_INPUT_PRICE_PER_MILLION", "0"
+                ),
+                model_output_price_per_million=_as_non_negative_decimal(
+                    "WEB_RESEARCH_MODEL_OUTPUT_PRICE_PER_MILLION", "0"
+                ),
                 company_cooldown_hours=_as_positive_int("PERSONAL_REQUEST_COOLDOWN_HOURS", 24),
                 company_check_ttl_days=_as_positive_int("RECENT_QUERY_TTL_DAYS", 14),
                 topic_planning_enabled=_as_bool(
@@ -603,6 +663,10 @@ class Settings:
                     version=os.getenv("WEB_RESEARCH_COST_VERSION", "web-cost-v1"),
                     baidu_price_per_call=_optional_cost("WEB_RESEARCH_BAIDU_PRICE_PER_CALL"),
                     bocha_price_per_call=_optional_cost("WEB_RESEARCH_BOCHA_PRICE_PER_CALL"),
+                    tavily_price_per_call=_optional_cost("WEB_RESEARCH_TAVILY_PRICE_PER_CALL"),
+                    tavily_extract_price_per_call=_optional_cost(
+                        "WEB_RESEARCH_TAVILY_EXTRACT_PRICE_PER_CALL"
+                    ),
                     unknown_price_upper_bound=_optional_cost(
                         "WEB_RESEARCH_UNKNOWN_PRICE_UPPER_BOUND"
                     ),

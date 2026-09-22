@@ -145,7 +145,7 @@ function EventCard({
   const isTender = Boolean(event.tender_observations?.length);
   const curatedVersions = event.curated_versions ?? [];
   const isCurated = curatedVersions.length > 0;
-  const isFinancing = Boolean(event.financing_observations?.length);
+  const isFinancing = Boolean(event.financing_observations?.length || event.matter_observations?.length || event.publication_policy_version === "matter-v1");
   const curated = curatedVersions.find((item) => item.is_current) ?? curatedVersions[0];
   const isLicensedSourceRecord = event.publication_route === "licensed_source_record";
   const isDeterministicChange = event.publication_route === "deterministic_change";
@@ -417,6 +417,25 @@ function EventCard({
               {observation.comparison ? <p>材料关联不改变人工确认事实；来源数量不代表独立确认。</p> : null}
               <p>{observation.excerpt}</p>
               <a href={observation.source_url} target="_blank" rel="noreferrer">{observation.source_title}</a>
+            </details>
+          ))}
+        </section>
+      ) : null}
+      {(event.matter_observations ?? []).length > 0 ? (
+        <section className="evidence">
+          <h4>程序补充的事项材料 · 待核实</h4>
+          <p>新增来源和字段差异单独保留，原人工确认资料保持不变。</p>
+          {event.matter_observations!.map((item) => (
+            <details key={item.evidence_id}>
+              <summary>{item.label} · {item.status_label} · {({ same_facts: "同事项补充", conflicting: "字段差异待核实", correction_candidate: "更正待核实" } as Record<string, string>)[item.kind] ?? "未确认线索"}</summary>
+              <p>主体：{item.subject}（{item.scope.startsWith("brand:") ? "品牌口径" : "法人口径"}）</p>
+              <ul>{Object.entries(item.fields).map(([key, value]) => (
+                <li key={key}>{item.field_labels[key] ?? key}：{value.value}{key === "date" ? `（${({ occurred: "发生日期", disclosed: "披露日期", planned: "计划日期" } as Record<string, string>)[value.role] ?? "日期口径待核"}）` : ""}</li>
+              ))}</ul>
+              <p>实际发生日：{item.fields.date?.iso ?? "未知"}。未披露或未通过校验的字段保持未知。</p>
+              {item.issues.some((issue) => issue.startsWith("rejected_field:")) ? <p>部分提议字段未通过原文与语义校验，已剔除。</p> : null}
+              <blockquote>{item.excerpt}</blockquote>
+              <p>材料来源：{item.source_title}；发现时间：{formatDate(item.observed_at)}</p>
             </details>
           ))}
         </section>
