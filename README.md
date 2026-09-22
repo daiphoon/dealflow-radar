@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-2026-09-22：E4.8 搜索/正文/模型理解对照切片已完成，见 [ADR-0024](docs/DECISIONS/ADR-0024-research-acquisition-and-extraction-evaluation.md)及[有效看板](docs/10-implementation-plan.md#2-有效执行检查点)。实测支持保留现有搜索、评估 Tavily 正文补充，并重构事项字段语义与归并；评估工具尚未接入生产，旧 3/9 验收结论不变。
+2026-09-22：E4.8 对照和事项维护工程已本地验证，已推送待审查 [PR #95](https://github.com/daiphoon/dealflow-radar/pull/95)（依赖 #94，尚未合并/部署），见 [ADR-0024](docs/DECISIONS/ADR-0024-research-acquisition-and-extraction-evaluation.md)及[有效看板](docs/10-implementation-plan.md#2-有效执行检查点)。实测支持保留现有搜索、评估 Tavily 正文补充，并重构事项字段语义与归并；评估工具尚未接入生产，旧 3/9 验收结论不变。
 
 当前为 `DEMO / VALIDATION`，第 2 阶段最小数据闭环已经验收，并已补充个人安全查询、按需缓存、Mock Worker V1、人工研究导入 V1 与受控可信来源监测 V1：
 

@@ -5,6 +5,7 @@
 - 任务/关键文件：审查完整 E4.8 差异；修复 `research_matters.py` 中曾用名口径丢失与相近主体误绑定，以及 `research_extraction.py` 异常响应解析；增加 7 项回归。看板记录四家新样本、封存规则和建议预算，私有答案不进入 Git 或检索输入。
 - 实际命令：`pytest tests/unit/test_research_matters.py tests/integration/test_research_matter_storage.py tests/integration/test_migrations.py -q`（临时 PostgreSQL 非 owner）、全套 `pytest -q`、`ruff check` / `ruff format --check`、SQLite 与 PostgreSQL `alembic upgrade head/check`、SQLite `downgrade base`；前端 `npm test/typecheck/build`；两套生产 Compose `config -q`；封存材料 `replay.py`；新增内容对照本地密钥及私有公司名称/代码扫描。
 - 已验证：本轮完整后端及 PostgreSQL 权限回归 969 通过/18 条件跳过；随后最终代码定向 55 通过（包含模型异常响应补充，计数不累加）。前端 27 通过及类型/构建通过，Ruff/迁移/配置检查通过；13 份原文的 8 组错误回归通过，141 个封存文件哈希不变。私有日志 `data/private/e4-validation/20260922-e48-review/`。
+- 交付：`git push -u origin codex/e48-research-evaluation`、`gh pr create --draft`，已创建并关联 [PR #95](https://github.com/daiphoon/dealflow-radar/pull/95)，基于尚未合并的 #94；GitHub CI 已启动、结果待回传。临时 PostgreSQL 测试容器已清理。
 - 边界：本轮研究外部调用与生产写入均为 0；用户授权推送/待审查 PR，不合并或部署。排除原五家及名称冲突后，原窗口只剩四家/四条可确认基准，已独立封存；整次建议 16 搜索/32 网页/12 模型、最多 96 Tavily credits、1 元现金硬上限，未执行。原 3/9、六类真实样本缺口、长期更新关闭不变。
 
 ## 2026-09-22：E4.8 搜索、正文获取与封存抽取对照
