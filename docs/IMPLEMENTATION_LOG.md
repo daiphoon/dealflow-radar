@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-09-23：PR #96 合并与可靠性改造受控部署
+
+- 任务/关键文件：按负责人批准合并 [PR #96](https://github.com/daiphoon/dealflow-radar/pull/96)，将固定提交 `3e143d8` 部署到香港环境，数据库 `0034→0035`；同步 README、有效看板、交付记录及本记录，不增改产品代码或运行开关。
+- 实际命令：`gh pr merge 96 --squash --match-head-commit`、`git fetch`、`git archive`；Tailscale SSH 执行私有 `prepare.sh/backup.sh/deploy.sh/post-backup.sh`，Mac 执行 `restore_local.py/verify_post_backup.py/final_checks.py`；Chrome 只读检查登录页。
+- 验证：合并文件树等于已审查分支，最终 CI 后端 1039 通过/19 跳过、前端 28 通过。部署前 age 加密备份上传既有 COS，SSH 副本密文/解密流双哈希与隔离 PostgreSQL 16 恢复通过；`0034→0035` 演练旧行摘要一致、迁移无漂移、非 owner/RLS 通过。线上健康、就绪、登录页、匿名拒绝、旧行摘要和部署后加密备份双哈希通过；临时恢复库已删除。
+- 边界：运行 17 项开关、两份环境各 23 项开关关闭，五项金额上限零，活动研究任务 0、原自动续作暂停；无本轮真实 Provider/模型调用或新样本复测。COS 直接下载及部署后隔离恢复本轮未重复；E4 原 3/9、1/4 未达标，E4/EV14/M6B 不关闭。私有回执在 `data/private/deployment/pr96-20260923/`。
+
 ## 2026-09-22：E4.8 合并部署与四家单次验收
 
 - 任务/文件：按本轮批准依次合并 #94/#95、受控部署、四家一次独立发现及零联网维护；更新 README、看板、增量计划和本记录，无新产品代码。main `31243a7` 与线上审查提交 `0482cce` 文件树一致，数据库 `0034`。
