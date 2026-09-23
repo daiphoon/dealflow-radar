@@ -105,13 +105,15 @@ def test_model_wrong_money_removed_without_losing_supported_fields():
                     "subject": "示例山海",
                     "action_quote": text[:-1],
                     "fields": {
-                        "amount": {"value": "10亿元", "quote": text[:-1], "role": "financing"}
+                        "amount": {"value": "10亿元", "quote": text[:-1], "role": "financing"},
+                        "round": {"value": "A轮", "quote": text[:-1], "role": "round"},
                     },
                 }
             ]
         },
     )
-    assert proposed[0].fields["financing"]["value"] == "1亿元"
+    assert "financing" not in proposed[0].fields
+    assert proposed[0].fields["round"]["value"] == "A轮"
     assert "rejected_field:amount" in proposed[0].issues
 
 

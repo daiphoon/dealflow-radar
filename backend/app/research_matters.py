@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import date
-from types import SimpleNamespace
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 VERSION = "matter-v1"
-PROMPT_VERSION = "research-matter-extraction-v1"
+PROMPT_VERSION = "research-matter-extraction-v2"
+EXTRACTION_VERSION = "matter-extraction-v2"
 # 每类均有实际动作契约；不把整篇文章标题当作事件动作。
 ACTIONS = (
     (
@@ -25,6 +24,7 @@ ACTIONS = (
         "outbound_investment",
         r"(?:战略投资|收购|购买).{1,45}?(?:股权|股份|科技|公司)|(?:对外|战略)投资",
     ),
+    ("exit_liquidity", "acquisition_target", r"被.{0,35}?(?:收购|并购)"),
     ("financing_cap_table", "registered_capital", r"注册资本.{0,30}?(?:增加|增至|变更|由|从)"),
     (
         "financing_cap_table",
@@ -42,6 +42,11 @@ ACTIONS = (
         "exit_liquidity",
         "ipo_guidance",
         r"(?:启动|开启|完成).{0,10}?辅导备案|(?:IPO|上市)辅导(?:备案|登记)|启动.{0,5}(?:IPO|上市)辅导",
+    ),
+    (
+        "exit_liquidity",
+        "ipo_application",
+        r"(?:提交|递交|递表).{0,20}?(?:上市申请|招股书)|向.{0,12}?递表",
     ),
     ("exit_liquidity", "ipo_hearing", r"(?:通过|获).{0,12}?(?:聆讯|聆聽)"),
     ("exit_liquidity", "ipo_inquiry", r"(?:进入|收到|回复).{0,12}?问询"),
@@ -97,12 +102,14 @@ ACTIONS = (
 LABELS = {
     "fund_commitment": "基金认缴",
     "outbound_investment": "对外投资",
+    "acquisition_target": "被收购",
     "registered_capital": "注册资本变化",
     "ipo_guidance_agreement": "辅导协议签署",
     "company_financing": "获得融资",
     "ipo_guidance_completed": "辅导完成",
     "ipo_guidance": "辅导备案",
     "ipo_hearing": "上市聆讯",
+    "ipo_application": "上市申请提交",
     "ipo_inquiry": "上市问询",
     "ipo_accepted": "上市申请受理",
     "ipo_filing": "境外上市备案",
@@ -137,6 +144,8 @@ FIELD_LABELS = {
     "round": "融资轮次",
     "investors": "投资方（来源口径）",
     "date": "原文日期",
+    "transaction_id": "交易标识",
+    "project_id": "项目标识",
 }
 
 AMOUNT = re.compile(
@@ -146,9 +155,9 @@ DATE = re.compile(r"(?:(\d{4})[年/-])?(\d{1,2})[月/-](\d{1,2})日?")
 
 
 def digest(value):
-    return hashlib.sha256(
-        json.dumps(value, ensure_ascii=False, sort_keys=True).encode()
-    ).hexdigest()
+    from backend.app.evidence_integrity import hash_canonical_object
+
+    return hash_canonical_object(value)
 
 
 def compact(value):
@@ -185,12 +194,37 @@ class ProposedField(BaseModel):
     model_config = ConfigDict(extra="forbid")
     value: str = Field(min_length=1, max_length=200)
     quote: str = Field(min_length=1, max_length=1000)
-    role: str = Field(max_length=40)
+    role: Literal[
+        "financing",
+        "valuation",
+        "investment",
+        "commitment",
+        "share_quantity",
+        "round",
+        "investors",
+        "registered_capital_before",
+        "registered_capital_after",
+        "proposed_proceeds",
+        "occurred",
+        "disclosed",
+        "planned",
+        "transaction_id",
+        "project_id",
+    ]
+    currency: Literal["CNY", "HKD", "USD", "shares"] | None = None
 
 
 class ProposedMatter(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    subject: str = Field(max_length=200)
+    subject: str = Field(min_length=1, max_length=200)
+    # None 仅兼容已封存的 v1 输出；新提示必须提供这些类型。
+    subtype: str | None = Field(default=None, max_length=60)
+    category: str | None = Field(default=None, max_length=60)
+    subject_role: Literal["fundraiser", "investor", "buyer", "target", "issuer", "actor"] | None = (
+        None
+    )
+    scope: str | None = Field(default=None, max_length=240)
+    status: Literal["reported", "planned", "denied", "committed", "conditional"] | None = None
     action_quote: str = Field(min_length=1, max_length=1500)
     fields: dict[str, ProposedField] = Field(default_factory=dict, max_length=12)
 
@@ -198,6 +232,17 @@ class ProposedMatter(BaseModel):
 class ProposedMatters(BaseModel):
     model_config = ConfigDict(extra="forbid")
     matters: list[ProposedMatter] = Field(max_length=24)
+
+
+class TypedProposedMatter(ProposedMatter):
+    subtype: str = Field(min_length=1, max_length=60)
+    subject_role: Literal["fundraiser", "investor", "buyer", "target", "issuer", "actor"]
+    status: Literal["reported", "planned", "denied", "committed", "conditional"]
+
+
+class TypedProposedMatters(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    matters: list[TypedProposedMatter] = Field(max_length=24)
 
 
 def names_in_document(subject, text):
@@ -214,12 +259,16 @@ def names_in_document(subject, text):
 
 
 def clean_body(text):
-    text = text[:12000]
     # 仅删有明确界限的站内生成解读，普通正文和日期保留。
-    text = re.sub(r"AI投资人解读.*?(?=投资界（|投资界\(|文章来源：)", "", text, flags=re.S)
+    text = re.sub(
+        r"AI投资人解读.*?(?=投资界（|投资界\(|文章来源：)",
+        lambda m: " " * len(m.group()),
+        text,
+        flags=re.S,
+    )
     for marker in ("相关阅读", "相关推荐", "相关文章", "精彩推荐", "你可能也喜欢"):
         text = text.split(marker, 1)[0]
-    return text.strip()
+    return text.rstrip()
 
 
 def classification(action):
@@ -297,9 +346,11 @@ def infer_fields(action, subtype):
         fields["round"] = {"value": round_match.group(), "quote": action, "role": "round"}
     if subtype == "company_financing":
         investors = []
-        for match in re.finditer(r"由([^。；;]{1,100}?)(?:联合领投|领投|跟投|参与投资)", action):
+        for match in re.finditer(
+            r"(?:由|[，,])([^。；;，,]{1,100}?)(?:联合领投|领投|跟投|参与投资)", action
+        ):
             investors.extend(
-                re.sub(r"^(?:老股东|新股东|现有股东)\s*", "", v.strip())
+                re.sub(r"^(?:由)?(?:老股东|新股东|现有股东)?\s*", "", v.strip())
                 for v in re.split(r"、|及|和|与", match.group(1))
                 if v.strip()
             )
@@ -309,6 +360,13 @@ def infer_fields(action, subtype):
                 "quote": action,
                 "role": "investors",
             }
+    for role, label in (
+        ("transaction_id", "交易编号|交易标识"),
+        ("project_id", "项目编号|项目代码"),
+    ):
+        identity = re.search(r"(?:" + label + r")[：:]?\s*([A-Za-z0-9_-]+)", action)
+        if identity:
+            fields[role] = {"value": identity.group(1), "quote": action, "role": role}
     match = DATE.search(action)
     if match:
         action_start = next(
@@ -362,9 +420,17 @@ def extract_matters(subject, text):
     names = names_in_document(subject, body)
     matters = []
     local_names = set(names) - {subject.legal_name, *subject.aliases}
+    from backend.app.matter_validation import actor_supported, scoped_status
+
     for block in body.splitlines():
         last_name = None
-        for paragraph in re.split(r"[。；;]+", block):
+        pieces = []
+        for sentence in re.split(r"[。；;]+", block):
+            parts = re.split(
+                r"[，,](?:同时|并且|并(?=向|通过|提交|完成)|另(?:外)?(?:还)?|但)", sentence
+            )
+            pieces.extend(parts)
+        for paragraph in pieces:
             paragraph = paragraph.strip()
             valid_mentions = list(subject_mentions(names, subject.legal_name, paragraph))
             name = valid_mentions[0][1] if valid_mentions else None
@@ -373,6 +439,13 @@ def extract_matters(subject, text):
                 r"(?:(?:通知书|公告|报告)显示[，,]?)?(?:该公司|公司|其|本轮)", paragraph
             )
             if name is None and pronoun and last_name:
+                name = last_name
+            elif (
+                name is None
+                and last_name
+                and paragraph in pieces
+                and re.match(r"向|通过|提交|完成|拟|否认", paragraph)
+            ):
                 name = last_name
             elif name is None:
                 last_name = None
@@ -393,6 +466,18 @@ def extract_matters(subject, text):
                         old.fields = infer_fields(old.action, old.subtype)
                 continue
             category, subtype = classified
+            if name not in paragraph:
+                begin, end = block.find(name), block.find(paragraph) + len(paragraph)
+                if begin < 0 or end - begin > 1500:
+                    continue
+                paragraph = block[begin:end]
+            if not actor_supported(name, paragraph, subtype):
+                if subtype == "acquisition_target" and actor_supported(
+                    name, paragraph, "outbound_investment"
+                ):
+                    category, subtype = "financing_cap_table", "outbound_investment"
+                else:
+                    continue
             action_pos = next(
                 (
                     re.search(pattern, paragraph, re.I).start()
@@ -420,21 +505,7 @@ def extract_matters(subject, text):
                 or name in getattr(subject, "legal_aliases", ())
                 else f"brand:{compact(name)}"
             )
-            status = (
-                "denied"
-                if re.search(r"否认|不属实|澄清|更正|尚未|未完成", paragraph)
-                else "planned"
-                if re.search(r"拟|计划|预计|将于", paragraph)
-                else "committed"
-                if subtype == "fund_commitment"
-                else "reported"
-            )
-            if subtype == "ipo_listing_plan":
-                status = "planned"
-            if subtype.startswith("ipo_") and re.search(r"否认|不属实|澄清", block):
-                status = "denied"
-            if re.search(r"若|如果|如发生|之日起自动", paragraph):
-                status = "conditional"
+            status = scoped_status(paragraph, subtype)
             fields = infer_fields(paragraph, subtype)
             if status in {"planned", "denied", "conditional"} and "date" in fields:
                 fields["date"].pop("iso", None)
@@ -484,100 +555,163 @@ def extract_matters(subject, text):
     return distinct
 
 
-def validate_proposals(subject, text, proposals):
-    """按事项和字段独立校验；无依据字段剔除，有依据事项不整篇吞掉。"""
+def validate_proposals(subject, text, proposals, *, legacy_compat=True):
+    """候选生成不参与验证；仅检验定位、主体角色、动作和逐字段证据。"""
+    from backend.app.matter_validation import (
+        VALIDATION_VERSION,
+        action_supported,
+        actor_supported,
+        normalize_amount,
+        scoped_status,
+        validate_field,
+    )
+
     body = clean_body(text)
     names = names_in_document(subject, body)
     accepted, rejected = [], []
-    for index, raw in enumerate(proposals.get("matters", [])[:24]):
+    raw_matters = proposals.get("matters", []) if isinstance(proposals, dict) else []
+    if not isinstance(raw_matters, list):
+        return [], [{"reason": "invalid_matter_schema"}]
+    for index, raw in enumerate(raw_matters[:24]):
+        # 字段格式错误仅拒绝该字段，不能吞掉有依据的整项。
+        if not isinstance(raw, dict):
+            rejected.append({"index": index, "reason": "invalid_matter_schema"})
+            continue
+        raw_fields = raw.get("fields", {})
+        bad_fields, fields = [], {}
+        if isinstance(raw_fields, dict):
+            for key, item in list(raw_fields.items())[:12]:
+                try:
+                    fields[key] = ProposedField.model_validate(item)
+                except ValueError:
+                    bad_fields.append(key)
         try:
-            proposal = ProposedMatter.model_validate(raw)
+            proposal_class = ProposedMatter if legacy_compat else TypedProposedMatter
+            proposal = proposal_class.model_validate({**raw, "fields": fields})
         except ValueError:
             rejected.append({"index": index, "reason": "invalid_matter_schema"})
             continue
-        if proposal.action_quote not in body or proposal.subject not in names:
+        quote = proposal.action_quote
+        mentions = {name for _, name in subject_mentions(names, subject.legal_name, quote)}
+        if quote not in body or proposal.subject not in mentions:
             rejected.append({"index": index, "reason": "unsupported_subject_or_action"})
             continue
-        local_subject = SimpleNamespace(
-            legal_name=subject.legal_name,
-            aliases=names,
-            legal_aliases=getattr(subject, "legal_aliases", ()),
-        )
-        candidates = extract_matters(local_subject, proposal.action_quote)
-        for candidate in candidates:
-            if candidate.subject in set(names) - {subject.legal_name, *subject.aliases}:
-                candidate.scope = "legal_entity"
-        if not candidates:
-            rejected.append({"index": index, "reason": "action_not_supported_by_contract"})
+        # v1 封存响应没有类型，只能在兼容入口解析类型；v2 类型直接独立校验。
+        legacy = classification(quote) if proposal.subtype is None else None
+        subtype = proposal.subtype or (legacy[1] if legacy else None)
+        category = next((c for c, st, _ in ACTIONS if st == subtype), None)
+        if (
+            not category
+            or not action_supported(quote, subtype)
+            or not actor_supported(proposal.subject, quote, subtype)
+        ):
+            rejected.append({"index": index, "reason": "action_or_actor_not_supported"})
             continue
-        for candidate in candidates:
-            # 取原段落保留否认等相邻语境，不能只引用肯定半句。
-            context = next(
-                (p for p in body.splitlines() if proposal.action_quote in p), proposal.action_quote
+        expected_role = (
+            "fundraiser"
+            if subtype == "company_financing"
+            else "buyer"
+            if subtype == "outbound_investment"
+            else "target"
+            if subtype == "acquisition_target"
+            else "issuer"
+            if subtype.startswith("ipo_")
+            else "actor"
+        )
+        if proposal.subject_role and proposal.subject_role not in {
+            expected_role,
+            "investor" if subtype in {"outbound_investment", "fund_commitment"} else expected_role,
+        }:
+            rejected.append({"index": index, "reason": "subject_role_mismatch"})
+            continue
+        local_names = set(names) - {subject.legal_name, *subject.aliases}
+        scope = (
+            "legal_entity"
+            if proposal.subject
+            in {subject.legal_name, *local_names, *getattr(subject, "legal_aliases", ())}
+            else f"brand:{compact(proposal.subject)}"
+        )
+        if (proposal.category and proposal.category != category) or (
+            proposal.scope and proposal.scope != scope
+        ):
+            rejected.append({"index": index, "reason": "category_or_scope_mismatch"})
+            continue
+        context = next((p for p in body.splitlines() if quote in p), quote)
+        status = scoped_status(quote, subtype)
+        # 紧邻明确指回“该消息”的否认保留；其他事项的否认不传播。
+        suffix = context[context.find(quote) + len(quote) :]
+        if re.match(
+            r"[。；;\s]*" + re.escape(proposal.subject) + r"否认(?:该消息|上述消息)", suffix
+        ):
+            status = "denied"
+            quote = context[context.find(quote) :].split("\n", 1)[0][:1500]
+        targeted_denial = re.match(
+            r"[，,；;。\s]*(?:但|然而)[，,]?(?:该公司|公司|"
+            + re.escape(proposal.subject)
+            + r")?(?:已)?(?:否认|澄清)([^。；;]*)",
+            suffix,
+        )
+        if targeted_denial and (
+            (
+                subtype.startswith("ipo_")
+                and re.search(r"上市|聆讯|IPO|该消息", targeted_denial.group(1))
             )
-            if re.search(r"否认|不属实|澄清", context):
-                candidate.status = "denied"
-                candidate.issues.append("denial_or_correction_requires_review")
-            if "人工智能生成" in body or "AI生成" in body:
-                candidate.issues.append("generated_source_not_fact")
-            if candidate.status == "denied" and "date" in candidate.fields:
-                candidate.fields["date"].pop("iso", None)
-                candidate.fields["date"]["role"] = "disclosed"
-            for key, value in proposal.fields.items():
-                expected = candidate.fields.get(value.role)
-                if value.role in {"occurred", "disclosed", "planned"}:
-                    expected = candidate.fields.get("date")
-                if not (
-                    value.quote in body
-                    and value.value in value.quote
-                    and expected
-                    and compact(value.value) == compact(expected["value"])
-                    and value.role == expected["role"]
-                ):
-                    candidate.issues.append(f"rejected_field:{key}")
-            accepted.append(candidate)
+            or (
+                subtype == "company_financing"
+                and re.search(r"融资|该消息", targeted_denial.group(1))
+            )
+        ):
+            status = "denied"
+            quote = context[
+                context.find(proposal.action_quote) : context.find(proposal.action_quote)
+                + len(proposal.action_quote)
+                + targeted_denial.end()
+            ]
+        issues = [f"rejected_field:{k}" for k in bad_fields]
+        if proposal.status and proposal.status != status:
+            issues.append("status_corrected_from_context")
+        if "人工智能生成" in body or "AI生成" in body:
+            issues.append("generated_source_not_fact")
+        if status == "denied":
+            issues.append("denial_or_correction_requires_review")
+        verified = {}
+        for key, item in proposal.fields.items():
+            ok, reason = validate_field(item.role, item.value, item.quote, quote, subtype)
+            normalized = normalize_amount(item.value)
+            if item.currency and normalized.get("currency") != item.currency:
+                ok, reason = False, "currency_not_supported"
+            if not ok:
+                issues.append(f"rejected_field:{key}")
+                rejected.append({"index": index, "field": key, "reason": reason})
+                continue
+            field_key = "date" if item.role in {"occurred", "disclosed", "planned"} else item.role
+            value = {
+                "value": item.value,
+                "quote": item.quote,
+                "role": item.role,
+                "quote_start": body.find(quote) + quote.find(item.quote),
+                "quote_end": body.find(quote) + quote.find(item.quote) + len(item.quote),
+                "validation_version": VALIDATION_VERSION,
+                "coordinate_space": "stored_excerpt",
+                "normalized": normalized,
+            }
+            if item.role == "occurred" and status == "reported":
+                match = DATE.fullmatch(item.value)
+                if match and match.group(1):
+                    try:
+                        value["iso"] = date(*map(int, match.groups())).isoformat()
+                    except ValueError:
+                        pass
+            verified[field_key] = value
+        if not verified.get("date", {}).get("iso"):
+            issues.append("occurrence_date_unknown")
+        accepted.append(
+            Matter(category, subtype, proposal.subject, scope, quote, status, verified, issues)
+        )
     return accepted, rejected
 
 
 def compatible(left, right):
-    """只有明确同主体/阶段及辨别字段时才关联；相同类别不足以归并。"""
-    if (left.category, left.subtype, left.scope) != (right.category, right.subtype, right.scope):
-        return False
-    if left.status != right.status and right.status != "denied":
-        return False
-    a, b = left.fields, right.fields
-    if (
-        a.get("date", {}).get("iso")
-        and b.get("date", {}).get("iso")
-        and a["date"]["iso"] != b["date"]["iso"]
-    ):
-        return False
-    if left.subtype.startswith("ipo_"):
+    from backend.app.matter_comparison import compare_matters
 
-        def markets(t):
-            return (
-                "港"
-                if re.search(r"港交所|香港|赴港|港股", t)
-                else "A"
-                if re.search(r"A股|创业板|科创板|证监局", t)
-                else None
-            )
-
-        return markets(left.action) == markets(right.action) and markets(left.action) is not None
-    if left.subtype == "company_financing":
-        if not (a.get("round") and b.get("round")):
-            return bool(
-                a.get("financing")
-                and b.get("financing")
-                and compact(a["financing"]["value"]) == compact(b["financing"]["value"])
-                and set(a.get("investors", {}).get("value", "").split("、"))
-                & set(b.get("investors", {}).get("value", "").split("、")) - {""}
-            )
-        return bool(
-            a.get("round")
-            and b.get("round")
-            and compact(a["round"]["value"]) == compact(b["round"]["value"])
-            and a.get("financing")
-            and b.get("financing")
-        )
-    return compact(left.action) == compact(right.action)
+    return compare_matters(left, right).same_matter

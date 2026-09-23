@@ -1821,6 +1821,11 @@ def _event_out(
     )
     evidence_items: list[EvidenceOut] = []
     for evidence in evidence_rows:
+        if (evidence.display_detail_payload or {}).get("schema_version") == "matter-v1":
+            from backend.app.evidence_integrity import usable_matter_evidence
+
+            if not usable_matter_evidence(session, evidence):
+                continue
         if is_tender_event(event) and event.visibility_scope == PLATFORM_SHARED_SCOPE:
             if not usable_shared_evidence(evidence):
                 continue
@@ -2039,16 +2044,52 @@ def _event_out(
             )
         )
         for support in support_rows:
+            effective_status = support.support_status
             reason_codes = support.support_reasons
+            assessed_at = support.assessed_at
+            policy_version = support.policy_version
+            if event.fingerprint_version == "matter-v1":
+                from backend.app.evidence_integrity import evidence_signature, excerpt_hash_status
+
+                current_evidence = next(
+                    e for e in evidence_rows if e.id == support.event_evidence_id
+                )
+                hash_status = excerpt_hash_status(current_evidence)
+                if hash_status not in {
+                    "exact",
+                    "legacy_matter_json_string",
+                }:
+                    continue
+                signature = support.deterministic_checks.get("evidence_signature")
+                if signature is None and hash_status == "legacy_matter_json_string":
+                    from backend.app.fact_support import (
+                        SUPPORT_POLICY_VERSION,
+                        assess_legacy_matter_support,
+                    )
+
+                    fact = next((f for f in fact_rows if f.id == support.event_fact_id), None)
+                    assessment = (
+                        assess_legacy_matter_support(session, event, fact, current_evidence)
+                        if fact is not None
+                        else None
+                    )
+                    if assessment is None:
+                        continue
+                    effective_status = assessment.status
+                    reason_codes = [*assessment.reasons, "legacy_support_read_revalidated"]
+                    assessed_at = utc_now()
+                    policy_version = SUPPORT_POLICY_VERSION
+                elif signature != evidence_signature(current_evidence):
+                    continue
             if not isinstance(reason_codes, list):
                 reason_codes = []
             supports_by_fact.setdefault(support.event_fact_id, []).append(
                 FactEvidenceSupportOut(
                     evidence_id=support.event_evidence_id,
-                    support_status=support.support_status,
+                    support_status=effective_status,
                     reason_codes=[str(reason) for reason in reason_codes],
-                    policy_version=support.policy_version,
-                    assessed_at=support.assessed_at,
+                    policy_version=policy_version,
+                    assessed_at=assessed_at,
                 )
             )
     fact_ledger = []
@@ -2084,13 +2125,80 @@ def _event_out(
             observation.date_precision = "unknown"
     is_financing = event.fingerprint_version in {"financing-v1", "financing-v2"}
     is_matter = event.fingerprint_version == "matter-v1"
+    effective_facts = event.facts
+    effective_summary = event.summary
+    if is_matter:
+        # 原始 Event 不改写；当前展示仅由仍可见、当前版本且有支持的字段构建。
+        from backend.app.matter_validation import equivalent_value
+        from backend.app.research_matters import FIELD_LABELS, LABELS, STATUS_LABELS
+
+        current_claims = []
+        for item in matters:
+            current_claims.extend(
+                [
+                    ("事项阶段", LABELS.get(item.get("subtype"))),
+                    ("动作状态", STATUS_LABELS.get(item.get("status"))),
+                ]
+            )
+            current_claims.extend(
+                (FIELD_LABELS.get(k, k), v["value"])
+                for k, v in item.get("fields", {}).items()
+                if k != "date"
+            )
+        fact_ledger = [
+            f
+            for f in fact_ledger
+            if f.evidence_supports
+            and any(
+                name == f.name and value and equivalent_value(value, f.value)
+                for name, value in current_claims
+            )
+        ]
+        effective_facts = [
+            {"name": f.name, "value": f.value, "unit": f.unit}
+            for f in fact_ledger
+            if f.support_status == "supported"
+        ]
+        effective_summary = "；".join(f"{f['name']}：{f['value']}" for f in effective_facts) or (
+            "现有材料存在否认、冲突或尚无受支持字段，暂不形成当前事实。"
+        )
+        analysis_output = research_analysis_output = None
+    matter_dates = {
+        m["fields"]["date"]["iso"]
+        for m in matters
+        if m.get("fields", {}).get("date", {}).get("iso")
+        and m["fields"]["date"].get("role") == "occurred"
+    }
+    matter_occurred = (
+        datetime.fromisoformat(next(iter(matter_dates))).replace(tzinfo=UTC)
+        if len(matter_dates) == 1
+        else None
+    )
+    temporal = (
+        "future_or_planned"
+        if any(m.get("temporal_status") == "future_or_planned" for m in matters)
+        else "historical"
+        if any(m.get("temporal_status") == "historical" for m in matters)
+        else "recent"
+        if matters and all(m.get("temporal_status") == "recent" for m in matters)
+        else "date_unknown"
+    )
+    # 有反证但无正向事实，不等于证据已经撤回；仍应展示冲突账本及原文。
     withdrawn_matter = is_matter and not matters
     withdrawn_financing = is_financing and not financing
     return EventOut(
+        information_status="curator_confirmed"
+        if curated
+        else "source_supported_unconfirmed"
+        if is_matter and effective_facts
+        else "unconfirmed"
+        if is_matter
+        else None,
+        temporal_status=temporal if is_matter else None,
         id=event.id,
         event_type=event.event_type,
         event_subtype=event.event_subtype,
-        occurred_at=event.occurred_at,
+        occurred_at=matter_occurred if is_matter else event.occurred_at,
         occurred_on=current_observation.occurred_on if current_observation else None,
         fact_version=current_observation.fact_version if current_observation else None,
         display_kind=display_kind,
@@ -2113,9 +2221,11 @@ def _event_out(
         summary=(
             "该版本证据已撤回或不可用，暂不作为已核实事实展示。"
             if withdrawn_tender or withdrawn_financing or withdrawn_matter
-            else event.summary
+            else effective_summary
         ),
-        facts=[] if withdrawn_tender or withdrawn_financing or withdrawn_matter else event.facts,
+        facts=[]
+        if withdrawn_tender or withdrawn_financing or withdrawn_matter
+        else effective_facts,
         uncertainties=event.uncertainties,
         status=event.status,
         publication_route=event.publication_route,

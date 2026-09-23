@@ -110,16 +110,26 @@ def test_curated_matter_maintenance_conflict_no_date_idempotency_and_permissions
             )
         )
         event, created, doc, quality = ingest(
-            session, user, company, "示例山海完成近一亿元A轮融资。", "https://example.com/same"
+            session,
+            user,
+            company,
+            "示例山海完成近一亿元A轮融资，由示例机构参与投资。",
+            "https://example.com/same",
         )
         assert event.id == baseline.id and not created and not quality.eligible
         assert quality.matters_linked == 1
         event2, created2, _, _ = ingest(
             session, user, company, "示例山海完成近两亿元A轮融资。", "https://example.com/change"
         )
-        assert event2.id == event.id and not created2
+        assert event2.id != event.id and created2  # 无锚点不合并，日期未知保留为独立线索
         count = session.scalar(select(func.count()).select_from(EventObservation))
-        ingest(session, user, company, "示例山海完成近一亿元A轮融资。", "https://example.com/same")
+        ingest(
+            session,
+            user,
+            company,
+            "示例山海完成近一亿元A轮融资，由示例机构参与投资。",
+            "https://example.com/same",
+        )
         assert session.scalar(select(func.count()).select_from(EventObservation)) == count
         assert (
             baseline.facts == facts
@@ -134,7 +144,7 @@ def test_curated_matter_maintenance_conflict_no_date_idempotency_and_permissions
             session, user, company_id, RefreshPolicy(), auto_refresh_enabled=False
         )
         shown = next(e for e in detail.events if e.id == baseline.id)
-        assert {m.kind for m in shown.matter_observations} == {"same_facts", "conflicting"}
+        assert {m.kind for m in shown.matter_observations} == {"same_facts"}
         assert all(not m.confirmed for m in shown.matter_observations)
     with Session(database.app) as session:
         set_request_context(session, BETA_USER_ID, BETA_TENANT_ID)
@@ -182,12 +192,12 @@ def test_multiple_matters_ipo_dedupe_withdrawal_and_old_source(database, tmp_pat
         other, created, _, _ = ingest(
             session, user, company, "示例山海获得港交所聆讯通过。", "https://example.com/b", day
         )
-        assert other.id == first.id and not created
+        assert other.id != first.id and created  # 仅相同市场/阶段不能证明同一申请项目
         assert (
             ingest(session, user, company, "示例山海正式挂牌上市。", "https://example.com/undated")[
                 0
             ]
-            is None
+            is not None
         )
         assert (
             ingest(
@@ -198,7 +208,7 @@ def test_multiple_matters_ipo_dedupe_withdrawal_and_old_source(database, tmp_pat
                 "https://example.com/old",
                 datetime(2020, 1, 1, tzinfo=UTC),
             )[0]
-            is None
+            is not None
         )
         for row in session.scalars(select(EventEvidence).where(EventEvidence.event_id == first.id)):
             row.display_allowed = False
@@ -336,6 +346,24 @@ def test_worker_cached_professional_body_model_budget_and_restart(
                 "fetch_calls"
             ] == int(not cached_body)
             assert rows[0].input_tokens == 100 and rows[0].estimated_cost == Decimal("0.00028")
+            # 只改本地校验版本，复用已结算输出，不派发第二次模型请求。
+            from unittest.mock import patch
+
+            from backend.app.research_extraction import document_matters
+
+            document = session.scalar(
+                select(RawDocument).where(RawDocument.canonical_url == "https://example.com/a")
+            )
+            with patch(
+                "backend.app.research_extraction.VALIDATION_VERSION", "fixture-validation-v2"
+            ):
+                document_matters(session, user, job, subject, document, policy, model)
+            assert model.calls == 1
+            assert any(
+                r.get("outcome") == "cache_replay"
+                and r.get("validation_version") == "fixture-validation-v2"
+                for r in job.coverage["matter_dispositions"]
+            )
             assert "source_body" not in str(job.coverage)
             assert (
                 session.scalar(

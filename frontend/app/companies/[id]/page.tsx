@@ -154,7 +154,7 @@ function EventCard({
   const beforeValue = event.facts.find((fact) => fact.name === "变更前")?.value;
   const afterValue = event.facts.find((fact) => fact.name === "变更后")?.value;
   const publicationLabel = unconfirmed
-    ? "未确认线索"
+    ? (event.information_status === "source_supported_unconfirmed" ? "原文支持的未确认事项" : "未确认线索")
     : isCurated
       ? "人工整理、负责人已复核"
     : privateRecord
@@ -277,6 +277,7 @@ function EventCard({
           <dd>{publicationLabel}</dd>
         </div>
       </dl>
+      {event.temporal_status ? <p className="privacy-note">时间口径：{({ historical: "历史资料补充，不代表近期新事件", date_unknown: "发生时间或来源时间未知，不计入近期变化", recent: "近期发生且有来源日期的事项", future_or_planned: "计划或未来时间，不计入已发生事项" } as Record<string,string>)[event.temporal_status] ?? "时间待确认"}。</p> : null}
       {unconfirmed ? (
         <p className="privacy-note">
           该信息由系统自动保留，尚未升级为已确认事实，也不会进入公司风险结论或快照。
@@ -423,7 +424,7 @@ function EventCard({
       ) : null}
       {(event.matter_observations ?? []).length > 0 ? (
         <section className="evidence">
-          <h4>程序补充的事项材料 · 待核实</h4>
+          <h4>程序补充的事项材料 · 原文支持与事实确认分开</h4>
           <p>新增来源和字段差异单独保留，原人工确认资料保持不变。</p>
           {event.matter_observations!.map((item) => (
             <details key={item.evidence_id}>
@@ -432,7 +433,8 @@ function EventCard({
               <ul>{Object.entries(item.fields).map(([key, value]) => (
                 <li key={key}>{item.field_labels[key] ?? key}：{value.value}{key === "date" ? `（${({ occurred: "发生日期", disclosed: "披露日期", planned: "计划日期" } as Record<string, string>)[value.role] ?? "日期口径待核"}）` : ""}</li>
               ))}</ul>
-              <p>实际发生日：{item.fields.date?.iso ?? "未知"}。未披露或未通过校验的字段保持未知。</p>
+              <p>实际发生日：{item.fields.date?.iso ?? "未知"}；来源发布日期：{item.source_published_on ?? "未知"}。未披露或未通过校验的字段保持未知。</p>
+              <p>材料类型：{({ official_publication: "官方公开材料", staff_report: "署名报道", syndicated: "转载材料", user_post: "用户发布内容", generated_commentary: "AI 生成或解读内容", unclassified_public_page: "公开页面，发布类型待识别" } as Record<string,string>)[item.source_channel ?? ""] ?? "来源类型待识别"}。引文支持不等于事实已确认。</p>
               {item.issues.some((issue) => issue.startsWith("rejected_field:")) ? <p>部分提议字段未通过原文与语义校验，已剔除。</p> : null}
               <blockquote>{item.excerpt}</blockquote>
               <p>材料来源：{item.source_title}；发现时间：{formatDate(item.observed_at)}</p>

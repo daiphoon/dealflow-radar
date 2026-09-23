@@ -12,6 +12,7 @@ from uuid import NAMESPACE_URL, uuid5
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.app.evidence_integrity import evidence_signature, excerpt_hash_status
 from backend.app.models import (
     EntityMention,
     Event,
@@ -107,7 +108,7 @@ def _date_tokens(value: str) -> set[str]:
     }
 
 
-def _source_evidence(session: Session, evidence: EventEvidence) -> EventEvidence:
+def _source_evidence(session: Session, evidence: EventEvidence) -> EventEvidence | None:
     current = evidence
     visited = {current.id}
     for _ in range(8):
@@ -115,10 +116,15 @@ def _source_evidence(session: Session, evidence: EventEvidence) -> EventEvidence
             return current
         source = session.get(EventEvidence, current.source_event_evidence_id)
         if source is None or source.id in visited:
-            return current
+            return None
+        if (
+            not source.evidence_excerpt.startswith(current.evidence_excerpt)
+            or current.span_hash != source.span_hash
+        ):
+            return None
         visited.add(source.id)
         current = source
-    return current
+    return None
 
 
 def _source_date(evidence: EventEvidence, document: RawDocument | None) -> date | None:
@@ -141,16 +147,21 @@ def _evidence_context(
     origin = _source_evidence(session, evidence)
     document = (
         session.get(RawDocument, origin.raw_document_id)
-        if origin.raw_document_id is not None
+        if origin is not None and origin.raw_document_id is not None
         else None
     )
-    excerpt = evidence.evidence_excerpt.strip()
+    excerpt = evidence.evidence_excerpt
     title = (evidence.display_title or (document.title if document is not None else "")).strip()
 
     if evidence.source_event_evidence_id is not None:
-        origin_hash_valid = bool(origin.evidence_excerpt) and (
-            _sha256(origin.evidence_excerpt) == origin.span_hash
-        )
+        source_text = (document.payload or {}).get("excerpt") if document is not None else None
+        origin_hash_valid = origin is not None and excerpt_hash_status(
+            origin, source_text if isinstance(source_text, str) else None
+        ) in {"exact", "legacy_matter_json_string"}
+        if origin is None:
+            return _EvidenceContext(
+                excerpt, title, False, "unknown", None, {"kind": "invalid_reference_chain"}
+            )
         display_is_bounded_excerpt = bool(excerpt) and origin.evidence_excerpt.startswith(excerpt)
         citation_complete = (
             origin_hash_valid
@@ -163,10 +174,23 @@ def _evidence_context(
             "origin_span_hash": origin.span_hash,
         }
     else:
-        citation_complete = bool(excerpt) and _sha256(excerpt) == evidence.span_hash
+        source_text = (document.payload or {}).get("excerpt") if document is not None else None
+        hash_status = excerpt_hash_status(
+            evidence, source_text if isinstance(source_text, str) else None
+        )
+        citation_complete = hash_status in {"exact", "legacy_matter_json_string"}
         locator = {
             "kind": "excerpt",
             "span_hash": evidence.span_hash,
+            "source_content_hash": document.content_hash if document else None,
+            "source_excerpt_start": source_text.find(excerpt)
+            if isinstance(source_text, str)
+            else None,
+            "source_excerpt_end": source_text.find(excerpt) + len(excerpt)
+            if isinstance(source_text, str) and excerpt in source_text
+            else None,
+            "source_windows": document.payload.get("source_windows", []) if document else [],
+            "coordinate_space": "stored_excerpt",
         }
 
     subject_status = "unknown"
@@ -256,6 +280,7 @@ def _assess(
 
     checks: dict[str, object] = {
         "citation_complete": context.citation_complete,
+        "evidence_signature": evidence_signature(evidence),
         "subject_status": context.subject_status,
         "exact_value_match": exact_value_match,
         "name_match": name_match,
@@ -281,6 +306,13 @@ def _assess(
             checks,
             ["evidence_points_to_different_company"],
         )
+    from backend.app.matter_validation import assess_matter_fact
+
+    typed = assess_matter_fact(fact, evidence, context)
+    if typed is not None:
+        status, typed_checks, reasons = typed
+        checks.update(typed_checks)
+        return _Assessment(status, locator, checks, reasons)
     if duplicate_name_conflict:
         return _Assessment(
             "conflicting",
@@ -348,8 +380,39 @@ def _assess(
     )
 
 
+def assess_legacy_matter_support(session, event, fact, evidence):
+    """兼容旧账本的只读计算；不修改旧哈希、支持行或原始事实。"""
+    if excerpt_hash_status(evidence) != "legacy_matter_json_string":
+        return None
+    return _assess(session, event, fact, evidence, duplicate_name_conflict=False)
+
+
 def materialize_event_fact_ledger(session: Session, event: Event) -> list[EventFact]:
-    parsed = [parts for value in (event.facts or []) if (parts := _fact_parts(value)) is not None]
+    source_facts = list(event.facts or [])
+    if event.fingerprint_version == "matter-v1":
+        from backend.app.research_matters import FIELD_LABELS, LABELS, STATUS_LABELS
+
+        for evidence in session.scalars(
+            select(EventEvidence).where(EventEvidence.event_id == event.id)
+        ):
+            if not evidence.display_allowed:
+                continue
+            item = (evidence.display_detail_payload or {}).get("matter_observation", {})
+            extra = [
+                {"name": "事项阶段", "value": LABELS.get(item.get("subtype"), ""), "unit": None},
+                {
+                    "name": "动作状态",
+                    "value": STATUS_LABELS.get(item.get("status"), ""),
+                    "unit": None,
+                },
+            ]
+            extra += [
+                {"name": FIELD_LABELS.get(k, k), "value": v["value"], "unit": None}
+                for k, v in item.get("fields", {}).items()
+                if k != "date"
+            ]
+            source_facts.extend(v for v in extra if v["value"] and v not in source_facts)
+    parsed = [parts for value in source_facts if (parts := _fact_parts(value)) is not None]
     if not parsed:
         return []
     keys = [fact_key(*parts) for parts in parsed]

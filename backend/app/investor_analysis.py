@@ -105,6 +105,8 @@ def _event_fact(event: Event, name: str) -> str | None:
 
 
 def _analysis_request(session: Session, event: Event) -> InvestorChangeAnalysisRequest | None:
+    if event.fingerprint_version == "matter-v1":
+        return None  # 有争议的候选不复用历史摘要生成解读。
     if is_tender_event(event):
         return _tender_analysis_request(session, event)
     company = session.get(Company, event.company_id)
@@ -291,6 +293,8 @@ def _research_analysis_request(
     session: Session,
     event: Event,
 ) -> ResearchCandidateAnalysisRequest | None:
+    if event.fingerprint_version == "matter-v1":
+        return None
     company = session.get(Company, event.company_id)
     if company is None or not company.credit_code:
         return None

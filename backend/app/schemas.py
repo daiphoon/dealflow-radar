@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -187,6 +187,13 @@ class CuratedVersionOut(BaseModel):
 
 
 class MatterObservationOut(BaseModel):
+    temporal_status: str = "date_unknown"
+    source_channel: str = "unclassified_public_page"
+    source_published_on: date | None = None
+    source_quality: str | None = None
+    information_status: str = "source_supported_unconfirmed"
+    processing_version: str | None = None
+    merge_decision: str | None = None
     kind: Literal["initial", "same_facts", "correction_candidate", "conflicting", "incomplete"]
     fact_version: str
     category: str
@@ -197,7 +204,7 @@ class MatterObservationOut(BaseModel):
     subject: str
     scope: str
     field_labels: dict[str, str]
-    fields: dict[str, dict[str, str]]
+    fields: dict[str, dict[str, Any]]
     issues: list[str]
     excerpt: str
     source_url: str
@@ -208,6 +215,8 @@ class MatterObservationOut(BaseModel):
 
 
 class EventOut(BaseModel):
+    information_status: str | None = None
+    temporal_status: str | None = None
     id: UUID
     event_type: str
     event_subtype: str
