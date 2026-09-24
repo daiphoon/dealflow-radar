@@ -47,6 +47,20 @@ def test_same_content_reuses_report_and_reuse_key_remains_idempotent(client, mig
     assert client.get("/api/v1/me/usage", headers=PERSONAL_HEADERS).json()["reports"]["used"] == 2
 
 
+def test_report_renders_changed_title_without_reusing_old_markdown(client, migrated_app):
+    event_id = _add_shared_event(migrated_app, "report-title-change")
+    path = f"/api/v1/me/companies/{SHARED_COMPANY_ID}/reports"
+    first = client.post(path, headers=PERSONAL_HEADERS, json={"idempotency_key": "7" * 64})
+    assert first.status_code == 200
+    with migrated_app.state.session_factory() as session:
+        session.get(Event, event_id).title = "更正后的事项标题"
+        session.commit()
+    second = client.post(path, headers=PERSONAL_HEADERS, json={"idempotency_key": "8" * 64})
+    assert second.status_code == 200
+    assert second.json()["id"] != first.json()["id"]
+    assert "更正后的事项标题" in second.json()["markdown"]
+
+
 def test_explicit_archive_and_restricted_history(client, migrated_app):
     from backend.app.models import EventEvidence
 
