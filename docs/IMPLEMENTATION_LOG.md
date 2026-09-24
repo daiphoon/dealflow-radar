@@ -1032,3 +1032,11 @@
 - 实际命令：先运行新增回归保留 5 项失败，再运行定向回归；私有 `pr-review-tests.py` 在全新临时 PostgreSQL 执行迁移/漂移/播种/应用角色准备及完整 `pytest -q -ra`；Node 24.21.0 容器构建、`npm test`、`npm run typecheck`、npm 11.9.0 audit；Ruff/格式、`git diff --check`、42 个路径的密钥模式和私有边界核对。
 - 测试结果：完整后端 1094 通过、19 条件跳过（1113 项），前端 28 通过、类型和生产构建通过、依赖审计 0 漏洞。新增回归与全量验证日志保留在忽略目录 `data/private/e410-local/pr-*`，不会提交。原封存回放结论不变，严格交付仍 0/4，不计为新独立业务验收。
 - 交付边界：分支 `codex/delivery-loop-local`，原 Node 提交 `778a15c` 与本轮改造组成独立 PR。CI 以该 PR 的提交结果为准；创建 PR 后停止，不合并、不部署、不启动生产诊断 MCP，不进行新真实研究或生产数据库操作。
+
+## 2026-09-25｜PR-B 合并审查补正
+
+- 任务：修正报告复用未覆盖标题更正的问题；只改变报告指纹，不改变回访语义。
+- 关键文件：`backend/app/personal_features.py`、`tests/integration/test_integrated_returns.py`、`docs/19-release-handoff.md`。
+- 实际命令：新增用例先执行失败；`.venv/bin/pytest -q tests/integration/test_integrated_returns.py tests/integration/test_personal_changes_reports.py`、`.venv/bin/pytest -q`、Ruff/格式与 `git diff --check`。
+- 测试结果：定向 9 通过；本地完整 915 通过、224 条件跳过（未接 PostgreSQL）；补正提交的远端 PostgreSQL CI 待核验。
+- 未解决阻塞：PR 依赖重核及远端 CI 前不合并；生产部署、0036 迁移和 MCP 启用仍未授权。

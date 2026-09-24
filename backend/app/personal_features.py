@@ -1609,20 +1609,16 @@ def create_personal_company_report(
         )
     )
     from backend.app.evidence_integrity import hash_canonical_object
-    from backend.app.semantic_content import content_version
 
+    as_of = utc_now()
+    markdown = _report_markdown(company, snapshot, events, as_of, refresh_policy)
+    generated_at = f"- 报告生成时间：{as_of.astimezone(_SHANGHAI).strftime('%Y年%m月%d日 %H:%M')}"
+    # 报告复用按实际正文判断；仅生成时点本身不构成内容变化。
     fingerprint = hash_canonical_object(
         {
             "template": _REPORT_VERSION,
             "company": str(company.id),
-            "name": company.legal_name,
-            "identity": company.identity_status,
-            "identity_basis": company.identity_verification_basis,
-            "credit_code": company.credit_code,
-            "registered_region": company.registered_region,
-            "content": content_version(events),
-            "coverage": str(snapshot.last_checked_at) if snapshot else None,
-            "data_as_of": str(snapshot.data_as_of) if snapshot else None,
+            "rendered_markdown": markdown.replace(generated_at, "- 报告生成时间：<生成时点>", 1),
         }
     )
     same = session.scalar(
@@ -1644,8 +1640,6 @@ def create_personal_company_report(
         output = _safe_report_out(session, user, same, reused=True)
         session.commit()
         return output
-    as_of = utc_now()
-    markdown = _report_markdown(company, snapshot, events, as_of, refresh_policy)
     report = PersonalCompanyReport(
         owner_user_id=user.id,
         company_id=company.id,
