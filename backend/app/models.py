@@ -594,6 +594,21 @@ class PersonalEventViewReceipt(Base):
     )
     event_id: Mapped[UUID] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    semantic_version: Mapped[str | None] = mapped_column(String(64))
+
+
+class PersonalReportRequest(Base):
+    __tablename__ = "personal_report_requests"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "idempotency_key", name="uq_report_request_owner_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    report_id: Mapped[UUID] = mapped_column(
+        ForeignKey("personal_company_reports.id", ondelete="CASCADE")
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(64))
 
 
 class PersonalCompanyReport(Base):
@@ -621,6 +636,7 @@ class PersonalCompanyReport(Base):
     company_legal_name: Mapped[str] = mapped_column(String(240))
     report_version: Mapped[str] = mapped_column(String(32))
     idempotency_key: Mapped[str] = mapped_column(String(64))
+    input_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     title: Mapped[str] = mapped_column(String(280))
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     markdown: Mapped[str] = mapped_column(Text)

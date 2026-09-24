@@ -1,5 +1,11 @@
 # 实施记录
 
+## 2026-09-24：整合交付 PR-B 发布准备
+
+- 任务/文件：W06—W08；语义版本、巡检 dry-run、回访/报告、0036 和前端分页；清单见 [正式交付记录 19](19-release-handoff.md)。
+- 实际命令：uv sync --frozen --all-groups；scripts.verify_integrated_local 定向/完整；Ruff、SQLite 往返、Docker/Compose、前端测试/类型/构建和 Gitleaks。
+- 结果：定向 14 通过；完整后端 1119 通过/19 条件跳过，前端 30 通过；其余发布检查通过。0035 及以前迁移不变；未执行生产迁移、部署或真实研究。
+
 ## 2026-09-24：整合交付 PR-A 发布准备
 
 - 任务：W01—W05 分批交付；基线 a42d13c，迁移保持 0035；文件及部署/回退清单见 [正式交付记录 19](19-release-handoff.md)。
@@ -1012,3 +1018,11 @@
 - 实际命令：先运行新增回归保留 5 项失败，再运行定向回归；私有 `pr-review-tests.py` 在全新临时 PostgreSQL 执行迁移/漂移/播种/应用角色准备及完整 `pytest -q -ra`；Node 24.21.0 容器构建、`npm test`、`npm run typecheck`、npm 11.9.0 audit；Ruff/格式、`git diff --check`、42 个路径的密钥模式和私有边界核对。
 - 测试结果：完整后端 1094 通过、19 条件跳过（1113 项），前端 28 通过、类型和生产构建通过、依赖审计 0 漏洞。新增回归与全量验证日志保留在忽略目录 `data/private/e410-local/pr-*`，不会提交。原封存回放结论不变，严格交付仍 0/4，不计为新独立业务验收。
 - 交付边界：分支 `codex/delivery-loop-local`，原 Node 提交 `778a15c` 与本轮改造组成独立 PR。CI 以该 PR 的提交结果为准；创建 PR 后停止，不合并、不部署、不启动生产诊断 MCP，不进行新真实研究或生产数据库操作。
+
+## 2026-09-25｜PR-B 合并审查补正
+
+- 任务：修正报告复用未覆盖标题更正的问题；只改变报告指纹，不改变回访语义。
+- 关键文件：`backend/app/personal_features.py`、`tests/integration/test_integrated_returns.py`、`docs/19-release-handoff.md`。
+- 实际命令：新增用例先执行失败；`.venv/bin/pytest -q tests/integration/test_integrated_returns.py tests/integration/test_personal_changes_reports.py`、`.venv/bin/pytest -q`、Ruff/格式与 `git diff --check`。
+- 测试结果：定向 9 通过；本地完整 915 通过、224 条件跳过（未接 PostgreSQL）；补正提交的远端 PostgreSQL CI 待核验。
+- 未解决阻塞：PR 依赖重核及远端 CI 前不合并；生产部署、0036 迁移和 MCP 启用仍未授权。

@@ -204,10 +204,12 @@ export function PersonalChangePanel({
   companyId,
   materialChanges,
   baselineEventIds,
+  renderedVersions,
 }: {
   companyId: string;
   materialChanges: Event[];
   baselineEventIds: string[];
+  renderedVersions?: Record<string, string>;
 }) {
   const requestedCompanyId = useRef<string | null>(null);
   const [view, setView] = useState<PersonalCompanyView | null>(null);
@@ -218,14 +220,14 @@ export function PersonalChangePanel({
     requestedCompanyId.current = companyId;
     setView(null);
     setFailed(false);
-    loadPersonalCompanyChanges(companyId)
+    loadPersonalCompanyChanges(companyId, renderedVersions)
       .then((nextView) => {
         if (requestedCompanyId.current === companyId) setView(nextView);
       })
       .catch(() => {
         if (requestedCompanyId.current === companyId) setFailed(true);
       });
-  }, [companyId]);
+  }, [companyId, renderedVersions]);
 
   const presentation = useMemo(() => {
     const allChanges = sortChanges(materialChanges.filter(isMaterialChange));
@@ -244,7 +246,7 @@ export function PersonalChangePanel({
       };
     }
 
-    // 查看水位仅决定时间范围，实际内容始终来自本页同一份已授权列表。
+    // 仅确认本页渲染版本；并发出现的新版本仍保持未读。
     const newEventIds = new Set(view.new_events.map((event) => event.id));
     const newMaterialChanges = allChanges.filter((event) => newEventIds.has(event.id));
     const recentNinetyDayChanges = allChanges.filter((event) =>

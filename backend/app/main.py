@@ -86,6 +86,7 @@ from backend.app.schemas import (
     PersonalCompanyRequestDecisionIn,
     PersonalCompanyRequestOut,
     PersonalCompanyRequestResearchApprovalIn,
+    PersonalCompanyViewIn,
     PersonalCompanyViewOut,
     PersonalInclusionRequestIn,
     PersonalQuotaIncreaseDecisionIn,
@@ -835,11 +836,17 @@ def create_app(
     )
     def personal_company_view(
         company_id: UUID,
+        payload: PersonalCompanyViewIn | None = None,
         user: User = Depends(get_current_user),
         session: Session = Depends(get_session),
     ) -> PersonalCompanyViewOut:
         try:
-            return record_personal_company_view(session, user, company_id)
+            return record_personal_company_view(
+                session,
+                user,
+                company_id,
+                rendered_versions=payload.rendered_versions if payload else None,
+            )
         except PersonalFeatureNotFoundError as error:
             raise HTTPException(status_code=404, detail="company not found") from error
 
@@ -861,6 +868,7 @@ def create_app(
                 app.state.settings.refresh_policy,
                 company_id,
                 idempotency_key=payload.idempotency_key,
+                archive_new_timepoint=payload.archive_new_timepoint,
             )
         except PersonalFeatureNotFoundError as error:
             raise HTTPException(status_code=404, detail="company not found") from error

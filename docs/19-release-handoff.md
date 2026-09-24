@@ -33,6 +33,34 @@
 
 另更新本交付记录和 `docs/IMPLEMENTATION_LOG.md`。E4.10 日期规则、证据血缘/字段校验、既有显示与 Node 24 配置保留；全量回归继续包含其原测试。
 
+## PR-B 文件清单
+
+基于 [PR-A #100](https://github.com/daiphoon/dealflow-radar/pull/100)；前置提交 `6e43871`。
+
+- `backend/app/main.py`
+- `backend/app/models.py`
+- `backend/app/personal_features.py`
+- `backend/app/schemas.py`
+- `backend/app/watchlist_monitoring.py`
+- `backend/app/research_cost_preview.py`
+- `backend/app/semantic_content.py`
+- `frontend/app/companies/[id]/page.tsx`
+- `frontend/app/companies/[id]/personal-change-panel.tsx`
+- `frontend/app/personal-actions.ts`
+- `frontend/components/record-browser.tsx`
+- `frontend/lib/api.ts`
+- `frontend/tests/current-company-results.test.cjs`
+- `frontend/tests/record-browser.test.cjs`
+- `migrations/versions/0036_visible_semantic_versions.py`
+- `tests/integration/test_integrated_returns.py`
+- `tests/integration/test_curated_import.py`
+- `tests/integration/test_migrations.py`
+- `tests/integration/test_personal_changes_reports.py`
+- `tests/integration/test_web_budget_delivery.py`
+- `tests/unit/test_integrated_semantics.py`
+
+另更新本记录和实施记录。
+
 ## GitHub 门禁
 
 2026-09-24，仓库为私有，当前账号有 admin 权限；main protected=false。rulesets 和 branch protection GET 均返回 403，明确要求升级套餐或改公开。按负责人边界不购买、不改可见性、不绕过；当前采用 PR、`Verify` 全部成功和人工确认的门禁。GitHub 尚不能强制阻止直接写 main，须明确保留该限制。
@@ -40,6 +68,10 @@
 ## 验证
 
 PR-A 定向测试 17 通过；完整正式后端 1111 通过、19 条件跳过（595.32 秒），前端 28 通过，类型/构建通过。迁移、Ruff/格式、生产 Compose、API/前端/备份镜像构建、npm audit、Secret/私有路径扫描和 diff 检查全部通过。19 项为相应数据库条件跳过，PostgreSQL 权限参数实际执行。远端 CI 以本 PR 页面当前 Verify 为准，不用本地结果替代。每批分别执行 Ruff、格式、SQLite 往返和 PostgreSQL 迁移/漂移、定向与完整 pytest、前端测试/类型/构建、生产 Compose 配置、Docker 生产镜像构建、Gitleaks 和私有路径检查。日志不提交。
+
+PR-B 定向 14 通过；完整后端 1119 通过、19 条件跳过（607.77 秒），前端 30 通过，typecheck/build 通过；Ruff/格式、SQLite 往返、PostgreSQL 迁移/漂移、生产 Compose、API/前端/备份 Docker 构建、npm audit、Secret/私有路径扫描和 diff 检查通过。迁移只新增 0036，远端 CI 以当前 Verify 为准。
+
+2026-09-25 合并审查补正：报告原复用指纹未覆盖实际正文标题，事项事实不变但标题更正时会返回旧报告。新增回归先失败，修正为按实际 Markdown 内容（排除生成时点）判断复用后，回访/报告定向 9 通过。无 PostgreSQL 的本地完整回归为 915 通过、224 条件跳过；必须以补正提交的远端 PostgreSQL CI `Verify` 作为合并门禁。迁移、回访语义和诊断默认关闭配置未变。
 
 ## 受控部署清单（待另行批准）
 
