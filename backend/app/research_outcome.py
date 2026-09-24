@@ -11,7 +11,10 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
     """Return allowlisted result metadata, never private URLs, excerpts or owner details."""
     if (
         job is None
-        or job.status != "completed"
+        or (
+            job.status != "completed"
+            and not (job.status == "failed" and job.coverage.get("completion_status") == "partial")
+        )
         or not job.policy_version.startswith("bounded-web-")
     ):
         return None
@@ -22,6 +25,8 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
     documents = [item for item in coverage.get("documents", []) if isinstance(item, dict)]
     errors = {item.get("error_code") for item in documents}
     limitations: list[str] = []
+    if coverage.get("model_budget_exhausted"):
+        limitations.append("本轮模型次数已用完，已保留取得正文和规则支持结果，部分语义处理未完成。")
     stop_messages = {
         "http_limit_reached": "本轮网页请求额度已用完，仍有主题或候选资料未完成检查。",
         "byte_limit_reached": "本轮下载量达到上限，已保留取得的资料。",
@@ -39,6 +44,7 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
         "dynamic_rendering_required": "部分页面依赖动态渲染，当前静态读取未取得正文。",
         "static_body_missing": "部分页面缺少可读取的静态正文。",
         "fetched_page_identity_mismatch": "部分正文未匹配已确认主体或别名。",
+        "network_error": "部分来源传输中断，已保留其他结果，未将中断字节冒充完整正文。",
         "timeout": "部分来源读取超时，已保留其他结果和已有资料。",
     }.items():
         if code in errors:
@@ -89,7 +95,7 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
         outcome="candidates_available" if usable else "no_usable_evidence",
         finished_at=finished_at,
         message=(
-            "本轮查询已结束，取得待核实变化线索；不等于事实已确认或资料已查全。"
+            "本轮查询已结束，取得有原文支持的未确认事项；不等于人工确认或资料已查全。"
             if usable
             else "本轮查询已结束，暂未取得可展示的变化证据；不代表公司没有重要变化。"
         ),

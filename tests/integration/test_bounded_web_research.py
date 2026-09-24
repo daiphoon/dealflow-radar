@@ -186,7 +186,7 @@ class OfficialPdfFetcherFactory:
     def __init__(self) -> None:
         self.requests: list[str] = []
         self.body = _unicode_pdf_bytes(
-            f"{SHARED_COMPANY_NAME}（{DEMO_SHARED_COMPANY_CREDIT_CODE}）完成融资 2026年9月4日"
+            f"发布时间：2026年9月4日\n{SHARED_COMPANY_NAME}（{DEMO_SHARED_COMPANY_CREDIT_CODE}）完成融资"
         )
 
     def __call__(self, policy):

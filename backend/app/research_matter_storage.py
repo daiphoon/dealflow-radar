@@ -9,6 +9,7 @@ from sqlalchemy import select, text
 from backend.app.evidence_integrity import EXCERPT_HASH_VERSION, hash_excerpt_bytes
 from backend.app.financing_storage import authorized_research_evidence
 from backend.app.matter_comparison import compare_matters
+from backend.app.matter_dates import occurrence
 from backend.app.matter_dispositions import record
 from backend.app.matter_retention import RETENTION_VERSION, source_channel, temporal_status
 from backend.app.matter_validation import (
@@ -24,49 +25,50 @@ from backend.app.research_matters import (
     VERSION,
     Matter,
     digest,
-    extract_matters,
     names_in_document,
     subject_mentions,
 )
 from backend.app.research_subject import load_subject
 
 
-def previous_matters(session, event, subject):
-    evidence = list(
-        session.scalars(select(EventEvidence).where(EventEvidence.event_id == event.id))
-    )
+def previous_matters(session, event, subject, *, evidence=None, observations=None):
+    if evidence is None:
+        evidence = list(
+            session.scalars(select(EventEvidence).where(EventEvidence.event_id == event.id))
+        )
     visible_ids = {
         e.raw_document_id
         for e in evidence
         if e.display_allowed and e.display_license_status == "public"
     }
-    rows = list(
-        session.scalars(
-            select(EventObservation).where(
-                EventObservation.event_id == event.id,
-                EventObservation.schema_version == VERSION,
-                EventObservation.raw_document_id.in_(visible_ids),
+    if observations is None:
+        observations = list(
+            session.scalars(
+                select(EventObservation).where(
+                    EventObservation.event_id == event.id,
+                    EventObservation.schema_version == VERSION,
+                )
             )
         )
-    )
+    rows = [
+        r for r in observations if r.schema_version == VERSION and r.raw_document_id in visible_ids
+    ]
     candidates = [Matter(**r.candidate_payload["matter"]) for r in rows]
     if event.fingerprint_version == "curated-v1":
         for e in evidence:
             data = (e.display_detail_payload or {}).get("version", {})
             if e.display_allowed and data.get("facts") == event.facts:
-                scope = data.get("subject_scope", "")
-                name = (
-                    subject.aliases[0]
-                    if "品牌" in scope and len(subject.aliases) == 1
-                    else subject.legal_name
-                )
-                candidates += extract_matters(subject, name + event.title + "，" + event.summary)
+                from backend.app.matter_baseline import curated_matters
+
+                candidates += curated_matters(event, data, subject)
                 break
     if event.fingerprint_version in {"financing-v1", "financing-v2"}:
         from backend.app.financing_events import financing_observations
 
         for old in financing_observations(evidence, {e.id for e in evidence if e.display_allowed}):
-            candidates += extract_matters(subject, old.excerpt)
+            from backend.app.matter_baseline import financing_matter
+
+            candidates.append(financing_matter(old))
     return candidates
 
 
@@ -99,6 +101,25 @@ def persist_matters(
             )
         )
     )
+    # 同一事务预加载，避免每个候选重新查询所有事件的证据与观测。
+    evidence_by_event, observations_by_event = {}, {}
+    event_ids = [e.id for e in existing]
+    for row in session.scalars(select(EventEvidence).where(EventEvidence.event_id.in_(event_ids))):
+        evidence_by_event.setdefault(row.event_id, []).append(row)
+    for row in session.scalars(
+        select(EventObservation).where(EventObservation.event_id.in_(event_ids))
+    ):
+        observations_by_event.setdefault(row.event_id, []).append(row)
+    previous = {
+        e.id: previous_matters(
+            session,
+            e,
+            subject,
+            evidence=evidence_by_event.get(e.id, []),
+            observations=observations_by_event.get(e.id, []),
+        )
+        for e in existing
+    }
     output, created, attached = [], 0, 0
     for matter in matters:
         body = str(document.payload.get("excerpt") or "")
@@ -121,6 +142,28 @@ def persist_matters(
                 "subject_action_or_source_bounds_invalid",
             )
             continue
+        valid_fields = {}
+        for key, item in matter.fields.items():
+            supported, reason = validate_field(
+                item.get("role"),
+                item.get("value", ""),
+                item.get("quote", ""),
+                matter.action,
+                matter.subtype,
+            )
+            if supported:
+                valid_fields[key] = item
+            else:
+                matter.issues.append(f"rejected_field:{key}")
+                record(
+                    document,
+                    "field_validation",
+                    "rejected",
+                    reason,
+                    field=key,
+                    proposed_value=item.get("value"),
+                )
+        matter.fields = valid_fields
         retention = temporal_status(matter, document, policy.recent_change_window_days)
         observation_key = digest(matter.payload())
         # 先查历史，不因撤证、撤回或算法升级恢复已撤销的材料。
@@ -182,13 +225,20 @@ def persist_matters(
                 observation_key=observation_key,
             )
             continue
-        matches, decisions = [], {}
+        matches, decisions, relations = [], {}, []
         for event in existing:
             if event.event_type != matter.category:
                 continue
-            comparisons = [
-                compare_matters(old, matter) for old in previous_matters(session, event, subject)
-            ]
+            comparisons = [compare_matters(old, matter) for old in previous.get(event.id, [])]
+            for compared in comparisons:
+                if compared.decision == "related_stage":
+                    relations.append(
+                        {
+                            "event_id": str(event.id),
+                            "type": "related_stage",
+                            "reason": compared.reason,
+                        }
+                    )
             matching = [d for d in comparisons if d.same_matter]
             if matching:
                 matches.append(event)
@@ -199,7 +249,7 @@ def persist_matters(
         decision = decisions.get(event.id) if event else None
         if event is None:
             # 有具体主体、动作和原文即保留线索；近期资格单独表达。
-            occurred = matter.fields.get("date", {}).get("iso")
+            occurred = occurrence(matter.fields).get("iso")
             if len(matches) > 1:
                 matter.issues.append("ambiguous_existing_matter")
             fingerprint = digest(
@@ -209,7 +259,7 @@ def persist_matters(
                     matter.subtype,
                     matter.status,
                     matter.action,
-                    matter.fields.get("date", {}).get("iso"),
+                    occurrence(matter.fields).get("iso"),
                     str(document.id),
                 ]
             )
@@ -284,7 +334,7 @@ def persist_matters(
             else "initial"
         )
         fields = matter.fields
-        observed_on = fields.get("date", {}).get("iso")
+        observed_on = occurrence(fields).get("iso")
         observation = EventObservation(
             event_id=event.id,
             raw_document_id=document.id,
@@ -294,7 +344,11 @@ def persist_matters(
             processing_version=processing_version,
             observation_kind=kind,
             occurred_on=date.fromisoformat(observed_on) if observed_on else None,
-            date_precision="day" if observed_on else "unknown",
+            date_precision=occurrence(fields).get("precision", "day" if observed_on else "unknown")
+            if occurrence(fields).get("precision") in {"day", "month", "year"}
+            else "day"
+            if observed_on
+            else "unknown",
             candidate_payload={
                 "matter": matter.payload(),
                 "merge_decision": decision.__dict__
@@ -302,6 +356,12 @@ def persist_matters(
                 else {"decision": "ambiguous" if len(matches) > 1 else "new_matter"},
                 "processing_version": processing_version,
                 "retention": retention,
+                "baseline_kind": "curated"
+                if event.fingerprint_version == "curated-v1"
+                else "legacy_financing"
+                if event.fingerprint_version in {"financing-v1", "financing-v2"}
+                else "research",
+                "relations": relations,
                 "dispositions": list(getattr(document, "_matter_dispositions", [])),
             },
             created_by=actor.id,
@@ -316,6 +376,8 @@ def persist_matters(
                 "processing_version": processing_version,
                 "temporal_status": retention,
                 "retention_version": RETENTION_VERSION,
+                "recent_window_days": policy.recent_change_window_days,
+                "relations": relations,
                 "source_channel": channel,
                 "source_published_on": document.published_on.isoformat()
                 if document.published_on
@@ -386,6 +448,7 @@ def persist_matters(
         session.flush()
         session.add(observation)
         session.flush()
+        previous.setdefault(event.id, []).append(matter)
         if event.fingerprint_version == VERSION:
             from backend.app.fact_support import materialize_event_fact_ledger
 

@@ -304,9 +304,17 @@ def test_late_fallback_cache_reused_without_dispatch(research):
     stage = f"readability_fallback:{SEARCH_GROUPS[0][0]}"
     assert r.run(stage).stage == stage
     job = r.job()
+    cache_subject = replace(
+        r.subject,
+        reference_at=job.coverage.get("reference_at"),
+        research_intent=job.coverage.get("research_intent", "discovery"),
+        event_window_days=r.policy.recent_change_window_days,
+    )
     for query in r.queries:
         cached = MockSearchProvider("bocha", {query: [row("article")]}).search(SearchRequest(query))
-        _store_search_response(r.session, r.subject, cached, SEARCH_GROUPS[0][0], query, r.policy)
+        _store_search_response(
+            r.session, cache_subject, cached, SEARCH_GROUPS[0][0], query, r.policy
+        )
     r.session.commit()
     assert r.run().status == "completed"
     job = r.job()

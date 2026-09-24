@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.app.matter_contract import (
+    CATEGORIES,
+    FIELD_LABELS,
+    LABELS,
+    STATUS_LABELS,
+    subject_role,
+)
+from backend.app.matter_dates import date_fields, normalize_date, occurrence
+
 VERSION = "matter-v1"
-PROMPT_VERSION = "research-matter-extraction-v2"
-EXTRACTION_VERSION = "matter-extraction-v2"
+PROMPT_VERSION = "research-matter-extraction-v3"
+EXTRACTION_VERSION = "matter-extraction-v3"
 # 每类均有实际动作契约；不把整篇文章标题当作事件动作。
 ACTIONS = (
     (
@@ -46,7 +54,7 @@ ACTIONS = (
     (
         "exit_liquidity",
         "ipo_application",
-        r"(?:提交|递交|递表).{0,20}?(?:上市申请|招股书)|向.{0,12}?递表",
+        r"(?:提交|递交|更新).{0,20}?(?:上市申请|招股书)|(?:二次|再次|重新|首次)?递表",
     ),
     ("exit_liquidity", "ipo_hearing", r"(?:通过|获).{0,12}?(?:聆讯|聆聽)"),
     ("exit_liquidity", "ipo_inquiry", r"(?:进入|收到|回复).{0,12}?问询"),
@@ -99,54 +107,6 @@ ACTIONS = (
         r"(?:工厂|生产线|项目).{0,20}?(?:投产|开工|停工|延期)|新建.{0,20}?(?:工厂|生产线)",
     ),
 )
-LABELS = {
-    "fund_commitment": "基金认缴",
-    "outbound_investment": "对外投资",
-    "acquisition_target": "被收购",
-    "registered_capital": "注册资本变化",
-    "ipo_guidance_agreement": "辅导协议签署",
-    "company_financing": "获得融资",
-    "ipo_guidance_completed": "辅导完成",
-    "ipo_guidance": "辅导备案",
-    "ipo_hearing": "上市聆讯",
-    "ipo_application": "上市申请提交",
-    "ipo_inquiry": "上市问询",
-    "ipo_accepted": "上市申请受理",
-    "ipo_filing": "境外上市备案",
-    "ipo_offering": "招股发行",
-    "ipo_listed": "挂牌上市",
-    "ipo_listing_plan": "上市计划",
-    "ipo_withdrawn": "上市申请撤回",
-    "contract_award": "合同与中标",
-    "product_milestone": "产品技术进展",
-    "operating_disclosure": "经营披露",
-    "management_change": "治理人员变化",
-    "legal_development": "司法合规进展",
-    "capacity_development": "产能资产进展",
-}
-STATUS_LABELS = {
-    "denied": "否认或更正",
-    "planned": "计划",
-    "committed": "认缴承诺",
-    "conditional": "附条件安排",
-    "reported": "来源报道",
-}
-FIELD_LABELS = {
-    "share_quantity": "股份数量",
-    "valuation": "估值",
-    "registered_capital_before": "变更前注册资本",
-    "registered_capital_after": "变更后注册资本",
-    "commitment": "认缴金额",
-    "investment": "对外投资金额",
-    "financing": "融资金额",
-    "proposed_proceeds": "拟募集金额",
-    "reported_amount": "来源金额（性质待核）",
-    "round": "融资轮次",
-    "investors": "投资方（来源口径）",
-    "date": "原文日期",
-    "transaction_id": "交易标识",
-    "project_id": "项目标识",
-}
 
 AMOUNT = re.compile(
     r"(?:约|近|超|超过|不超过|不多于|至少|至多|不足)?\s*(?:\d[\d,.]*|[一二两三四五六七八九十百千数几]+)\s*(?:亿|万)?\s*(?:人民币|港元|美元|元|股)"
@@ -185,7 +145,7 @@ class Matter:
             *[
                 {"name": FIELD_LABELS.get(key, key), "value": item["value"], "unit": None}
                 for key, item in self.fields.items()
-                if key not in {"date"}
+                if key not in {"date", "disclosed", "planned"}
             ],
         ]
 
@@ -210,6 +170,12 @@ class ProposedField(BaseModel):
         "planned",
         "transaction_id",
         "project_id",
+        "market",
+        "application_cycle",
+        "buyer",
+        "target",
+        "acquisition_scope",
+        "acquisition_stage",
     ]
     currency: Literal["CNY", "HKD", "USD", "shares"] | None = None
 
@@ -279,8 +245,6 @@ def classification(action):
     ]
     if not matches:
         return None
-    if any(sub.startswith("ipo_") for _, sub in matches):
-        matches = [(cat, sub) for cat, sub in matches if sub.startswith("ipo_")]
     category, subtype = min(
         matches,
         key=lambda pair: next(
@@ -289,18 +253,6 @@ def classification(action):
             if (cat, sub) == pair and re.search(pattern, action, re.I)
         ),
     )
-    if subtype.startswith("ipo_"):
-        # 阶段优先取确定动作，计划不升级；备案与辅导备案分开。
-        if "辅导备案" in action:
-            subtype = "ipo_guidance"
-        elif "聆讯" in action:
-            subtype = "ipo_hearing"
-        elif "问询" in action:
-            subtype = "ipo_inquiry"
-        elif (
-            re.search(r"(?:计划|拟|将).{0,40}(?:挂牌上市|上市)", action) and subtype == "ipo_listed"
-        ):
-            subtype = "ipo_listing_plan"
     return category, subtype
 
 
@@ -367,30 +319,29 @@ def infer_fields(action, subtype):
         identity = re.search(r"(?:" + label + r")[：:]?\s*([A-Za-z0-9_-]+)", action)
         if identity:
             fields[role] = {"value": identity.group(1), "quote": action, "role": role}
-    match = DATE.search(action)
-    if match:
-        action_start = next(
-            (
-                re.search(pattern, action).start()
-                for _, s, pattern in ACTIONS
-                if s == subtype and re.search(pattern, action)
-            ),
-            0,
-        )
-        # 动作之后的协议日期不能赋给先前已完成的事项。
-        if match.start() < action_start:
-            role = (
-                "disclosed"
-                if re.search(r"披露|报道|消息|显示|日电", action[:action_start])
-                else "occurred"
-            )
-            value = match.group()
-            fields["date"] = {"value": value, "quote": action, "role": role}
-            if match.group(1) and role == "occurred":
-                try:
-                    fields["date"]["iso"] = date(*map(int, match.groups())).isoformat()
-                except ValueError:
-                    fields.pop("date")
+    fields.update(date_fields(action, subtype))
+    if subtype.startswith("ipo_"):
+        for role, pattern in (
+            ("market", r"港交所|香港联交所|科创板|创业板|北交所|上交所|深交所|纳斯达克"),
+            ("application_cycle", r"二次|再次|重新|首次|第[一二三四五六七八九十\d]+次"),
+        ):
+            match = re.search(pattern, action)
+            if match and (
+                role != "application_cycle"
+                or (
+                    subtype == "ipo_application"
+                    and re.match(r".{0,8}(?:递表|递交|提交|申请)", action[match.end() :])
+                )
+            ):
+                fields[role] = {"value": match.group(), "quote": action, "role": role}
+    if subtype in {"outbound_investment", "acquisition_target"}:
+        for role, pattern in (
+            ("acquisition_scope", r"控制权|全部股权|\d+(?:\.\d+)?%股权|股权|资产|品牌"),
+            ("acquisition_stage", r"取得控制权|完成交割|交割完成|签署|签订|意向"),
+        ):
+            match = re.search(pattern, action)
+            if match:
+                fields[role] = {"value": match.group(), "quote": action, "role": role}
     return fields
 
 
@@ -429,7 +380,13 @@ def extract_matters(subject, text):
             parts = re.split(
                 r"[，,](?:同时|并且|并(?=向|通过|提交|完成)|另(?:外)?(?:还)?|但)", sentence
             )
-            pieces.extend(parts)
+            for part in parts:
+                pieces.extend(
+                    re.split(
+                        r"[，,](?=(?:(?:于)?20\d{2}年|(?:随后|此后|并于)|二次递表|再次递表|重新递交))",
+                        part,
+                    )
+                )
         for paragraph in pieces:
             paragraph = paragraph.strip()
             valid_mentions = list(subject_mentions(names, subject.legal_name, paragraph))
@@ -444,7 +401,10 @@ def extract_matters(subject, text):
                 name is None
                 and last_name
                 and paragraph in pieces
-                and re.match(r"向|通过|提交|完成|拟|否认", paragraph)
+                and re.match(
+                    r"向|通过|提交|完成|拟|否认|(?:于)?20\d{2}年|随后|此后|二次|再次|重新",
+                    paragraph,
+                )
             ):
                 name = last_name
             elif name is None:
@@ -507,15 +467,15 @@ def extract_matters(subject, text):
             )
             status = scoped_status(paragraph, subtype)
             fields = infer_fields(paragraph, subtype)
-            if status in {"planned", "denied", "conditional"} and "date" in fields:
-                fields["date"].pop("iso", None)
-                fields["date"]["role"] = "planned" if status == "planned" else "disclosed"
+            if status in {"planned", "denied", "conditional", "committed"}:
+                fields.pop("occurred", None)
+                fields.pop("date", None)
             issues = []
             if "人工智能生成" in body or "AI生成" in body:
                 issues.append("generated_source_not_fact")
             if status == "denied":
                 issues.append("denial_or_correction_requires_review")
-            if "date" not in fields or "iso" not in fields["date"]:
+            if not occurrence(fields).get("iso"):
                 issues.append("occurrence_date_unknown")
             matters.append(
                 Matter(category, subtype, name, scope, paragraph, status, fields, issues)
@@ -585,6 +545,9 @@ def validate_proposals(subject, text, proposals, *, legacy_compat=True):
                     fields[key] = ProposedField.model_validate(item)
                 except ValueError:
                     bad_fields.append(key)
+                    rejected.append(
+                        {"index": index, "field": key, "reason": "invalid_field_schema"}
+                    )
         try:
             proposal_class = ProposedMatter if legacy_compat else TypedProposedMatter
             proposal = proposal_class.model_validate({**raw, "fields": fields})
@@ -599,25 +562,16 @@ def validate_proposals(subject, text, proposals, *, legacy_compat=True):
         # v1 封存响应没有类型，只能在兼容入口解析类型；v2 类型直接独立校验。
         legacy = classification(quote) if proposal.subtype is None else None
         subtype = proposal.subtype or (legacy[1] if legacy else None)
-        category = next((c for c, st, _ in ACTIONS if st == subtype), None)
-        if (
-            not category
-            or not action_supported(quote, subtype)
-            or not actor_supported(proposal.subject, quote, subtype)
+        category = CATEGORIES.get(subtype)
+        if not category:
+            rejected.append({"index": index, "reason": "unknown_subtype"})
+            continue
+        if not action_supported(quote, subtype) or not actor_supported(
+            proposal.subject, quote, subtype
         ):
             rejected.append({"index": index, "reason": "action_or_actor_not_supported"})
             continue
-        expected_role = (
-            "fundraiser"
-            if subtype == "company_financing"
-            else "buyer"
-            if subtype == "outbound_investment"
-            else "target"
-            if subtype == "acquisition_target"
-            else "issuer"
-            if subtype.startswith("ipo_")
-            else "actor"
-        )
+        expected_role = subject_role(subtype)
         if proposal.subject_role and proposal.subject_role not in {
             expected_role,
             "investor" if subtype in {"outbound_investment", "fund_commitment"} else expected_role,
@@ -674,7 +628,7 @@ def validate_proposals(subject, text, proposals, *, legacy_compat=True):
             issues.append("generated_source_not_fact")
         if status == "denied":
             issues.append("denial_or_correction_requires_review")
-        verified = {}
+        verified, ambiguous_fields = {}, set()
         for key, item in proposal.fields.items():
             ok, reason = validate_field(item.role, item.value, item.quote, quote, subtype)
             normalized = normalize_amount(item.value)
@@ -684,7 +638,9 @@ def validate_proposals(subject, text, proposals, *, legacy_compat=True):
                 issues.append(f"rejected_field:{key}")
                 rejected.append({"index": index, "field": key, "reason": reason})
                 continue
-            field_key = "date" if item.role in {"occurred", "disclosed", "planned"} else item.role
+            field_key = item.role
+            if field_key in ambiguous_fields:
+                continue
             value = {
                 "value": item.value,
                 "quote": item.quote,
@@ -695,15 +651,23 @@ def validate_proposals(subject, text, proposals, *, legacy_compat=True):
                 "coordinate_space": "stored_excerpt",
                 "normalized": normalized,
             }
-            if item.role == "occurred" and status == "reported":
-                match = DATE.fullmatch(item.value)
-                if match and match.group(1):
-                    try:
-                        value["iso"] = date(*map(int, match.groups())).isoformat()
-                    except ValueError:
-                        pass
+            if item.role in {"occurred", "disclosed", "planned"}:
+                value.update(normalize_date(item.value))
+                if item.role == "occurred" and status != "reported":
+                    rejected.append(
+                        {"index": index, "field": key, "reason": "non_occurrence_status"}
+                    )
+                    continue
+            if field_key in verified and verified[field_key]["value"] != value["value"]:
+                issues.append(f"ambiguous_field:{field_key}")
+                verified.pop(field_key)
+                ambiguous_fields.add(field_key)
+                rejected.append({"index": index, "field": key, "reason": "ambiguous_field"})
+                continue
             verified[field_key] = value
-        if not verified.get("date", {}).get("iso"):
+        if "occurred" in verified:
+            verified["date"] = dict(verified["occurred"])  # v1 readers only see the occurrence
+        if not occurrence(verified).get("iso"):
             issues.append("occurrence_date_unknown")
         accepted.append(
             Matter(category, subtype, proposal.subject, scope, quote, status, verified, issues)

@@ -509,10 +509,10 @@ def test_official_pdf_is_parsed_with_signature_page_and_text_limits() -> None:
     document = result.documents[0]
     assert document.title == "Official filing"
     assert "completed financing" in (document.excerpt or "")
-    assert document.published_at is not None
+    assert document.published_at is None
     assert document.metadata["document_format"] == "pdf"
     assert document.metadata["page_count"] == 1
-    assert document.metadata["published_at_basis"] == "single_explicit_document_date"
+    assert document.metadata["published_at_basis"] == "unknown"
 
 
 def test_pdf_excerpt_selector_inspects_later_text_without_storing_full_text() -> None:
@@ -590,7 +590,7 @@ def test_pdf_with_multiple_dates_does_not_guess_publication_date() -> None:
         conditional_state={},
     )
     assert result.documents[0].published_at is None
-    assert result.documents[0].metadata["published_at_basis"] is None
+    assert result.documents[0].metadata["published_at_basis"] == "unknown"
 
 
 def test_root_level_list_prefers_repeated_content_directory_over_navigation() -> None:

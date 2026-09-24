@@ -51,6 +51,8 @@ def relevant_windows(text, names, *, max_chars=4000):
     selected = []
     used = 0
     for start, end in spans:
+        if selected:
+            used += 1
         end = min(end, start + max_chars - used)
         if end <= start:
             break

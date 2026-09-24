@@ -274,7 +274,8 @@ def test_report_date_not_matter_identity_and_ipo_project_stages():
         "reported",
         {"project_id": {"value": "HK002"}},
     )
-    assert compare_matters(first, next_stage).decision == "progress_update"
+    assert compare_matters(first, next_stage).decision == "related_stage"
+    assert not compare_matters(first, next_stage).same_matter
     assert not compare_matters(first, new_project).same_matter
     a = financing("1亿元", "青杉资本")
     b = financing("1亿元", "青杉资本")

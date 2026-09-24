@@ -133,7 +133,7 @@ def category_coverage(coverage: dict[str, object]) -> list[CategoryCoverageOut]:
         states = [item for item in providers.values() if isinstance(item, dict)]
         succeeded = any(item.get("status") in SUCCESSFUL_SEARCHES for item in states)
         search_failed = sum(item.get("status") == "failed" for item in states)
-        docs = [item for item in documents if item.get("coverage_category") == category]
+        docs = [item for item in documents if category in planning.document_categories(item)]
         readable = [
             item
             for item in docs
@@ -147,7 +147,7 @@ def category_coverage(coverage: dict[str, object]) -> list[CategoryCoverageOut]:
         failed = sum(
             item.get("status") == "failed" and not _blocked_document(item) for item in docs
         )
-        has_candidates = any(item.get("coverage_category") == category for item in candidates)
+        has_candidates = any(category in planning.document_categories(item) for item in candidates)
         gaps = []
         if readable:
             status = "evidence_obtained"
@@ -180,7 +180,7 @@ def category_coverage(coverage: dict[str, object]) -> list[CategoryCoverageOut]:
             gaps.append("部分正文未达到时间或变化证据要求，不能作为已确认事实。")
         known_urls = {item.get("url") for item in documents}
         if any(
-            item.get("coverage_category") == category and item.get("url") not in known_urls
+            category in planning.document_categories(item) and item.get("url") not in known_urls
             for item in candidates
         ):
             gaps.append("仍有本类候选正文未读取，任务结束不等于检查完成。")

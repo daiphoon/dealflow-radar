@@ -332,7 +332,7 @@ def test_same_document_additional_fields_versions_and_retraction(database, tmp_p
             "quote": candidate.action,
             "role": "valuation",
         }
-        # 无依据字段会进入观测审计，但不会成为支持字段。
+        # 无依据字段在入库前局部拒绝，原提议留在观测处置审计。
         result = persist_matters(
             session,
             company,
@@ -360,8 +360,21 @@ def test_same_document_additional_fields_versions_and_retraction(database, tmp_p
             )
             == 1
         )
-        assert session.scalar(
-            select(EventFact).where(EventFact.event_id == event.id, EventFact.name == "估值")
+        assert (
+            session.scalar(
+                select(EventFact).where(EventFact.event_id == event.id, EventFact.name == "估值")
+            )
+            is None
+        )
+        latest = session.scalar(
+            select(EventObservation).where(
+                EventObservation.event_id == event.id,
+                EventObservation.processing_version == "fixture-new-version",
+            )
+        )
+        assert any(
+            d.get("field") == "valuation" and d.get("proposed_value") == "10亿元"
+            for d in latest.candidate_payload["dispositions"]
         )
         persist_matters(
             session,

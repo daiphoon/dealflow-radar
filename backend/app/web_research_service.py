@@ -392,9 +392,15 @@ class _ContentQualityDecision:
     event_date_status: str = "unknown"
     matters_created: int = 0
     matters_linked: int = 0
+    matter_categories: tuple[str, ...] = ()
+    disposition: str | None = None
+    matter_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "matter_categories": list(self.matter_categories),
+            "disposition": self.disposition,
+            "matter_ids": list(self.matter_ids),
             "matters_created": self.matters_created,
             "matters_linked": self.matters_linked,
             "version": CONTENT_QUALITY_GATE_VERSION,
@@ -503,6 +509,9 @@ def _identity_fingerprint(company: Company) -> str:
 def _initial_coverage(policy: WebResearchPolicy, *, watchlist: bool = False) -> dict[str, object]:
     short_topics = policy.incremental_research_enabled and not watchlist
     return {
+        "research_intent": "discovery",
+        "reference_at": utc_now().isoformat(),
+        "event_window_days": policy.recent_change_window_days,
         "policy_version": policy.version,
         "query_strategy_version": SHORT_QUERY_STRATEGY_VERSION
         if short_topics
@@ -937,6 +946,8 @@ def _qualification_reason(
     company: Company,
     result: SearchResult,
     policy: WebResearchPolicy,
+    *,
+    intent: str | None = None,
 ) -> str:
     if not _subject_match(company, result):
         return "subject_mismatch"
@@ -945,7 +956,10 @@ def _qualification_reason(
     if _source_rank(company, result).tier == "profile_or_listing":
         return "profile_or_listing"
     date_status = _search_date_status(result, policy)
-    if date_status == "old":
+    if (
+        date_status == "old"
+        and (intent or getattr(company, "research_intent", "discovery")) != "maintenance"
+    ):
         return "published_at_old"
     if date_status == "future":
         return "published_at_future"
@@ -1041,7 +1055,16 @@ def _candidate_payload(
     query_kind: str,
     policy: WebResearchPolicy,
 ) -> dict[str, object] | None:
-    if not _qualified_subject_result(company, result, policy):
+    reason = _qualification_reason(company, result, policy)
+    verification_slot = (
+        policy.matter_processing_enabled
+        and reason == "subject_mismatch"
+        and _canonical_candidate_url(result.url) is not None
+        and not _profile_or_listing_url(result.url)
+        and _event_classification(result.title, result.snippet) is not None
+        and _search_date_status(result, policy) not in {"old", "future"}
+    )
+    if reason != "qualified" and not verification_slot:
         return None
     canonical_url = _canonical_candidate_url(result.url)
     if canonical_url is None:
@@ -1053,6 +1076,8 @@ def _candidate_payload(
             for key, value in result.to_dict().items()
             if key not in {"source_body", "body_provider"}
         },
+        "identity_pending": verification_slot,
+        "qualification_reason": "body_identity_check_reserved" if verification_slot else reason,
         "url": canonical_url,
         "discovered_by": [provider_code],
         "query_kind": query_kind,
@@ -1064,6 +1089,25 @@ def _candidate_payload(
         "source_access_status": SOURCE_ACCESS_API_METADATA_ONLY,
         "source_access_reason": "search_discovery_metadata_only",
     }
+
+
+def _search_cache_key(company, query):
+    if getattr(company, "reference_at", None):
+        import json
+
+        # 参考时间留在任务记录；同意图/窗口的请求按既有 TTL 复用，不按任务时间强制失效。
+        return _sha256(
+            json.dumps(
+                [
+                    query,
+                    "intent-name-v3",
+                    company.research_intent,
+                    company.event_window_days,
+                ],
+                ensure_ascii=False,
+            )
+        )
+    return _sha256(query)
 
 
 def _cached_response(
@@ -1079,7 +1123,7 @@ def _cached_response(
         select(WebSearchCacheEntry).where(
             WebSearchCacheEntry.company_id == company.id,
             WebSearchCacheEntry.provider_code == provider_code,
-            WebSearchCacheEntry.query_hash == _sha256(query),
+            WebSearchCacheEntry.query_hash == _search_cache_key(company, query),
             WebSearchCacheEntry.identity_fingerprint == _identity_fingerprint(company),
             WebSearchCacheEntry.expires_at > now,
         )
@@ -1171,7 +1215,7 @@ def _store_search_response(
         select(WebSearchCacheEntry).where(
             WebSearchCacheEntry.company_id == company.id,
             WebSearchCacheEntry.provider_code == response.provider_code,
-            WebSearchCacheEntry.query_hash == _sha256(query),
+            WebSearchCacheEntry.query_hash == _search_cache_key(company, query),
             WebSearchCacheEntry.identity_fingerprint == _identity_fingerprint(company),
         )
     )
@@ -1182,7 +1226,7 @@ def _store_search_response(
             provider_code=response.provider_code,
             query_kind=query_kind,
             query_text=query,
-            query_hash=_sha256(query),
+            query_hash=_search_cache_key(company, query),
             identity_fingerprint=_identity_fingerprint(company),
             response_hash=response.response_hash,
             results=values,
@@ -1249,7 +1293,11 @@ def _provider_response(
     )
     try:
         response = provider.search(
-            SearchRequest(query=query, max_results=policy.max_results_per_search)
+            SearchRequest(
+                query=query,
+                max_results=policy.max_results_per_search,
+                recent_only=getattr(company, "research_intent", "discovery") == "discovery",
+            )
         )
     except SearchProviderError as error:
         job.external_calls += error.external_calls
@@ -1514,7 +1562,7 @@ def _process_search_group(
             select(func.max(WebSearchCacheEntry.fetched_at)).where(
                 WebSearchCacheEntry.company_id == company.id,
                 WebSearchCacheEntry.provider_code.in_(successful_providers),
-                WebSearchCacheEntry.query_hash == _sha256(query),
+                WebSearchCacheEntry.query_hash == _search_cache_key(company, query),
                 WebSearchCacheEntry.identity_fingerprint == _identity_fingerprint(company),
             )
         )
@@ -1592,6 +1640,12 @@ def _process_search_group(
     )
     if planning.planned(coverage):
         candidates = planning.order_candidates(candidates, coverage)
+        postponed = [c for c in candidates if c.get("scheduling_reason")]
+        candidates = [c for c in candidates if not c.get("scheduling_reason")]
+        coverage["deferred_candidates"] = [
+            *coverage.get("deferred_candidates", []),
+            *[{**c, "deferred_reason": c["scheduling_reason"]} for c in postponed],
+        ]
         coverage["deferred_candidates"] = [
             *coverage.get("deferred_candidates", []),
             *[
@@ -1707,8 +1761,23 @@ def _process_readability_fallback(session, user, job, company, policy, providers
         query = group.setdefault(
             "fallback_query_text",
             short_business_query(
-                company, planning.recovery_terms(group["topic_category"], coverage["candidates"])
+                company,
+                planning.recovery_terms(group["topic_category"], coverage["candidates"]),
+                alternate=True,
             ),
+        )
+        group.setdefault(
+            "fallback_query_plan",
+            {
+                "version": "intent-name-v2",
+                "name": query.split('"')[1],
+                "name_type": dict(company.name_types).get(query.split('"')[1], "legal_name"),
+                "reason": "unreadable_primary_alternate_verified_name_if_available",
+                "intent": company.research_intent,
+                "category": group["topic_category"],
+                "syntax": "quoted_name_plain_terms",
+                "reference_at": company.reference_at,
+            },
         )
         coverage["search_groups"] = groups
         job.coverage = coverage
@@ -1830,7 +1899,7 @@ def _process_readability_fallback(session, user, job, company, policy, providers
             select(WebSearchCacheEntry.fetched_at).where(
                 WebSearchCacheEntry.company_id == company.id,
                 WebSearchCacheEntry.provider_code == provider.code,
-                WebSearchCacheEntry.query_hash == _sha256(query),
+                WebSearchCacheEntry.query_hash == _search_cache_key(company, query),
                 WebSearchCacheEntry.identity_fingerprint == _identity_fingerprint(company),
             )
         )
@@ -2174,7 +2243,11 @@ def _raw_document(
             "input_truncated": truncated,
             "discovered_by": candidate.get("discovered_by", []),
             "research_job_id": str(job.id),
-            "content_extraction": dict(discovered.metadata),
+            "content_extraction": {
+                **dict(discovered.metadata),
+                "stored_characters": len(excerpt),
+                "stored_windows_coordinate_space": "acquired_excerpt",
+            },
             "quality_gate": quality.to_dict(),
             "_source_verification": {
                 "status": discovered.link_health_status,
@@ -2250,10 +2323,14 @@ def _candidate_event(
         )
         quality = replace(
             quality,
-            eligible=bool(events) and quality.eligible,
+            eligible=bool(events),
+            event_type=events[0].event_type if len({e.event_type for e in events}) == 1 else None,
+            matter_categories=tuple(sorted({e.event_type for e in events})),
+            matter_ids=tuple(sorted({str(e.id) for e in events})),
+            disposition="matters_retained" if events else "no_supported_matter",
             matters_created=created,
             matters_linked=linked,
-            reasons=(*quality.reasons, "typed_matter_processing"),
+            reasons=("typed_matter_processing", "publication_not_authorized"),
         )
         return events[0] if events else None, bool(created), quality
     if not quality.eligible or quality.event_type is None or quality.supporting_excerpt is None:
@@ -3043,6 +3120,7 @@ def _fetch_candidate(
     downloaded_bytes = 0
     error_code: str | None = None
     http_status: int | None = None
+    transport_failures = []
     usage = None
     fetch_accounted = False
     if cached_document is not None:
@@ -3079,6 +3157,12 @@ def _fetch_candidate(
                 "quality_gate": quality.to_dict(),
                 "source_access_status": candidate["source_access_status"],
                 "coverage_category": quality.event_type,
+                "matter_categories": list(quality.matter_categories),
+                "searched_topics": [
+                    job.coverage.get("search_groups", {}).get(k, {}).get("topic_category")
+                    for k in candidate.get("query_kinds", [candidate.get("query_kind")])
+                ],
+                "disposition": quality.disposition,
                 "attempted_at": utc_now().isoformat(),
                 "checked_at": cached_document.payload.get("_source_verification", {}).get(
                     "checked_at"
@@ -3263,6 +3347,16 @@ def _fetch_candidate(
                                     "quality_gate": quality.to_dict(),
                                     "source_access_status": candidate["source_access_status"],
                                     "coverage_category": quality.event_type,
+                                    "matter_categories": list(quality.matter_categories),
+                                    "searched_topics": [
+                                        job.coverage.get("search_groups", {})
+                                        .get(k, {})
+                                        .get("topic_category")
+                                        for k in candidate.get(
+                                            "query_kinds", [candidate.get("query_kind")]
+                                        )
+                                    ],
+                                    "disposition": quality.disposition,
                                     "attempted_at": utc_now().isoformat(),
                                     "checked_at": (
                                         professional.cached_at.isoformat()
@@ -3287,6 +3381,11 @@ def _fetch_candidate(
                 downloaded_bytes = fetcher.downloaded_bytes
                 error_code = error.code
                 http_status = error.http_status
+                transport_failures = [
+                    {k: row[k] for k in ("error_type", "phase") if k in row}
+                    for row in getattr(fetcher, "request_log", [])
+                    if row.get("error_type")
+                ]
             finally:
                 fetcher.close()
         if not fetch_accounted:
@@ -3300,6 +3399,7 @@ def _fetch_candidate(
                     "status": "completed" if error_code is None else "failed",
                     "error_code": error_code,
                     "downloaded_bytes": downloaded_bytes,
+                    "transport_failures": transport_failures,
                 },
             )
         if error_code is not None:
@@ -3329,6 +3429,7 @@ def _fetch_candidate(
                     "error_code": error_code,
                     "source_access_status": candidate["source_access_status"],
                     "http_status": http_status,
+                    "transport_failures": transport_failures,
                     "coverage_category": candidate.get("coverage_category"),
                     "attempted_at": utc_now().isoformat(),
                     "checked_at": None,
@@ -3338,6 +3439,7 @@ def _fetch_candidate(
     if policy.matter_processing_enabled:
         coverage["matter_dispositions"] = job.coverage.get("matter_dispositions", [])
         coverage["budget_baseline"] = job.coverage.get("budget_baseline", {})
+        coverage["model_budget_exhausted"] = job.coverage.get("model_budget_exhausted", False)
         coverage["stats"] = {
             **coverage.get("stats", {}),
             "model_calls": job.coverage.get("stats", {}).get("model_calls", 0),
@@ -3400,22 +3502,49 @@ def _finalize(session: Session, job: CompanyResearchJob) -> WebResearchWorkerRes
     coverage["completed_at"] = utc_now().isoformat()
     coverage["failed_documents"] = sum(1 for item in documents if item.get("status") == "failed")
     job.coverage = coverage
-    job.status = "completed"
+    partial = bool(
+        coverage.get("model_budget_exhausted")
+        or coverage.get("failed_documents")
+        or coverage.get("stop_reason")
+        in {
+            "http_limit_reached",
+            "byte_limit_reached",
+            "document_limit_reached",
+            "max_elapsed_seconds_reached",
+            "reconciled_result_unavailable",
+        }
+    ) and coverage.get("matter_processing", False)
+    coverage["completion_status"] = "partial" if partial else "complete"
+    coverage["unique_matters_retained"] = len(
+        {
+            event_id
+            for d in documents
+            for event_id in d.get("quality_gate", {}).get("matter_ids", [])
+        }
+    )
+    job.coverage = coverage
+    job.status = "failed" if partial else "completed"
     job.current_stage = "completed"
     job.leased_until = None
     job.heartbeat_at = utc_now()
-    job.last_error_code = None
+    job.last_error_code = (
+        "model_budget_exhausted"
+        if coverage.get("model_budget_exhausted")
+        else "partial_result"
+        if partial
+        else None
+    )
     for request in _linked_requests(session, job.id):
         if request.status in ACTIVE_REQUEST_STATUSES:
-            request.status = "completed"
+            request.status = job.status
             request.leased_until = None
             request.heartbeat_at = job.heartbeat_at
-            request.last_error_code = None
+            request.last_error_code = job.last_error_code
     _record_watch_outcome(session, job)
     session.commit()
     stats = coverage.get("stats", {})
     return WebResearchWorkerResult(
-        status="completed",
+        status=job.status,
         job_id=job.id,
         company_id=job.company_id,
         stage="completed",
@@ -3552,12 +3681,35 @@ def _run_web_research_worker_once(
     if policy.incremental_research_enabled:
         company = load_subject(session, company)
         coverage = dict(job.coverage)
+        company = replace(
+            company,
+            research_intent=coverage.get("research_intent", "discovery"),
+            reference_at=coverage.get("reference_at"),
+            event_window_days=policy.recent_change_window_days,
+        )
         coverage["matter_processing"] = policy.matter_processing_enabled
         coverage.setdefault("query_strategy_version", QUERY_STRATEGY_VERSION)
         if planning.planned(coverage) and job.trigger_type != "watchlist":
             groups = {code: dict(state) for code, state in coverage["search_groups"].items()}
             for state in groups.values():
                 state.setdefault("query_text", short_business_query(company, state["topic"]))
+                state.setdefault(
+                    "query_plan",
+                    {
+                        "version": "intent-name-v2",
+                        "intent": company.research_intent,
+                        "name": state["query_text"].split('"')[1],
+                        "name_type": dict(company.name_types).get(
+                            state["query_text"].split('"')[1], "legal_name"
+                        ),
+                        "category": state.get("topic_category"),
+                        "sub_intent": state["topic"],
+                        "reason": "verified_public_name_and_rotating_topic",
+                        "syntax": "single_quoted_name_plain_terms",
+                        "reference_at": company.reference_at,
+                        "event_window_days": company.event_window_days,
+                    },
+                )
             coverage["search_groups"] = groups
         elif (
             coverage["query_strategy_version"] == SHORT_QUERY_STRATEGY_VERSION

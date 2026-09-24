@@ -21,8 +21,8 @@ GROUPS = ("business_capital", "technology_risk_exit")
 def topic_terms(category, policy):
     if policy.matter_processing_enabled:
         return {
-            "financing_cap_table": "融资 对外投资 基金认缴 股权",
-            "exit_liquidity": "IPO 辅导 备案 聆讯 上市 并购",
+            "financing_cap_table": "融资",
+            "exit_liquidity": "IPO 递表 招股书",
         }.get(category, TOPICS[category])
     return TOPICS[category]
 
@@ -72,17 +72,42 @@ def topic_categories(coverage):
     ]
 
 
+def document_categories(document):
+    return set(document.get("matter_categories") or [document.get("coverage_category")])
+
+
+def checked_document(document):
+    return document.get("status") in {"created", "reused"} and (
+        eligible_document(document)
+        or document.get("disposition")
+        in {"no_supported_matter", "duplicate", "historical", "matters_retained"}
+    )
+
+
 def eligible_document(document, category=None):
     return (
         document.get("status") in {"created", "reused"}
         and document.get("quality_gate", {}).get("status") == "eligible"
-        and (category is None or document.get("coverage_category") == category)
+        and (category is None or category in document_categories(document))
     )
 
 
 def order_candidates(candidates, coverage):
     """调用者先按证据等级/时间排序，再按类别轮转；已处理前缀不传入此函数。"""
-    remaining = list(candidates)
+    remaining, seen_titles, identity_slots = [], set(), 0
+    for original in candidates:
+        item = dict(original)
+        signature = re.sub(r"\s|[，,。！!：:]", "", str(item.get("title", "")))
+        duplicate = len(signature) >= 12 and signature in seen_titles
+        if duplicate:
+            item["scheduling_reason"] = "duplicate_title_deferred"
+        if item.get("identity_pending"):
+            identity_slots += 1
+            if identity_slots > 1:
+                item["scheduling_reason"] = "identity_verification_slot_exhausted"
+        seen_titles.add(signature)
+        remaining.append(item)
+    remaining.sort(key=lambda c: bool(c.get("scheduling_reason")))
     ordered = []
     categories = topic_categories(coverage)
     documents = coverage.get("documents", [])
@@ -94,7 +119,9 @@ def order_candidates(candidates, coverage):
                 (
                     item
                     for item in remaining
-                    if item.get("coverage_category") == category and not directory_page(item["url"])
+                    if item.get("coverage_category") == category
+                    and not directory_page(item["url"])
+                    and not item.get("scheduling_reason")
                 ),
                 None,
             )
@@ -104,7 +131,13 @@ def order_candidates(candidates, coverage):
                 changed = True
         if not changed:
             break
-    return [*ordered, *sorted(remaining, key=lambda item: directory_page(item["url"]))]
+    return [
+        *ordered,
+        *sorted(
+            remaining,
+            key=lambda item: (bool(item.get("scheduling_reason")), directory_page(item["url"])),
+        ),
+    ]
 
 
 def document_limit(coverage, policy):
@@ -153,10 +186,14 @@ def successful_topic_checks(histories):
                 for c in coverage.get("deferred_candidates", [])
             ):
                 continue
-            relevant_docs = [d for d in docs if d.get("coverage_category") == category]
+            relevant_docs = [
+                d
+                for d in docs
+                if category in document_categories(d) or category in d.get("searched_topics", [])
+            ]
             if any(d.get("status") == "failed" for d in relevant_docs):
                 continue
-            eligible = {d["url"]: d for d in relevant_docs if eligible_document(d, category)}
+            eligible = {d["url"]: d for d in relevant_docs if checked_document(d)}
             if any(c["url"] not in eligible for c in candidates):
                 continue
             if not eligible and group.get("subject_results") != 0:

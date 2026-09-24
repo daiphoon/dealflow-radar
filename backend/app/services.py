@@ -1792,30 +1792,36 @@ def _event_out(
     *,
     allow_organization_private: bool,
     allow_platform_admin_private: bool = False,
+    as_of: datetime | None = None,
+    preloaded: dict | None = None,
 ) -> EventOut:
-    evidence_rows = list(
-        session.scalars(
-            select(EventEvidence).where(
-                EventEvidence.event_id == event.id,
-                *(
-                    (
-                        EventEvidence.visibility_scope.in_(
-                            [
-                                PLATFORM_SHARED_SCOPE,
-                                PERSONAL_PRIVATE_SCOPE,
-                                ORGANIZATION_PRIVATE_SCOPE,
-                            ]
-                        ),
-                    )
-                    if allow_platform_admin_private
-                    else (
-                        _readable_scope_clause(
-                            EventEvidence,
-                            user,
-                            allow_organization_private=allow_organization_private,
-                        ),
-                    )
-                ),
+    evidence_rows = (
+        preloaded["evidence"]
+        if preloaded is not None
+        else list(
+            session.scalars(
+                select(EventEvidence).where(
+                    EventEvidence.event_id == event.id,
+                    *(
+                        (
+                            EventEvidence.visibility_scope.in_(
+                                [
+                                    PLATFORM_SHARED_SCOPE,
+                                    PERSONAL_PRIVATE_SCOPE,
+                                    ORGANIZATION_PRIVATE_SCOPE,
+                                ]
+                            ),
+                        )
+                        if allow_platform_admin_private
+                        else (
+                            _readable_scope_clause(
+                                EventEvidence,
+                                user,
+                                allow_organization_private=allow_organization_private,
+                            ),
+                        )
+                    ),
+                )
             )
         )
     )
@@ -1968,17 +1974,28 @@ def _event_out(
                 if display_kind == "confirmed_change" and request is not None
                 else False
             )
-        stored_analysis = session.scalar(
-            select(InvestorChangeAnalysis)
-            .where(
-                InvestorChangeAnalysis.event_id == event.id,
-                InvestorChangeAnalysis.visibility_scope == PLATFORM_SHARED_SCOPE,
-                InvestorChangeAnalysis.status == "completed",
-                InvestorChangeAnalysis.schema_version == INVESTOR_ANALYSIS_SCHEMA_VERSION,
-                current_input_filter,
+        stored_analysis = (
+            next(
+                (
+                    a
+                    for a in preloaded["analyses"]
+                    if a.schema_version == INVESTOR_ANALYSIS_SCHEMA_VERSION
+                ),
+                None,
             )
-            .order_by(InvestorChangeAnalysis.created_at.desc())
-            .limit(1)
+            if preloaded is not None and not is_tender_event(event)
+            else session.scalar(
+                select(InvestorChangeAnalysis)
+                .where(
+                    InvestorChangeAnalysis.event_id == event.id,
+                    InvestorChangeAnalysis.visibility_scope == PLATFORM_SHARED_SCOPE,
+                    InvestorChangeAnalysis.status == "completed",
+                    InvestorChangeAnalysis.schema_version == INVESTOR_ANALYSIS_SCHEMA_VERSION,
+                    current_input_filter,
+                )
+                .order_by(InvestorChangeAnalysis.created_at.desc())
+                .limit(1)
+            )
         )
         if stored_analysis is not None and isinstance(stored_analysis.analysis_output, dict):
             try:
@@ -1993,16 +2010,28 @@ def _event_out(
                     analysis_output = candidate_analysis
             except ValueError:
                 analysis_output = None
-        stored_research_analysis = session.scalar(
-            select(InvestorChangeAnalysis)
-            .where(
-                InvestorChangeAnalysis.event_id == event.id,
-                InvestorChangeAnalysis.visibility_scope == PLATFORM_SHARED_SCOPE,
-                InvestorChangeAnalysis.status == "completed",
-                InvestorChangeAnalysis.schema_version == RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION,
+        stored_research_analysis = (
+            next(
+                (
+                    a
+                    for a in preloaded["analyses"]
+                    if a.schema_version == RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION
+                ),
+                None,
             )
-            .order_by(InvestorChangeAnalysis.created_at.desc())
-            .limit(1)
+            if preloaded is not None
+            else session.scalar(
+                select(InvestorChangeAnalysis)
+                .where(
+                    InvestorChangeAnalysis.event_id == event.id,
+                    InvestorChangeAnalysis.visibility_scope == PLATFORM_SHARED_SCOPE,
+                    InvestorChangeAnalysis.status == "completed",
+                    InvestorChangeAnalysis.schema_version
+                    == RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION,
+                )
+                .order_by(InvestorChangeAnalysis.created_at.desc())
+                .limit(1)
+            )
         )
         if stored_research_analysis is not None and isinstance(
             stored_research_analysis.analysis_output, dict
@@ -2020,11 +2049,15 @@ def _event_out(
             except ValueError:
                 research_analysis_output = None
     visible_evidence_ids = {item.id for item in evidence_items}
-    fact_rows = list(
-        session.scalars(
-            select(EventFact)
-            .where(EventFact.event_id == event.id)
-            .order_by(EventFact.position, EventFact.fact_key)
+    fact_rows = (
+        preloaded["facts"]
+        if preloaded is not None
+        else list(
+            session.scalars(
+                select(EventFact)
+                .where(EventFact.event_id == event.id)
+                .order_by(EventFact.position, EventFact.fact_key)
+            )
         )
     )
     if event.fingerprint_version in {"tender-v1", "curated-v1"}:
@@ -2035,11 +2068,15 @@ def _event_out(
         fact_rows = [fact for fact in fact_rows if fact.fact_key in current_keys]
     supports_by_fact: dict[UUID, list[FactEvidenceSupportOut]] = {}
     if visible_evidence_ids:
-        support_rows = list(
-            session.scalars(
-                select(EventFactSupport).where(
-                    EventFactSupport.event_id == event.id,
-                    EventFactSupport.event_evidence_id.in_(visible_evidence_ids),
+        support_rows = (
+            [v for v in preloaded["supports"] if v.event_evidence_id in visible_evidence_ids]
+            if preloaded is not None
+            else list(
+                session.scalars(
+                    select(EventFactSupport).where(
+                        EventFactSupport.event_id == event.id,
+                        EventFactSupport.event_evidence_id.in_(visible_evidence_ids),
+                    )
                 )
             )
         )
@@ -2174,6 +2211,29 @@ def _event_out(
         if len(matter_dates) == 1
         else None
     )
+    if matters:
+        from types import SimpleNamespace
+
+        from backend.app.matter_retention import temporal_status
+
+        reference = as_of or utc_now()
+        matters = [
+            {
+                **m,
+                "temporal_status": temporal_status(
+                    SimpleNamespace(status=m.get("status"), fields=m.get("fields", {})),
+                    SimpleNamespace(
+                        observed_at=reference,
+                        published_on=date.fromisoformat(m["source_published_on"])
+                        if m.get("source_published_on")
+                        else None,
+                    ),
+                    m.get("recent_window_days", 365),
+                    as_of=reference,
+                ),
+            }
+            for m in matters
+        ]
     temporal = (
         "future_or_planned"
         if any(m.get("temporal_status") == "future_or_planned" for m in matters)
@@ -3442,6 +3502,51 @@ def current_shared_company_content(
     return results
 
 
+def _company_event_outputs(session, events, user, *, allow_organization_private):
+    # 仅在当前已授权请求内批量读取；不在 Session 或跨用户缓存中保存私有结果。
+    if not events:
+        return []
+    ids = [event.id for event in events]
+    bundles = {
+        event_id: {k: [] for k in ("evidence", "facts", "supports", "analyses")} for event_id in ids
+    }
+    queries = {
+        "evidence": select(EventEvidence).where(
+            EventEvidence.event_id.in_(ids),
+            _readable_scope_clause(
+                EventEvidence, user, allow_organization_private=allow_organization_private
+            ),
+        ),
+        "facts": select(EventFact)
+        .where(EventFact.event_id.in_(ids))
+        .order_by(EventFact.position, EventFact.fact_key),
+        "supports": select(EventFactSupport).where(EventFactSupport.event_id.in_(ids)),
+        "analyses": select(InvestorChangeAnalysis)
+        .where(
+            InvestorChangeAnalysis.event_id.in_(ids),
+            InvestorChangeAnalysis.visibility_scope == PLATFORM_SHARED_SCOPE,
+            InvestorChangeAnalysis.status == "completed",
+            InvestorChangeAnalysis.schema_version.in_(
+                [INVESTOR_ANALYSIS_SCHEMA_VERSION, RESEARCH_CANDIDATE_ANALYSIS_SCHEMA_VERSION]
+            ),
+        )
+        .order_by(InvestorChangeAnalysis.created_at.desc()),
+    }
+    for key, query in queries.items():
+        for row in session.scalars(query):
+            bundles[row.event_id][key].append(row)
+    return [
+        _event_out(
+            session,
+            event,
+            user,
+            allow_organization_private=allow_organization_private,
+            preloaded=bundles[event.id],
+        )
+        for event in events
+    ]
+
+
 def get_company_detail(
     session: Session,
     user: User,
@@ -3535,16 +3640,21 @@ def get_company_detail(
             PersonalCompanyRequest.owner_user_id == user.id,
             PersonalCompanyRequest.company_id == company_id,
             CompanyResearchJob.company_id == company_id,
-            PersonalCompanyRequest.status == "completed",
-            CompanyResearchJob.status == "completed",
+            PersonalCompanyRequest.status.in_(["completed", "failed"]),
+            or_(
+                CompanyResearchJob.status == "completed",
+                and_(
+                    CompanyResearchJob.status == "failed",
+                    CompanyResearchJob.coverage["completion_status"].as_string() == "partial",
+                ),
+            ),
         )
         .order_by(PersonalCompanyRequest.created_at.desc(), PersonalCompanyRequest.id.desc())
         .limit(1)
     )
-    shared_outputs = [
-        _event_out(session, event, user, allow_organization_private=bool(investment_rows))
-        for event in events
-    ]
+    shared_outputs = _company_event_outputs(
+        session, events, user, allow_organization_private=bool(investment_rows)
+    )
     withdrawn_outputs = [item for item in shared_outputs if item.display_kind == "unconfirmed"]
     detail = CompanyDetail(
         id=company.id,
@@ -3574,34 +3684,16 @@ def get_company_detail(
             for investment, fund in investment_rows
         ],
         events=[item for item in shared_outputs if item.display_kind != "unconfirmed"],
-        platform_unconfirmed_leads=[
-            _event_out(
-                session,
-                event,
-                user,
-                allow_organization_private=False,
-            )
-            for event in platform_unconfirmed_leads
-        ]
+        platform_unconfirmed_leads=_company_event_outputs(
+            session, platform_unconfirmed_leads, user, allow_organization_private=False
+        )
         + withdrawn_outputs,
-        private_events=[
-            _event_out(
-                session,
-                event,
-                user,
-                allow_organization_private=bool(investment_rows),
-            )
-            for event in private_events
-        ],
-        unconfirmed_leads=[
-            _event_out(
-                session,
-                event,
-                user,
-                allow_organization_private=bool(investment_rows),
-            )
-            for event in unconfirmed_leads
-        ],
+        private_events=_company_event_outputs(
+            session, private_events, user, allow_organization_private=bool(investment_rows)
+        ),
+        unconfirmed_leads=_company_event_outputs(
+            session, unconfirmed_leads, user, allow_organization_private=bool(investment_rows)
+        ),
     )
     if (
         investment_rows

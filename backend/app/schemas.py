@@ -187,6 +187,7 @@ class CuratedVersionOut(BaseModel):
 
 
 class MatterObservationOut(BaseModel):
+    relations: list[dict[str, str]] = Field(default_factory=list)
     temporal_status: str = "date_unknown"
     source_channel: str = "unclassified_public_page"
     source_published_on: date | None = None

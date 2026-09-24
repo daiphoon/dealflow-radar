@@ -6,7 +6,7 @@ from decimal import ROUND_UP, Decimal
 from typing import Protocol
 
 import httpx
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from backend.app import web_research_budget as budget
 from backend.app.matter_dispositions import record, relevant_windows
@@ -47,7 +47,9 @@ def extraction_payload(subject, text, policy, *, max_chars=4000):
                     "区分自身融资、对外投资、基金认缴、注册资本、估值、股份数量及IPO各阶段。"
                     "必须标注subtype、category、subject_role、scope和status。投资方不等于融资方，买方不等于标的。"
                     "字段value及quote逐字来自原文，role明确标注金额性质或occurred/disclosed/planned日期口径。"
-                    "未知字段不输出，不得按发布日期补造发生日；一份材料可提出多个事项。"
+                    "未知字段不输出，不得按发布日期补造发生日。每次最多4个事项，优先具体动作；"
+                    "action_quote只取包含主体、动作及其否认或计划的必要连续句，字段quote取最短支持分句，"
+                    "不要重复整篇原文，不完整JSON不得输出。"
                 ),
             },
             {
@@ -108,6 +110,12 @@ class DeepSeekMatterProvider:
         choice = choices[0]
         if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
             raise ValueError("model response lacks a message")
+        finish_reason = choice.get("finish_reason")
+        failure_reason = (
+            None
+            if finish_reason == "stop"
+            else ("output_truncated" if finish_reason == "length" else "non_stop_finish")
+        )
         try:
             output = (
                 json.loads(choice["message"]["content"])
@@ -116,8 +124,11 @@ class DeepSeekMatterProvider:
             )
         except (ValueError, TypeError):
             output = None
+            failure_reason = "invalid_json"
         return {
             "output": output,
+            "finish_reason": finish_reason,
+            "failure_reason": failure_reason,
             "raw_response_content": choice["message"].get("content"),
             "input_tokens": usage.get("prompt_tokens"),
             "output_tokens": usage.get("completion_tokens"),
@@ -211,6 +222,33 @@ def document_matters(session, actor, job, subject, document, policy, provider=No
                 return merge_matters(rules, proposed)
             record(document, "model_validation", "rejected", "cached_output_invalid")
             return rules
+    held = session.scalar(
+        select(UsageLedger.id)
+        .where(
+            UsageLedger.quota_scope == budget.SCOPE,
+            UsageLedger.task_key == f"web-research:{job.id}",
+            UsageLedger.usage_state.in_(["in_flight", "uncertain"]),
+        )
+        .limit(1)
+    )
+    if held is not None:
+        record(document, "model", "deferred", "unresolved_spend_no_retry")
+        raise budget.WebResearchBudgetDeferred("model result or spend unresolved")
+    baseline = int(job.coverage.get("budget_baseline", {}).get("model_calls", 0))
+    used = (
+        session.scalar(
+            select(func.coalesce(func.sum(budget.charged_calls()), 0)).where(
+                UsageLedger.quota_scope == budget.SCOPE,
+                UsageLedger.task_key == f"web-research:{job.id}",
+                UsageLedger.operation == "matter_extraction",
+            )
+        )
+        or 0
+    )
+    if baseline + used >= policy.max_model_calls_per_job:
+        record(document, "model", "skipped", "model_budget_exhausted")
+        job.coverage = {**job.coverage, "model_budget_exhausted": True}
+        return rules
     from backend.app.web_research_service import _reserve_job_call
 
     upper = (
@@ -268,7 +306,7 @@ def document_matters(session, actor, job, subject, document, policy, provider=No
             **result,
             "raw_output": result.get("output"),
             "output": output,
-            "status": "parsed" if output else "invalid_output",
+            "status": "parsed" if output else result.get("failure_reason") or "invalid_schema",
         },
     )
     row.input_tokens = result.get("input_tokens", 0)
@@ -286,7 +324,7 @@ def document_matters(session, actor, job, subject, document, policy, provider=No
     proposed, rejected = (
         validate_proposals(subject, body, output, legacy_compat=False)
         if output
-        else ([], [{"reason": "invalid_output"}])
+        else ([], [{"reason": result.get("failure_reason") or "invalid_schema"}])
     )
     record(
         document,

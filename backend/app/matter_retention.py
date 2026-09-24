@@ -3,17 +3,25 @@
 import re
 from datetime import UTC, date, timedelta
 
+from backend.app.matter_dates import occurrence
+
 RETENTION_VERSION = "matter-retention-v1"
 
 
-def temporal_status(matter, document, window_days):
-    if matter.status in {"planned", "conditional"}:
+def temporal_status(matter, document, window_days, *, as_of=None):
+    if matter.status in {"planned", "conditional", "committed"}:
         return "future_or_planned"
-    observed = document.observed_at
+    observed = as_of or document.observed_at
     if observed.tzinfo is None:
         observed = observed.replace(tzinfo=UTC)
     cutoff = (observed - timedelta(days=window_days)).date()
-    occurred = matter.fields.get("date", {}).get("iso")
+    time = occurrence(matter.fields)
+    occurred = time.get("iso")
+    if not occurred and time.get("interval_end"):
+        if date.fromisoformat(time["interval_end"]) < cutoff:
+            return "historical"
+        if date.fromisoformat(time["interval_start"]) > observed.date():
+            return "future_or_planned"
     if occurred:
         day = date.fromisoformat(occurred)
         if day > observed.date():
