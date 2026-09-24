@@ -40,6 +40,9 @@ def temporal_status(matter, document, window_days, *, as_of=None):
 
 def source_channel(document, default_quality):
     content = str(document.payload.get("excerpt") or "")
+    content += " " + " ".join(
+        document.payload.get("content_extraction", {}).get("source_markers", [])
+    )
     material = document.payload.get("content_extraction", {}).get("material_type")
     url = document.canonical_url
     if material == "generated_commentary" or re.search(

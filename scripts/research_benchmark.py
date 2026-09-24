@@ -119,6 +119,7 @@ class Manifest(StrictModel):
     max_output_tokens: int = Field(default=1800, ge=100, le=2000)
     limits: Limits
     cases: list[Case] = Field(min_length=1, max_length=80)
+    extraction_mode: Literal["legacy_eval_v1", "production"] = "legacy_eval_v1"
 
     @model_validator(mode="after")
     def unique_ids(self):
@@ -174,6 +175,18 @@ def validate_evidence(output, case):
 
 
 def model_payload(manifest, case):
+    if manifest.extraction_mode == "production":
+        from backend.app.research_extraction import extraction_payload
+
+        return extraction_payload(
+            SimpleNamespace(
+                legal_name=case.names[0], aliases=tuple(case.names[1:]), legal_aliases=()
+            ),
+            case.text,
+            SimpleNamespace(
+                extraction_model=manifest.model, max_model_output_tokens=manifest.max_output_tokens
+            ),
+        )
     return {
         "model": manifest.model,
         "messages": [
@@ -405,7 +418,9 @@ def execute_case(manifest, case, env, client):
         "usage": usage,
         "model": response.get("model"),
         "external_calls": 1,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": (
+            "production" if manifest.extraction_mode == "production" else PROMPT_VERSION
+        ),
         "input_sha256": digest(model_payload(manifest, case)),
     }
     choice = response["choices"][0]
@@ -415,7 +430,19 @@ def execute_case(manifest, case, env, client):
     try:
         if choice.get("finish_reason") != "stop":
             raise ValueError("incomplete generation")
-        result["extraction"] = validate_evidence(json.loads(output), case)
+        if manifest.extraction_mode == "production":
+            from backend.app.research_matters import validate_proposals
+
+            subject = SimpleNamespace(
+                legal_name=case.names[0], aliases=tuple(case.names[1:]), legal_aliases=()
+            )
+            accepted, rejected = validate_proposals(
+                subject, case.text, json.loads(output), legacy_compat=False
+            )
+            result["extraction"] = [m.payload() for m in accepted]
+            result["rejected"] = rejected
+        else:
+            result["extraction"] = validate_evidence(json.loads(output), case)
         result["validation"] = "source_spans_passed_semantics_pending"
     except (ValueError, TypeError):
         result["validation"] = "rejected"
@@ -507,7 +534,16 @@ def main():
     parser.add_argument("--manifest-sha256")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--provider", choices=[*KEYS, "direct"])
+    parser.add_argument("--offline-production", action="store_true")
     args = parser.parse_args()
+    if args.offline_production:
+        if args.execute or args.output is None:
+            parser.error("offline production replay requires --output and forbids --execute")
+        from scripts.research_replay import replay_file
+
+        result = replay_file(args.manifest, args.output)
+        print(json.dumps(result, ensure_ascii=False))
+        return
     manifest = Manifest.model_validate_json(args.manifest.read_text())
     if args.execute:
         if args.output is None:
