@@ -1,0 +1,9 @@
+{
+  "sample_origin": "synthetic",
+  "reference_at": "2026-09-24T12:00:00+08:00",
+  "event_window_days": 90,
+  "cases": [
+    {"id": "synthetic-financing", "legal_name": "虚构甲科技有限公司", "aliases": ["虚构甲"], "body": "虚构甲于2026年9月完成A轮融资，金额为1亿元。", "observed_stages": {"body_available": true, "retained_context": true}},
+    {"id": "synthetic-missing-body", "legal_name": "虚构乙有限公司", "not_retained_reason": "synthetic_unavailable_body", "observed_stages": {"body_available": false}}
+  ]
+}

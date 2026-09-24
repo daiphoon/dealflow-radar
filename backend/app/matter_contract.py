@@ -1,6 +1,9 @@
 """跨抽取、验证、归并和展示共用的类型定义；候选规则与语义判断独立。"""
 
-CONTRACT_VERSION = "matter-contract-v2"
+from typing import Literal
+
+CONTRACT_VERSION = "matter-contract-v3"
+MAX_PROPOSED_MATTERS = 4
 
 LABELS = {
     "fund_commitment": "基金认缴",
@@ -97,3 +100,14 @@ def subject_role(subtype):
     if subtype == "fund_commitment":
         return "investor"
     return "issuer" if subtype.startswith("ipo_") else "actor"
+
+
+MatterSubtype = Literal[tuple(LABELS)]
+MatterCategory = Literal[tuple(dict.fromkeys(CATEGORIES.values()))]
+
+
+def model_contract():
+    return {
+        key: {"definition": label, "category": CATEGORIES[key], "subject_role": subject_role(key)}
+        for key, label in LABELS.items()
+    }

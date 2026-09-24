@@ -36,10 +36,21 @@ def previous_matters(session, event, subject, *, evidence=None, observations=Non
         evidence = list(
             session.scalars(select(EventEvidence).where(EventEvidence.event_id == event.id))
         )
-    visible_ids = {
-        e.raw_document_id
+    if event.status in {"retracted", "rejected"}:
+        return []
+    from backend.app.evidence_integrity import usable_matter_evidence
+
+    active = {
+        (
+            e.raw_document_id,
+            e.evidence_excerpt,
+            (e.display_detail_payload or {}).get("matter_observation", {}).get("fact_version"),
+            (e.display_detail_payload or {})
+            .get("matter_observation", {})
+            .get("processing_version"),
+        )
         for e in evidence
-        if e.display_allowed and e.display_license_status == "public"
+        if e.visibility_scope == "platform_shared" and usable_matter_evidence(session, e)
     }
     if observations is None:
         observations = list(
@@ -51,7 +62,16 @@ def previous_matters(session, event, subject, *, evidence=None, observations=Non
             )
         )
     rows = [
-        r for r in observations if r.schema_version == VERSION and r.raw_document_id in visible_ids
+        r
+        for r in observations
+        if r.schema_version == VERSION
+        and (
+            r.raw_document_id,
+            r.candidate_payload.get("matter", {}).get("action"),
+            r.fact_version,
+            r.processing_version,
+        )
+        in active
     ]
     candidates = [Matter(**r.candidate_payload["matter"]) for r in rows]
     if event.fingerprint_version == "curated-v1":
@@ -123,6 +143,8 @@ def persist_matters(
     output, created, attached = [], 0, 0
     for matter in matters:
         body = str(document.payload.get("excerpt") or "")
+        from backend.app.matter_fragments import continuous_quote
+
         mentions = {
             n
             for _, n in subject_mentions(
@@ -130,7 +152,7 @@ def persist_matters(
             )
         }
         if (
-            matter.action not in body
+            not continuous_quote(document, matter.action)
             or matter.subject not in mentions
             or not actor_supported(matter.subject, matter.action, matter.subtype)
             or not action_supported(matter.action, matter.subtype)

@@ -62,6 +62,7 @@ def load_subject(session: Session, company: Company) -> ResearchSubject:
             "brand",
             "short_name",
             "former_name",
+            "former_legal_name",
             "trade_name",
         }:
             continue
@@ -79,7 +80,7 @@ def load_subject(session: Session, company: Company) -> ResearchSubject:
         for row in rows
         if row.company_id == company.id
         and row.alias in selected
-        and row.alias_type == "former_name"
+        and row.alias_type in {"former_name", "former_legal_name"}
     )
     return ResearchSubject(
         company,
@@ -160,6 +161,10 @@ class BusinessExcerptSelector:
     def __call__(self, body: str) -> str:
         from backend.app.web_research_service import _event_classification
 
+        markers = [
+            v for v in ("人工智能生成", "AI生成", "AI投资人解读", "转载自", "用户投稿") if v in body
+        ]
+
         if self.max_excerpt_chars > 1500:
             from backend.app.matter_dispositions import relevant_windows
 
@@ -181,6 +186,7 @@ class BusinessExcerptSelector:
                 chunks.append(window["text"])
                 offset += len(window["text"])
             self.metadata = {
+                "source_markers": markers,
                 "retained_spans": spans,
                 "selector_version": "business-passages-v2",
                 "excerpt_location_basis": "normalized_clean_body",
@@ -208,6 +214,7 @@ class BusinessExcerptSelector:
                     break
         excerpt = body[start : start + self.max_excerpt_chars]
         self.metadata = {
+            "source_markers": markers,
             "excerpt_start": start,
             "excerpt_end": start + len(excerpt),
             "excerpt_location_basis": "normalized_clean_body",

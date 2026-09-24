@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import unicodedata
 from collections.abc import Callable
@@ -645,6 +646,13 @@ def prepare_pending_research_requests(
                         "providers": {},
                         "topic_category": category,
                         "topic": planning.topic_terms(category, policy),
+                        **(
+                            planning.plan_intent(
+                                category, [j.coverage for j in reversed(histories)]
+                            )
+                            if policy.matter_processing_enabled
+                            else {}
+                        ),
                     }
                     for code, category in assignments.items()
                 }
@@ -1321,6 +1329,23 @@ def _provider_response(
     stats["search_calls"] = int(stats.get("search_calls", 0)) + response.external_calls
     coverage["stats"] = stats
     job.coverage = coverage
+    retained = list(job.coverage.get("normalized_search_responses", []))
+    retained.append(
+        {
+            "provider": provider.code,
+            "query_kind": query_kind,
+            "retention": "normalized_complete_candidate_set",
+            "results": [
+                {
+                    **{key: value for key, value in item.to_dict().items() if key != "source_body"},
+                    "subject_match": _subject_match(company, item),
+                    "qualified": _qualified_subject_result(company, item, policy),
+                }
+                for item in response.results
+            ],
+        }
+    )
+    job.coverage = {**job.coverage, "normalized_search_responses": retained}
     _store_search_response(session, company, response, query_kind, query, policy)
     budget.settle(
         session,
@@ -1972,7 +1997,9 @@ def _document_cache(
     )
     for document in documents:
         excerpt = str(document.payload.get("excerpt") or "")
-        if _document_matches_company(company, document.title, excerpt, document.canonical_url):
+        if document.payload.get("selector_company_id") not in {None, str(company.id)}:
+            continue
+        if _document_matches_company(company, "", excerpt, ""):
             return document
     return None
 
@@ -2197,29 +2224,36 @@ def _raw_document(
     quality: _ContentQualityDecision,
 ) -> tuple[RawDocument, bool]:
     canonical_url = str(discovered.canonical_url)
+    # 来源版本与保留表示分开：相同抓取哈希可有多个不相同的摘录。
+    excerpt = discovered.excerpt or ""
+    matter_processing = getattr(job, "coverage", {}).get("matter_processing", False)
+    original_length = len(excerpt)
+    excerpt = excerpt[:12000] if matter_processing else excerpt.strip()[:1500]
+    truncated = len(excerpt) < original_length
+    source_windows = []
+    representation = _sha256(
+        json.dumps(
+            {
+                "excerpt": excerpt,
+                "selector": discovered.metadata.get("selector_version", "legacy-contiguous"),
+                "spans": discovered.metadata.get("retained_spans"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    source_version = _sha256(f"{source.id}|{canonical_url}|{discovered.content_hash}")
+    dedupe_key = _sha256(f"{source_version}|representation-v1|{representation}")
     existing = session.scalar(
         select(RawDocument).where(
             RawDocument.source_id == source.id,
             RawDocument.visibility_scope == SYSTEM_RESTRICTED_SCOPE,
-            RawDocument.document_dedupe_key
-            == _sha256(f"{source.id}|{canonical_url}|{discovered.content_hash}"),
+            RawDocument.document_dedupe_key == dedupe_key,
         )
     )
     if existing is not None:
         _ensure_entity_mention(session, existing, company)
         return existing, False
-    excerpt = discovered.excerpt or ""
-    source_windows = []
-    if getattr(job, "coverage", {}).get("matter_processing"):
-        from backend.app.matter_dispositions import relevant_windows
-
-        source_windows, truncated = relevant_windows(
-            excerpt, [company.legal_name, *getattr(company, "aliases", ())], max_chars=12000
-        )
-        excerpt = "\n".join(w["text"] for w in source_windows)
-    else:
-        excerpt = excerpt.strip()[:1500]
-        truncated = len(discovered.excerpt or "") > 1500
     document = RawDocument(
         source_id=source.id,
         research_import_id=None,
@@ -2227,17 +2261,20 @@ def _raw_document(
         owner_user_id=None,
         owner_tenant_id=None,
         visibility_scope=SYSTEM_RESTRICTED_SCOPE,
-        external_record_id=_sha256(f"{canonical_url}|{discovered.content_hash}"),
+        external_record_id=dedupe_key,
         canonical_url=canonical_url,
         title=discovered.title[:500],
         published_at=discovered.published_at,
         published_on=discovered.published_at.date() if discovered.published_at else None,
         observed_at=utc_now(),
         content_hash=discovered.content_hash,
-        document_dedupe_key=_sha256(f"{source.id}|{canonical_url}|{discovered.content_hash}"),
+        document_dedupe_key=dedupe_key,
         license_status="public",
         payload={
             "retention": "minimal_excerpt",
+            "source_version": source_version,
+            "representation_hash": representation,
+            "selector_company_id": str(company.id),
             "excerpt": excerpt,
             "source_windows": [{k: v for k, v in w.items() if k != "text"} for w in source_windows],
             "input_truncated": truncated,

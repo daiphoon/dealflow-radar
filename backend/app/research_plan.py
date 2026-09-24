@@ -16,6 +16,32 @@ TOPICS = {
     "capacity_assets": "产能 投产 工厂",
 }
 GROUPS = ("business_capital", "technology_risk_exit")
+INTENTS = {
+    "financing_cap_table": {
+        "company_financing": "融资",
+        "fund_commitment": "基金 认缴",
+        "outbound_investment": "对外投资 股权",
+        "registered_capital": "注册资本 变更",
+    },
+    "exit_liquidity": {
+        "ipo_application": "IPO 递表 招股书",
+        "acquisition_target": "被收购 控制权",
+        "ipo_listed": "挂牌上市",
+        "ipo_guidance": "上市 辅导 备案",
+    },
+}
+
+
+def plan_intent(category, histories):
+    options = INTENTS.get(category, {category: TOPICS[category]})
+    attempts = {}
+    for sequence, coverage in enumerate(histories):
+        for state in coverage.get("search_groups", {}).values():
+            if state.get("topic_category") == category and state.get("attempted_at"):
+                intent = state.get("topic_intent") or next(iter(options))
+                attempts[intent] = sequence
+    selected = min(options, key=lambda key: attempts.get(key, -1))
+    return {"topic_intent": selected, "topic": options[selected], "coverage_scope": "intent_only"}
 
 
 def topic_terms(category, policy):
@@ -170,6 +196,9 @@ def successful_topic_checks(histories):
         for group in coverage.get("search_groups", {}).values():
             category = group.get("topic_category")
             if category not in TOPICS or group.get("status") != "completed":
+                continue
+            if group.get("coverage_scope") == "intent_only":
+                # 一个子问题完成不能刷新整个融资/退出大类的完成时间。
                 continue
             if not any(
                 s.get("status") in {"completed", "cache_hit", "cache_fused"}

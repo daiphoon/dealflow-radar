@@ -12,14 +12,17 @@ from backend.app.matter_contract import (
     CATEGORIES,
     FIELD_LABELS,
     LABELS,
+    MAX_PROPOSED_MATTERS,
     STATUS_LABELS,
+    MatterCategory,
+    MatterSubtype,
     subject_role,
 )
 from backend.app.matter_dates import date_fields, normalize_date, occurrence
 
 VERSION = "matter-v1"
-PROMPT_VERSION = "research-matter-extraction-v3"
-EXTRACTION_VERSION = "matter-extraction-v3"
+PROMPT_VERSION = "research-matter-extraction-v4"
+EXTRACTION_VERSION = "matter-extraction-v4"
 # 每类均有实际动作契约；不把整篇文章标题当作事件动作。
 ACTIONS = (
     (
@@ -201,14 +204,15 @@ class ProposedMatters(BaseModel):
 
 
 class TypedProposedMatter(ProposedMatter):
-    subtype: str = Field(min_length=1, max_length=60)
+    subtype: MatterSubtype
+    category: MatterCategory | None = None
     subject_role: Literal["fundraiser", "investor", "buyer", "target", "issuer", "actor"]
     status: Literal["reported", "planned", "denied", "committed", "conditional"]
 
 
 class TypedProposedMatters(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    matters: list[TypedProposedMatter] = Field(max_length=24)
+    matters: list[TypedProposedMatter] = Field(max_length=MAX_PROPOSED_MATTERS)
 
 
 def names_in_document(subject, text):
@@ -532,10 +536,15 @@ def validate_proposals(subject, text, proposals, *, legacy_compat=True):
     raw_matters = proposals.get("matters", []) if isinstance(proposals, dict) else []
     if not isinstance(raw_matters, list):
         return [], [{"reason": "invalid_matter_schema"}]
+    if not legacy_compat and len(raw_matters) > MAX_PROPOSED_MATTERS:
+        return [], [{"reason": "matter_limit_exceeded"}]
     for index, raw in enumerate(raw_matters[:24]):
         # 字段格式错误仅拒绝该字段，不能吞掉有依据的整项。
         if not isinstance(raw, dict):
             rejected.append({"index": index, "reason": "invalid_matter_schema"})
+            continue
+        if raw.get("subtype") is not None and raw["subtype"] not in LABELS:
+            rejected.append({"index": index, "reason": "unknown_subtype"})
             continue
         raw_fields = raw.get("fields", {})
         bad_fields, fields = [], {}
