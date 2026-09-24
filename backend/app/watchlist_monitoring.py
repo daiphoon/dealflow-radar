@@ -117,19 +117,6 @@ def queue_due_watch_checks(session, user, web_policy, *, dry_run=True, now=None)
             candidates.append((due, company_id, followed_at))
     candidates.sort(key=lambda item: (item[0], str(item[1])))
     selected = candidates[: policy.max_companies_per_run]
-    prices = [
-        web_policy.cost.baidu_price_per_call,
-        web_policy.cost.bocha_price_per_call,
-    ]
-    prices = [
-        value if value is not None else web_policy.cost.unknown_price_upper_bound
-        for value in prices
-    ]
-    upper_bound = (
-        max(prices) * web_policy.max_search_calls_per_job * len(selected)
-        if all(value is not None for value in prices)
-        else None
-    )
     result = {
         "status": "dry_run" if dry_run else "completed",
         "due_count": len(candidates),
@@ -145,9 +132,11 @@ def queue_due_watch_checks(session, user, web_policy, *, dry_run=True, now=None)
         "input_tokens": 0,
         "output_tokens": 0,
         "estimated_cost": None,
-        "planned_cost_upper_bound": str(upper_bound) if upper_bound is not None else None,
         "cost_status": "unknown",
     }
+    from backend.app.research_cost_preview import preview_cost
+
+    result.update(preview_cost(web_policy, len(selected)))
     if dry_run:
         return result
     for _, company_id, followed_at in selected:
@@ -185,6 +174,7 @@ def queue_due_watch_checks(session, user, web_policy, *, dry_run=True, now=None)
             category: route if category in CATEGORIES else None
             for category, route in coverage["source_routes"].items()
         }
+        coverage["semantic_before"] = company_semantic_version(session, user, company_id)
         coverage["watchlist_monitor"] = {
             "version": policy.version,
             "categories": list(CATEGORIES),
@@ -262,9 +252,24 @@ def record_outcome(session, user, job, policy, *, commit=True):
             state.last_successful_check_at
         ):
             state.last_successful_check_at = checked
-            changed = any(item.get("status") == "created" for item in documents)
+            before = coverage.get("semantic_before")
+            after = company_semantic_version(session, user, job.company_id)
+            changed = before != after if before is not None else None
+            job.coverage = {
+                **job.coverage,
+                "semantic_after": after,
+                "business_change": "changed"
+                if changed
+                else "unchanged"
+                if changed is False
+                else "not_recorded",
+            }
             state.consecutive_no_change_runs = (
-                0 if changed else state.consecutive_no_change_runs + 1
+                0
+                if changed
+                else state.consecutive_no_change_runs + 1
+                if changed is False
+                else state.consecutive_no_change_runs
             )
         state.consecutive_failures = 0
         state.last_outcome = "succeeded"
@@ -308,4 +313,25 @@ def monitoring_summary(session, company_id, policy):
         last_attempt_at=state.last_attempt_at,
         last_successful_check_at=state.last_successful_check_at,
         next_check_at=next_check,
+    )
+
+
+def company_semantic_version(session, user, company_id):
+    from backend.app.models import Event
+    from backend.app.semantic_content import content_version
+    from backend.app.services import _company_event_outputs
+
+    rows = list(
+        session.scalars(
+            select(Event).where(
+                Event.company_id == company_id,
+                Event.visibility_scope == "platform_shared",
+                Event.owner_user_id.is_(None),
+                Event.owner_tenant_id.is_(None),
+                Event.status.in_(["published", "candidate"]),
+            )
+        )
+    )
+    return content_version(
+        _company_event_outputs(session, rows, user, allow_organization_private=False)
     )

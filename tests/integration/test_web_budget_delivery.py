@@ -132,6 +132,8 @@ def test_cost_states_unknown_free_estimate_actual_and_durable_reservation(databa
         with pytest.raises(budget.WebResearchBudgetDeferred, match="already settled"):
             _reserve(session, user, policy)
         assert session.scalar(select(func.count()).select_from(UsageLedger)) == before
+        # 迁移使用独立连接；结束读取事务，避免新增外键 DDL 等待当前会话。
+        session.rollback()
         with pytest.raises(RuntimeError, match="retain accounting history"):
             command.downgrade(Config("alembic.ini"), "0029")
 

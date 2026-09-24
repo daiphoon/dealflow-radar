@@ -162,7 +162,7 @@ export async function generateCompanyReport(formData: FormData): Promise<void> {
   redirect(`/reports/${reportId}?result=${result}`);
 }
 
-export async function loadPersonalCompanyChanges(companyId: string) {
+export async function loadPersonalCompanyChanges(companyId: string, renderedVersions?: Record<string, string>) {
   if (!uuidPattern.test(companyId)) throw new Error("invalid company id");
-  return recordPersonalCompanyView(companyId);
+  return recordPersonalCompanyView(companyId, renderedVersions);
 }

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import Link from "next/link";
+import { RecordBrowser } from "@/components/record-browser";
 import { ResearchCoverage } from "@/components/research-coverage";
 import { TenderObservations } from "@/components/tender-observations";
 
@@ -104,6 +105,16 @@ function identityLabel(status: string, basis: string | null): string {
   if (basis === "public_crosscheck") return "主体已交叉核对（公开资料，非官方登记核验）";
   if (basis === "curator_confirmed") return "主体已由负责人确认";
   return "待核验";
+}
+
+function PagedEvents({ events, unconfirmed = false, privateRecord = false }: { events: Event[]; unconfirmed?: boolean; privateRecord?: boolean }) {
+  return <RecordBrowser reference={Date.now()} records={events.map((event) => ({
+    id: event.id,
+    category: eventTypeLabels[event.event_type] ?? event.event_type,
+    status: unconfirmed ? (event.information_status === "source_supported_unconfirmed" ? "原文支持但未确认" : "待核实线索") : "已核实资料",
+    occurred: event.occurred_on ?? event.occurred_at ?? null,
+    content: <EventCard event={event} unconfirmed={unconfirmed} privateRecord={privateRecord} />,
+  }))} />;
 }
 
 function InvestmentCard({ investment }: { investment: Investment }) {
@@ -621,6 +632,7 @@ export default async function CompanyDetailPage({
             companyId={company.id}
             materialChanges={materialChanges}
             baselineEventIds={baselineEvents.map((event) => event.id)}
+            renderedVersions={Object.fromEntries(company.events.filter((event) => event.semantic_version).map((event) => [event.id, event.semantic_version!]))}
           />
         ) : null}
 
@@ -669,11 +681,7 @@ export default async function CompanyDetailPage({
             </p>
             <details className="lead-list">
               <summary>查看待核实线索</summary>
-              <div className="timeline">
-                {company.platform_unconfirmed_leads.map((event) => (
-                  <EventCard event={event} key={event.id} unconfirmed />
-                ))}
-              </div>
+              <PagedEvents events={company.platform_unconfirmed_leads} unconfirmed />
             </details>
           </section>
         ) : null}
@@ -703,11 +711,7 @@ export default async function CompanyDetailPage({
               </div>
               <span className="muted">{company.private_events.length} 条事件</span>
             </div>
-            <div className="timeline">
-              {company.private_events.map((event) => (
-                <EventCard event={event} key={event.id} privateRecord />
-              ))}
-            </div>
+            <PagedEvents events={company.private_events} privateRecord />
           </section>
         ) : null}
 
@@ -722,11 +726,7 @@ export default async function CompanyDetailPage({
             </div>
             <details className="lead-list">
               <summary>查看私有待核实线索</summary>
-              <div className="timeline">
-                {company.unconfirmed_leads.map((event) => (
-                  <EventCard event={event} key={event.id} unconfirmed />
-                ))}
-              </div>
+              <PagedEvents events={company.unconfirmed_leads} unconfirmed />
             </details>
           </section>
         ) : null}
@@ -753,11 +753,7 @@ export default async function CompanyDetailPage({
                     <span>{eventTypeLabels[eventType] ?? eventType}</span>
                     <small>{events.length} 条资料</small>
                   </summary>
-                  <div className="timeline">
-                    {events.map((event) => (
-                      <EventCard event={event} key={event.id} />
-                    ))}
-                  </div>
+                  <PagedEvents events={events} />
                 </details>
               ))}
             </div>

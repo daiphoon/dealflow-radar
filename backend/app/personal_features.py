@@ -46,7 +46,7 @@ from backend.app.services import (
 )
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_REPORT_VERSION = "personal-company-v2"
+_REPORT_VERSION = "personal-company-v3"
 _FIRST_VIEW_LOOKBACK_DAYS = 90
 
 _EVENT_TYPE_LABELS = {
@@ -1182,10 +1182,10 @@ def _unseen_shared_events(
     company_id: UUID,
     viewed_after: datetime | None = None,
 ) -> list[Event]:
-    seen_event_ids = select(PersonalEventViewReceipt.event_id).where(
-        PersonalEventViewReceipt.owner_user_id == user.id
-    )
-    return list(
+    from backend.app.semantic_content import event_version
+    from backend.app.services import _company_event_outputs
+
+    rows = list(
         session.scalars(
             select(Event)
             .where(
@@ -1194,22 +1194,33 @@ def _unseen_shared_events(
                 Event.visibility_scope == PLATFORM_SHARED_SCOPE,
                 Event.owner_user_id.is_(None),
                 Event.owner_tenant_id.is_(None),
-                or_(
-                    ~Event.id.in_(seen_event_ids),
-                    (Event.fingerprint_version == "tender-v1") & (Event.updated_at > viewed_after)
-                    if viewed_after is not None
-                    else False,
-                ),
             )
-            .order_by(Event.created_at.asc(), Event.id.asc())
+            .order_by(Event.created_at, Event.id)
         )
     )
+    receipts = {
+        r.event_id: r.semantic_version
+        for r in session.scalars(
+            select(PersonalEventViewReceipt).where(
+                PersonalEventViewReceipt.owner_user_id == user.id,
+                PersonalEventViewReceipt.event_id.in_([e.id for e in rows]),
+            )
+        )
+    }
+    outputs = _company_event_outputs(session, rows, user, allow_organization_private=False)
+    return [
+        event
+        for event, output in zip(rows, outputs)
+        if event.id not in receipts or receipts[event.id] != event_version(output)
+    ]
 
 
 def record_personal_company_view(
     session: Session,
     user: User,
     company_id: UUID,
+    *,
+    rendered_versions: dict[UUID, str] | None = None,
 ) -> PersonalCompanyViewOut:
     if _shared_company(session, company_id) is None:
         raise PersonalFeatureNotFoundError("company not found")
@@ -1241,25 +1252,43 @@ def record_personal_company_view(
                 >= _aware_utc(window_start_at)
             )
         ]
-    already_seen = set(
-        session.scalars(
-            select(PersonalEventViewReceipt.event_id).where(
+    from backend.app.semantic_content import event_version
+
+    receipts = {
+        r.event_id: r
+        for r in session.scalars(
+            select(PersonalEventViewReceipt).where(
                 PersonalEventViewReceipt.owner_user_id == user.id,
                 PersonalEventViewReceipt.event_id.in_([event.id for event in unseen_events]),
             )
         )
-    )
-    session.add_all(
-        [
-            PersonalEventViewReceipt(
-                owner_user_id=user.id,
-                event_id=event.id,
-                first_seen_at=viewed_at,
+    }
+    # 使用本次返回投影的版本；之后发生的 V2 不会被确认成 V1。
+    delivered = {e.id: e for e in event_outputs}
+    for event in unseen_events:
+        if rendered_versions is not None and event.id not in rendered_versions:
+            continue
+        projected = delivered.get(event.id)
+        if projected is None:
+            # 首次打开的旧资料建立显式基线，保持既有不推送历史的语义。
+            projected = platform_shared_event_out(session, event, user)
+        version = (
+            rendered_versions[event.id]
+            if rendered_versions is not None
+            else event_version(projected)
+        )
+        receipt = receipts.get(event.id)
+        if receipt is None:
+            session.add(
+                PersonalEventViewReceipt(
+                    owner_user_id=user.id,
+                    event_id=event.id,
+                    first_seen_at=viewed_at,
+                    semantic_version=version,
+                )
             )
-            for event in unseen_events
-            if event.id not in already_seen
-        ]
-    )
+        else:
+            receipt.semantic_version = version
     if state is None:
         session.add(
             PersonalCompanyViewState(
@@ -1326,7 +1355,13 @@ def _report_markdown(
             if company.identity_verification_basis == "curator_confirmed"
             else "公开资料已交叉核对（非官方登记核验）"
             if company.identity_verification_basis == "public_crosscheck"
-            else ("已核验" if company.identity_status == "verified" else "待核验")
+            else (
+                "已核验"
+                if company.identity_status == "verified"
+                and company.identity_verification_basis
+                in {"official_government", "exchange_disclosure"}
+                else "待核验"
+            )
         ),
         f"- 报告生成时间：{as_of.astimezone(_SHANGHAI).strftime('%Y年%m月%d日 %H:%M')}",
         "",
@@ -1454,6 +1489,61 @@ def _report_out(
     )
 
 
+def _safe_report_out(session, user, report, *, reused=False):
+    from backend.app.models import EventEvidence, RawDocument, Source
+
+    output = _report_out(report, reused=reused)
+    ids = [UUID(value) for value in report.source_event_ids]
+    rows = list(session.scalars(select(Event).where(Event.id.in_(ids))))
+    evidence = list(session.scalars(select(EventEvidence).where(EventEvidence.event_id.in_(ids))))
+    legacy = [e for e in evidence if e.display_license_status is None and not e.display_allowed]
+    documents = {
+        d.id: d
+        for d in session.scalars(
+            select(RawDocument).where(RawDocument.id.in_([e.raw_document_id for e in legacy]))
+        )
+    }
+    sources = {
+        s.id: s
+        for s in session.scalars(
+            select(Source).where(Source.id.in_([d.source_id for d in documents.values()]))
+        )
+    }
+
+    def permission_lost(e):
+        if e not in legacy:
+            withdrawn_fact = any(
+                row.id == e.event_id and row.status in {"rejected", "retracted"} for row in rows
+            )
+            return (
+                not e.display_allowed and not withdrawn_fact
+            ) or e.display_license_status not in {
+                "public",
+                "permission_confirmed",
+            }
+        document = documents.get(e.raw_document_id)
+        source = sources.get(document.source_id) if document else None
+        return (
+            not document
+            or not source
+            or document.license_status != "public"
+            or source.license_status != "public"
+        )
+
+    # 历史报告未保存逐片段许可快照；任何已撤销来源都保守停止再次发出全文。
+    restricted = (
+        len(rows) != len(ids)
+        or any(e.visibility_scope != PLATFORM_SHARED_SCOPE for e in rows)
+        or any(permission_lost(e) for e in evidence)
+    )
+    if restricted:
+        output.markdown = "报告来源权限或状态已变化，历史正文停止在线提供，请查看公司最新资料。"
+        output.history_status = "restricted"
+    elif any(e.status in {"rejected", "retracted", "corrected"} for e in rows):
+        output.history_status = "stale"
+    return output
+
+
 def create_personal_company_report(
     session: Session,
     user: User,
@@ -1462,11 +1552,25 @@ def create_personal_company_report(
     company_id: UUID,
     *,
     idempotency_key: str,
+    archive_new_timepoint: bool = False,
 ) -> PersonalCompanyReportOut:
     company = _shared_company(session, company_id)
     if company is None:
         raise PersonalFeatureNotFoundError("company not found")
     _lock_user(session, user)
+    from backend.app.models import PersonalReportRequest
+
+    previous_request = session.scalar(
+        select(PersonalReportRequest).where(
+            PersonalReportRequest.owner_user_id == user.id,
+            PersonalReportRequest.idempotency_key == idempotency_key,
+        )
+    )
+    if previous_request is not None:
+        report = session.get(PersonalCompanyReport, previous_request.report_id)
+        if report.company_id != company_id:
+            raise PersonalRequestConflictError("idempotency key belongs to another report")
+        return _safe_report_out(session, user, report, reused=True)
     existing = session.scalar(
         select(PersonalCompanyReport).where(
             PersonalCompanyReport.owner_user_id == user.id,
@@ -1476,7 +1580,7 @@ def create_personal_company_report(
     if existing is not None:
         if existing.company_id != company_id:
             raise PersonalRequestConflictError("idempotency key belongs to another report")
-        return _report_out(existing, reused=True)
+        return _safe_report_out(session, user, existing, reused=True)
 
     event_rows = list(
         session.scalars(
@@ -1491,7 +1595,9 @@ def create_personal_company_report(
             .order_by(Event.occurred_at.desc(), Event.created_at.desc(), Event.id.asc())
         )
     )
-    events = [platform_shared_event_out(session, event, user) for event in event_rows]
+    from backend.app.services import _company_event_outputs
+
+    events = _company_event_outputs(session, event_rows, user, allow_organization_private=False)
     events = [event for event in events if event.display_kind != "unconfirmed"]
     snapshot = session.scalar(
         select(CompanySnapshot).where(
@@ -1502,6 +1608,42 @@ def create_personal_company_report(
             CompanySnapshot.owner_tenant_id.is_(None),
         )
     )
+    from backend.app.evidence_integrity import hash_canonical_object
+    from backend.app.semantic_content import content_version
+
+    fingerprint = hash_canonical_object(
+        {
+            "template": _REPORT_VERSION,
+            "company": str(company.id),
+            "name": company.legal_name,
+            "identity": company.identity_status,
+            "identity_basis": company.identity_verification_basis,
+            "credit_code": company.credit_code,
+            "registered_region": company.registered_region,
+            "content": content_version(events),
+            "coverage": str(snapshot.last_checked_at) if snapshot else None,
+            "data_as_of": str(snapshot.data_as_of) if snapshot else None,
+        }
+    )
+    same = session.scalar(
+        select(PersonalCompanyReport)
+        .where(
+            PersonalCompanyReport.owner_user_id == user.id,
+            PersonalCompanyReport.company_id == company_id,
+            PersonalCompanyReport.input_fingerprint == fingerprint,
+        )
+        .order_by(PersonalCompanyReport.created_at.desc())
+        .limit(1)
+    )
+    if same is not None and not archive_new_timepoint:
+        session.add(
+            PersonalReportRequest(
+                owner_user_id=user.id, report_id=same.id, idempotency_key=idempotency_key
+            )
+        )
+        output = _safe_report_out(session, user, same, reused=True)
+        session.commit()
+        return output
     as_of = utc_now()
     markdown = _report_markdown(company, snapshot, events, as_of, refresh_policy)
     report = PersonalCompanyReport(
@@ -1510,6 +1652,7 @@ def create_personal_company_report(
         company_legal_name=company.legal_name,
         report_version=_REPORT_VERSION,
         idempotency_key=idempotency_key,
+        input_fingerprint=fingerprint,
         title=f"{_single_line(company.legal_name)}信息报告",
         as_of=as_of,
         markdown=markdown,
@@ -1560,4 +1703,4 @@ def get_personal_company_report(
     )
     if report is None:
         raise PersonalFeatureNotFoundError("report not found")
-    return _report_out(report)
+    return _safe_report_out(session, user, report)

@@ -1,5 +1,11 @@
 # 实施记录
 
+## 2026-09-24：整合交付 PR-B 发布准备
+
+- 任务/文件：W06—W08；语义版本、巡检 dry-run、回访/报告、0036 和前端分页；清单见 [正式交付记录 19](19-release-handoff.md)。
+- 实际命令：uv sync --frozen --all-groups；scripts.verify_integrated_local 定向/完整；Ruff、SQLite 往返、Docker/Compose、前端测试/类型/构建和 Gitleaks。
+- 结果：定向 14 通过；完整后端 1119 通过/19 条件跳过，前端 30 通过；其余发布检查通过。0035 及以前迁移不变；未执行生产迁移、部署或真实研究。
+
 ## 2026-09-24：整合交付 PR-A 发布准备
 
 - 任务：W01—W05 分批交付；基线 a42d13c，迁移保持 0035；文件及部署/回退清单见 [正式交付记录 19](19-release-handoff.md)。

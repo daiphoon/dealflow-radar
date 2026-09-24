@@ -114,6 +114,7 @@ export type MatterObservation = {
 };
 
 export type Event = {
+  semantic_version?: string;
   information_status?: string | null; temporal_status?: string | null;
   id: string;
   event_type: string;
@@ -799,8 +800,8 @@ export function decidePlatformQuotaIncreaseRequest(
   );
 }
 
-export function recordPersonalCompanyView(companyId: string): Promise<PersonalCompanyView> {
-  return postJson(`/api/v1/me/companies/${encodeURIComponent(companyId)}/view`, {});
+export function recordPersonalCompanyView(companyId: string, renderedVersions?: Record<string, string>): Promise<PersonalCompanyView> {
+  return postJson(`/api/v1/me/companies/${encodeURIComponent(companyId)}/view`, { rendered_versions: renderedVersions });
 }
 
 export function createPersonalCompanyReport(

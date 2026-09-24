@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from backend.app.event_schema import EventType
 from backend.app.investor_analysis_schema import (
@@ -216,6 +216,13 @@ class MatterObservationOut(BaseModel):
 
 
 class EventOut(BaseModel):
+    @computed_field
+    @property
+    def semantic_version(self) -> str:
+        from backend.app.semantic_content import event_version
+
+        return event_version(self)
+
     information_status: str | None = None
     temporal_status: str | None = None
     id: UUID
@@ -527,6 +534,21 @@ class PersonalUsageSummaryOut(BaseModel):
     company_requests: PersonalQuotaOut
 
 
+class PersonalCompanyViewIn(BaseModel):
+    # 旧客户端不带此字段仍按返回版本确认；新页面只确认其实际渲染版本。
+    rendered_versions: dict[UUID, str] | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def valid_versions(self):
+        import re
+
+        if self.rendered_versions is not None and any(
+            not re.fullmatch(r"[a-f0-9]{64}", v) for v in self.rendered_versions.values()
+        ):
+            raise ValueError("invalid semantic version")
+        return self
+
+
 class PersonalCompanyViewOut(BaseModel):
     company_id: UUID
     first_view: bool
@@ -538,6 +560,7 @@ class PersonalCompanyViewOut(BaseModel):
 
 class PersonalReportCreateIn(BaseModel):
     idempotency_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    archive_new_timepoint: bool = False
 
 
 class PersonalCompanyReportSummaryOut(BaseModel):
@@ -556,6 +579,7 @@ class PersonalCompanyReportOut(PersonalCompanyReportSummaryOut):
     markdown: str
     source_event_ids: list[UUID]
     reused: bool = False
+    history_status: str = "historical_snapshot"
 
 
 class ReviewDecisionIn(BaseModel):

@@ -40,6 +40,7 @@ const company = (overrides = {}) => ({
 async function render(data, newEvents = [], { failed = false, loading = false } = {}) {
   const view = { new_events: newEvents, first_view: true, viewed_at: "2026-09-07", previous_viewed_at: null };
   const mocks = {
+    "@/components/record-browser": load(path.join(__dirname, "../components/record-browser.tsx"), {}),
     "@/components/research-coverage": load(path.join(__dirname, "../components/research-coverage.tsx"), {}),
     "@/components/tender-observations": load(path.join(__dirname, "../components/tender-observations.tsx"), {}),
     "next/link": { default: ({ children, prefetch, ...props }) => React.createElement("a", props, children) },

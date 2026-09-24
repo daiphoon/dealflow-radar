@@ -498,7 +498,7 @@ def test_migration_round_trip_and_no_destructive_downgrade(database, tmp_path):
         command.downgrade(Config("alembic.ini"), "0031")
     with Session(database.owner) as session:
         assert session.scalar(select(func.count()).select_from(ResearchImport)) == 1
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "0035"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "0036"
 
 
 def test_cancelled_request_cannot_be_reopened_by_curated_admission(database, tmp_path):
