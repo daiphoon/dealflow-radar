@@ -430,10 +430,12 @@ function EventCard({
             <details key={item.evidence_id}>
               <summary>{item.label} · {item.status_label} · {({ same_facts: "同事项补充", conflicting: "字段差异待核实", correction_candidate: "更正待核实" } as Record<string, string>)[item.kind] ?? "未确认线索"}</summary>
               <p>主体：{item.subject}（{item.scope.startsWith("brand:") ? "品牌口径" : "法人口径"}）</p>
-              <ul>{Object.entries(item.fields).map(([key, value]) => (
+              <ul>{Object.entries(item.fields).filter(([key]) => key !== "date" || !item.fields.occurred).map(([key, value]) => (
                 <li key={key}>{item.field_labels[key] ?? key}：{value.value}{key === "date" ? `（${({ occurred: "发生日期", disclosed: "披露日期", planned: "计划日期" } as Record<string, string>)[value.role] ?? "日期口径待核"}）` : ""}</li>
               ))}</ul>
-              <p>实际发生日：{item.fields.date?.iso ?? "未知"}；来源发布日期：{item.source_published_on ?? "未知"}。未披露或未通过校验的字段保持未知。</p>
+              <p>实际发生时间：{item.fields.occurred?.value ?? item.fields.date?.value ?? "未披露"}；来源发布日期：{item.source_published_on ?? "未知"}。未披露或未通过校验的字段保持未知，单纯缺少日期无需补填。</p>
+              {item.relations?.length ? <p>与其他上市过程阶段存在关联；各阶段分别保留，不互相替代。</p> : null}
+              {item.issues.includes("ambiguous_existing_matter") ? <p>疑似同一事项，尚未完成归并。</p> : null}
               <p>材料类型：{({ official_publication: "官方公开材料", staff_report: "署名报道", syndicated: "转载材料", user_post: "用户发布内容", generated_commentary: "AI 生成或解读内容", unclassified_public_page: "公开页面，发布类型待识别" } as Record<string,string>)[item.source_channel ?? ""] ?? "来源类型待识别"}。引文支持不等于事实已确认。</p>
               {item.issues.some((issue) => issue.startsWith("rejected_field:")) ? <p>部分提议字段未通过原文与语义校验，已剔除。</p> : null}
               <blockquote>{item.excerpt}</blockquote>
@@ -521,6 +523,7 @@ export default async function CompanyDetailPage({
       return (leftIndex === -1 ? order.length : leftIndex) -
         (rightIndex === -1 ? order.length : rightIndex);
     });
+    const supportedLeads = company.platform_unconfirmed_leads.filter((event) => event.information_status === "source_supported_unconfirmed").length;
     const financingComparisons = baselineEvents.reduce((total, event) => total + (event.financing_observations?.length ?? 0), 0);
     const feedback = result
       ? result === "followed"
@@ -637,8 +640,8 @@ export default async function CompanyDetailPage({
               </li>
               <li>
                 {company.platform_unconfirmed_leads.length > 0 ? (
-                  <a href="#company-current-leads">待核实线索：{company.platform_unconfirmed_leads.length} 条（不属于已确认事实）</a>
-                ) : "待核实线索：0 条"}
+                  <a href="#company-current-leads">原文支持的未确认事项：{supportedLeads} 条；其他待核实线索：{company.platform_unconfirmed_leads.length - supportedLeads} 条</a>
+                ) : "未确认事项及线索：0 条"}
               </li>
             </ul>
             {financingComparisons > 0 ? (
@@ -647,7 +650,7 @@ export default async function CompanyDetailPage({
             {company.events.length === 0 && company.platform_unconfirmed_leads.length === 0 ? (
               <p>当前暂无可展示的共享事实或线索，不代表公司没有重要变化。</p>
             ) : company.events.length === 0 ? (
-              <p>目前可查看待核实线索，尚无已核实事实；请结合证据与不确定性阅读。</p>
+              <p>目前有未确认事项或线索，尚无已确认事实；原文支持程度在各条材料中说明。</p>
             ) : null}
           </section>
         ) : null}
@@ -657,12 +660,12 @@ export default async function CompanyDetailPage({
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">单独隔离，不与已核实事实混在一起</p>
-                <h2>需要留意的待核实线索</h2>
+                <h2>未确认事项与待核实线索</h2>
               </div>
               <span className="muted">{company.platform_unconfirmed_leads.length} 条线索</span>
             </div>
             <p className="privacy-note">
-              这些条目可能值得留意，但证据尚不足，不代表平台已经确认责任、影响或投资结论。
+              这些事项按原文支持情况分别标注。原文支持不等于人工确认；有冲突的字段单独提示，不代表平台已经确认责任、影响或投资结论。
             </p>
             <details className="lead-list">
               <summary>查看待核实线索</summary>

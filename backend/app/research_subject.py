@@ -22,6 +22,10 @@ class ResearchSubject:
     company: Company
     aliases: tuple[str, ...]
     legal_aliases: tuple[str, ...] = ()
+    name_types: tuple[tuple[str, str], ...] = ()
+    research_intent: str = "discovery"
+    reference_at: str | None = None
+    event_window_days: int | None = None
 
     def __getattr__(self, name):
         return getattr(self.company, name)
@@ -30,8 +34,8 @@ class ResearchSubject:
 def load_subject(session: Session, company: Company) -> ResearchSubject:
     # Worker 的管理员上下文可见全部共享关系，冲突不能由当前页面过滤掩盖。
     rows = list(
-        session.scalars(
-            select(CompanyAlias).where(
+        session.execute(
+            select(CompanyAlias.company_id, CompanyAlias.alias, CompanyAlias.alias_type).where(
                 CompanyAlias.visibility_scope == "platform_shared",
                 CompanyAlias.owner_user_id.is_(None),
                 CompanyAlias.owner_tenant_id.is_(None),
@@ -40,13 +44,18 @@ def load_subject(session: Session, company: Company) -> ResearchSubject:
         )
     )
     companies = list(
-        session.scalars(
-            select(Company).where(
+        session.execute(
+            select(Company.id, Company.legal_name).where(
                 Company.tenant_id.is_(None),
                 Company.visibility_scope == "public",
             )
         )
     )
+    alias_owners, legal_owners = {}, {}
+    for row in rows:
+        alias_owners.setdefault(normalize(row.alias), set()).add(row.company_id)
+    for row in companies:
+        legal_owners.setdefault(normalize(row.legal_name), set()).add(row.id)
     aliases = []
     for row in rows:
         if row.company_id != company.id or row.alias_type not in {
@@ -59,14 +68,12 @@ def load_subject(session: Session, company: Company) -> ResearchSubject:
         key = normalize(row.alias)
         if not 2 <= len(key) <= 120 or not re.fullmatch(r"[\w\u4e00-\u9fff（）()·+ -]+", row.alias):
             continue
-        if any(other.company_id != company.id and normalize(other.alias) == key for other in rows):
+        if alias_owners[key] - {company.id}:
             continue
-        if any(
-            other.id != company.id and normalize(other.legal_name) == key for other in companies
-        ):
+        if legal_owners.get(key, set()) - {company.id}:
             continue
         aliases.append(row.alias)
-    selected = tuple(sorted(set(aliases), key=normalize)[:3])
+    selected = tuple(sorted(set(aliases), key=normalize))
     legal_aliases = tuple(
         row.alias
         for row in rows
@@ -74,7 +81,16 @@ def load_subject(session: Session, company: Company) -> ResearchSubject:
         and row.alias in selected
         and row.alias_type == "former_name"
     )
-    return ResearchSubject(company, selected, legal_aliases)
+    return ResearchSubject(
+        company,
+        selected,
+        legal_aliases,
+        tuple(
+            (r.alias, r.alias_type)
+            for r in rows
+            if r.alias in selected and r.company_id == company.id
+        ),
+    )
 
 
 def names(company) -> tuple[str, ...]:
@@ -109,14 +125,22 @@ def query_subject(company) -> str:
     return "(" + " OR ".join(f'"{value}"' for value in values) + ")"
 
 
-def short_business_query(company, topic: str) -> str:
+def short_business_query(company, topic: str, *, alternate=False) -> str:
     aliases = (
         [name for name in company.aliases if name not in company.legal_aliases]
         if isinstance(company, ResearchSubject)
         else []
     )
     name = (
-        min(aliases, key=lambda value: (len(normalize(value)), normalize(value)))
+        sorted(
+            aliases,
+            key=lambda value: (
+                {"short_name": 0, "brand": 1, "trade_name": 2}.get(
+                    dict(company.name_types).get(value), 3
+                ),
+                normalize(value),
+            ),
+        )[min(int(alternate), len(aliases) - 1)]
         if aliases
         else company.legal_name
     )
@@ -136,6 +160,32 @@ class BusinessExcerptSelector:
     def __call__(self, body: str) -> str:
         from backend.app.web_research_service import _event_classification
 
+        if self.max_excerpt_chars > 1500:
+            from backend.app.matter_dispositions import relevant_windows
+
+            windows, truncated = relevant_windows(
+                body, names(self.company), max_chars=self.max_excerpt_chars
+            )
+            offset, spans, chunks = 0, [], []
+            for window in windows:
+                if chunks:
+                    offset += 1
+                spans.append(
+                    {
+                        "source_start": window["start"],
+                        "source_end": window["end"],
+                        "stored_start": offset,
+                        "stored_end": offset + len(window["text"]),
+                    }
+                )
+                chunks.append(window["text"])
+                offset += len(window["text"])
+            self.metadata = {
+                "retained_spans": spans,
+                "selector_version": "business-passages-v2",
+                "excerpt_location_basis": "normalized_clean_body",
+            }
+            return "\n".join(chunks)
         spans = list(re.finditer(r"[^\n]+", body))
         chosen = next(
             (

@@ -102,12 +102,13 @@ export type FinancingObservation = {
 };
 
 export type MatterObservation = {
+  relations?: {event_id: string; type: string; reason: string}[];
   temporal_status?: string; source_channel?: string; source_published_on?: string | null;
   information_status?: string; processing_version?: string; merge_decision?: string;
   kind: string; fact_version: string; category: string; subtype: string; label: string;
   status: string; status_label: string; subject: string; scope: string;
   field_labels: Record<string, string>;
-  fields: Record<string, { value: string; role: string; quote: string; iso?: string }>;
+  fields: Record<string, { value: string; role: string; quote: string; iso?: string; precision?: string }>;
   issues: string[]; excerpt: string; source_url: string; source_title: string;
   observed_at: string; evidence_id: string; confirmed: false;
 };

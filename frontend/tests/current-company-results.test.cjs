@@ -97,7 +97,7 @@ test("历史无成果不覆盖后来新增的线索；查询历史默认折叠�
   const before = JSON.stringify(data);
   const html = await render(data);
   assert.match(overview(html), /待核实线索：1 条/);
-  assert.match(overview(html), /尚无已核实事实/);
+  assert.match(overview(html), /尚无已确认事实/);
   assert.match(html, /测试条目-lead/);
   assert.match(html, /<details><summary>查看我的最近一次查询过程（历史记录）/);
   assert.ok(html.indexOf("信息缺口") < html.indexOf("我的历史查询过程"));
@@ -119,7 +119,7 @@ test("新增、去重回放、撤回后的当前接口列表驱动概览和内�
   }
   data.platform_unconfirmed_leads = [];
   const html = await render(data);
-  assert.match(overview(html), /待核实线索：0 条/);
+  assert.match(overview(html), /未确认事项及线索：0 条/);
   assert.doesNotMatch(html, /测试条目-lead/);
 });
 
@@ -143,7 +143,7 @@ test("机构私有叠加不计入共享概览，换为无授权响应后私有�
     investments: [{ fund_id: "fund", fund_name: "仅授权用户可见测试基金", amount: "123456", currency: "CNY", ownership: "0.2" }] });
   const own = await render(data);
   assert.match(overview(own), /已核实基础资料：0 条/);
-  assert.match(overview(own), /待核实线索：0 条/);
+  assert.match(overview(own), /未确认事项及线索：0 条/);
   assert.match(own, /仅授权用户可见测试基金/);
   assert.match(own, /测试条目-private/);
   const other = await render(company());
@@ -282,7 +282,7 @@ test("缺轮次材料关联后保留未知字段和各自日期，补充信息�
   const before = JSON.stringify(data);
   const html = await render(data);
   assert.match(overview(html), /已核实基础资料：1 条/);
-  assert.match(overview(html), /待核实线索：0 条/);
+  assert.match(overview(html), /未确认事项及线索：0 条/);
   assert.match(html, /同一事项补充来源/);
   assert.match(html, /轮次未知/);
   assert.match(html, /投资方：新材料补充信息/);
@@ -306,7 +306,7 @@ test("事项补充区分资金角色和计划，未知日期不补造且不改�
   const html = await render(data);
   assert.match(html, /招股发行 · 计划 · 字段差异待核实/);
   assert.match(html, /股份数量：不超过400万股/);
-  assert.match(html, /实际发生日：未知/);
+  assert.match(html, /实际发生时间：未披露/);
   assert.match(html, /部分提议字段未通过原文与语义校验/);
   assert.match(html, /风险尚未评价/);
   assert.doesNotMatch(html, /融资金额：400/);

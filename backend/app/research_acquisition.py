@@ -10,7 +10,12 @@ from urllib.parse import urlsplit
 import httpx
 
 from backend.app.research_matters import clean_body
-from backend.app.source_fetcher import DiscoveredDocument, FetchBatchResult, SourceFetchError
+from backend.app.source_fetcher import (
+    DiscoveredDocument,
+    FetchBatchResult,
+    SourceFetchError,
+    retained_metadata,
+)
 from backend.app.web_search import SearchResult, _JsonSearchProvider
 
 
@@ -79,8 +84,7 @@ def acquired_document(url, title, body, provider, provider_date=None):
             "extraction_method": "provider_source_text",
             "publication_date": date_basis,
             "origin_http_status_verified": False,
-            "retained_characters": min(6000, len(cleaned)),
-            "body_characters": len(cleaned),
+            **retained_metadata(cleaned, cleaned[:6000]),
         },
     )
 

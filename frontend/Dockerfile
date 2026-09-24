@@ -1,18 +1,18 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:20.19.4-bookworm-slim AS dependencies
+FROM node:24.21.0-bookworm-slim AS dependencies
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 
-FROM node:20.19.4-bookworm-slim AS builder
+FROM node:24.21.0-bookworm-slim AS builder
 ENV NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-FROM node:20.19.4-bookworm-slim AS runtime
+FROM node:24.21.0-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     HOSTNAME=0.0.0.0 \

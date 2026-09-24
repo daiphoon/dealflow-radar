@@ -42,7 +42,7 @@
 
 ## 本地启动
 
-要求 Python 3.12、[uv](https://docs.astral.sh/uv/) 和 Node.js 20 以上。事实主库推荐 PostgreSQL 16：
+要求 Python 3.12、[uv](https://docs.astral.sh/uv/) 和 Node.js 24 LTS（项目固定 `24.21.0`，见 `frontend/.nvmrc`；不要求修改全局 Node）。事实主库推荐 PostgreSQL 16：
 
 ```bash
 export POSTGRES_PASSWORD='请设置迁移账户本地密码'

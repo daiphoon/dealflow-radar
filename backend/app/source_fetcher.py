@@ -644,23 +644,53 @@ def _html_document(
             "extracted_text_length": len(visible_text),
             **date_metadata,
             **getattr(excerpt_selector, "metadata", {}),
+            **retained_metadata(visible_text, selected_excerpt, excerpt_selector),
         },
     )
     return document, parser
 
 
-def _pdf_published_at(text: str) -> tuple[datetime | None, str | None]:
-    matches = {
-        tuple(item)
-        for item in re.findall(
-            r"(20\d{2})[\u5e74\-/.](\d{1,2})[\u6708\-/.](\d{1,2})\u65e5?",
-            text[:5_000],
+def retained_metadata(body, excerpt, selector=None):
+    excerpt = excerpt or ""
+    start = body.find(excerpt) if excerpt else 0
+    spans = getattr(selector, "metadata", {}).get("retained_spans")
+    if spans is None:
+        spans = (
+            [
+                {
+                    "source_start": start,
+                    "source_end": start + len(excerpt),
+                    "stored_start": 0,
+                    "stored_end": len(excerpt),
+                }
+            ]
+            if start >= 0 and excerpt
+            else []
         )
+    return {
+        "retained_characters": len(excerpt),
+        "body_characters": len(body),
+        "retained_spans": spans,
+        "coordinate_space": "normalized_clean_body",
+        "retention_truncated": len(excerpt) < len(body),
+        "retention_reason": "bounded_relevant_passages"
+        if len(excerpt) < len(body)
+        else "complete_within_budget",
     }
-    if len(matches) == 1:
-        value = "-".join(part.zfill(2) for part in next(iter(matches)))
-        return _parse_datetime(value), "single_explicit_document_date"
-    return None, None
+
+
+def _pdf_published_at(text: str) -> tuple[datetime | None, str | None]:
+    from backend.app.research_acquisition import source_date
+
+    # PDF 解析可能把页眉与正文折叠到同一行，只截取显式发布日期标记及其日期。
+    lines = re.findall(
+        r"(?:发布时间|发布日期|公告日期|发布于|published|publication date)"
+        r"[：:\s]*(?:20\d{2})[年/-]\d{1,2}[月/-]\d{1,2}日?",
+        text,
+        re.I,
+    )
+    published, basis = source_date("\n".join(lines))
+    return published, basis["basis"]
 
 
 def _pdf_document(
@@ -682,14 +712,19 @@ def _pdf_document(
     published_at, date_basis = _pdf_published_at(extracted.text)
     path_name = unquote(posixpath.basename(urlsplit(response.final_url).path)).removesuffix(".pdf")
     title = _normalize_text(extracted.title or path_name) or response.final_url
+    selected = (
+        (excerpt_selector(extracted.text) if excerpt_selector else extracted.text)[
+            : min(6000, getattr(excerpt_selector, "max_excerpt_chars", 1500))
+        ]
+        if keep_excerpt
+        else None
+    )
     return DiscoveredDocument(
         canonical_url=response.final_url,
         title=title[:500],
         published_at=published_at,
         content_hash=_sha256(extracted.text),
-        excerpt=(excerpt_selector(extracted.text) if excerpt_selector else extracted.text)[:1500]
-        if keep_excerpt
-        else None,
+        excerpt=selected,
         http_status=response.status_code,
         etag=response.etag,
         last_modified=response.last_modified,
@@ -700,6 +735,8 @@ def _pdf_document(
             "extraction_method": "pypdf_isolated_subprocess",
             "extracted_text_length": len(extracted.text),
             **getattr(excerpt_selector, "metadata", {}),
+            **retained_metadata(extracted.text, selected, excerpt_selector),
+            "page_location": "unavailable_in_normalized_extraction",
             "page_count": extracted.page_count,
             "text_truncated": extracted.truncated,
             "published_at_basis": date_basis,
@@ -905,6 +942,8 @@ class TrustedSourceFetcher:
                     "content_type": None,
                     "location": None,
                     "error_code": "timeout",
+                    "error_type": type(error).__name__,
+                    "phase": "dispatch",
                 }
             )
             raise SourceFetchError("timeout", "source request timed out") from error
@@ -920,6 +959,8 @@ class TrustedSourceFetcher:
                     "content_type": None,
                     "location": None,
                     "error_code": error_code,
+                    "error_type": type(error).__name__,
+                    "phase": "dispatch",
                 }
             )
             raise SourceFetchError(error_code, "source request failed") from error
@@ -930,6 +971,7 @@ class TrustedSourceFetcher:
             content_type_header.split(";", 1)[0].strip().lower() if content_type_header else None
         )
         body = b""
+        response_bytes = 0
         try:
             self._check_peer_address(response, allowed_addresses)
             is_redirect = status_code in {301, 302, 303, 307, 308}
@@ -968,16 +1010,14 @@ class TrustedSourceFetcher:
                 response_bytes = 0
                 for chunk in response.iter_bytes():
                     response_bytes += len(chunk)
+                    self.downloaded_bytes += len(chunk)
                     if response_bytes > self.policy.max_response_bytes:
                         raise SourceFetchError(
                             "response_too_large",
                             "response exceeds per-page byte limit",
                             http_status=status_code,
                         )
-                    if (
-                        self.downloaded_bytes + response_bytes
-                        > self.policy.max_download_bytes_per_run
-                    ):
+                    if self.downloaded_bytes > self.policy.max_download_bytes_per_run:
                         raise SourceFetchError(
                             "run_byte_limit_exceeded",
                             "response exceeds run byte limit",
@@ -985,14 +1025,13 @@ class TrustedSourceFetcher:
                         )
                     chunks.append(chunk)
                 body = b"".join(chunks)
-                self.downloaded_bytes += len(body)
             self._check_dns(url)
             elapsed_ms = max(0, round((self.monotonic() - started) * 1000))
             self.request_log.append(
                 {
                     "url": url,
                     "status": status_code,
-                    "bytes": len(body),
+                    "bytes": response_bytes,
                     "elapsed_ms": elapsed_ms,
                     "content_type": content_type,
                     "location": response.headers.get("location"),
@@ -1007,12 +1046,30 @@ class TrustedSourceFetcher:
                 etag=response.headers.get("etag"),
                 last_modified=response.headers.get("last-modified"),
             )
+        except (httpx.TransportError, httpx.DecodingError) as error:
+            code = "timeout" if isinstance(error, httpx.TimeoutException) else "network_error"
+            self.request_log.append(
+                {
+                    "url": url,
+                    "status": status_code,
+                    "bytes": response_bytes,
+                    "elapsed_ms": max(0, round((self.monotonic() - started) * 1000)),
+                    "content_type": content_type,
+                    "location": response.headers.get("location"),
+                    "error_code": code,
+                    "error_type": type(error).__name__,
+                    "phase": "stream",
+                }
+            )
+            raise SourceFetchError(
+                code, "source stream interrupted", http_status=status_code
+            ) from error
         except SourceFetchError as error:
             self.request_log.append(
                 {
                     "url": url,
                     "status": status_code,
-                    "bytes": len(body),
+                    "bytes": response_bytes,
                     "elapsed_ms": max(0, round((self.monotonic() - started) * 1000)),
                     "content_type": content_type,
                     "location": response.headers.get("location"),

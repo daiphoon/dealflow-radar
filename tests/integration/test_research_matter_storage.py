@@ -116,7 +116,8 @@ def test_curated_matter_maintenance_conflict_no_date_idempotency_and_permissions
             "示例山海完成近一亿元A轮融资，由示例机构参与投资。",
             "https://example.com/same",
         )
-        assert event.id == baseline.id and not created and not quality.eligible
+        assert event.id == baseline.id and not created and quality.eligible
+        assert quality.disposition == "matters_retained"
         assert quality.matters_linked == 1
         event2, created2, _, _ = ingest(
             session, user, company, "示例山海完成近两亿元A轮融资。", "https://example.com/change"
