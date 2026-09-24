@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-09-24：整合交付 PR-C 发布准备
+
+- 任务/文件：W09—W11；只读视图/账号、五个 MCP 工具、配额审计与可选 profile；精确锁定 SDK；新增 CI 配置隔离断言，完整清单见 [正式交付记录 19](19-release-handoff.md)。
+- 实际命令：uv sync --frozen --all-groups；scripts.verify_integrated_local 定向/完整；Ruff、迁移/Compose 检查、Docker 构建、前端测试/类型/构建、Gitleaks；gh API 核对保护能力、推送与创建串联 PR。
+- 结果：定向 6 通过/6 SQLite 条件跳过；完整后端 1125 通过/25 条件跳过；前端 30 通过，发布检查通过。main 保护和 rulesets 均因套餐 403，未改可见性或购买；只用 PR＋Verify＋人工门禁。
+- 停止边界：不合并、不生产部署/迁移、不创建生产账号、不启用 MCP/隧道/真实研究/模型/自动巡检。
+
 ## 2026-09-24：整合交付 PR-B 发布准备
 
 - 任务/文件：W06—W08；语义版本、巡检 dry-run、回访/报告、0036 和前端分页；清单见 [正式交付记录 19](19-release-handoff.md)。
@@ -11,6 +18,13 @@
 - 任务：W01—W05 分批交付；基线 a42d13c，迁移保持 0035；文件及部署/回退清单见 [正式交付记录 19](19-release-handoff.md)。
 - 实际命令：锁定依赖 uv sync；scripts.verify_integrated_local 定向/完整测试；Ruff、SQLite 迁移检查、Docker/Compose 与 Gitleaks。
 - 结果：定向 17 通过；完整后端 1111 通过/19 条件跳过，前端 28 通过及类型/构建通过；其余发布检查通过，Gitleaks 及私有文件扫描零发现；不执行生产操作或真实研究。
+
+## 2026-09-24：W01—W12 全链路与远程只读诊断本地整合
+
+- 任务/关键文件：基于干净 `a42d13c` 保留 E4.10；`research_*`/来源表示与有效观测、`semantic_content.py`/回访/报告、`0036`、`diagnostics.py`/MCP/专用账号视图、独立 Compose、回放与测试编排；范围及逐包状态见 [统一交付表 18](18-integrated-delivery.md)。
+- 实际命令：`python -m scripts.verify_integrated_local --output data/private/integrated-20260924/full-4`；定向 `pytest`；`ruff check`/`ruff format --check`；`scripts.research_benchmark --offline-production`；Docker Node 24 `npm test/typecheck/build`，后端 Dockerfile 构建、Compose config；`npm audit`/`pip-audit`；本地回环虚构 API/页面实际浏览器联动；GitHub main/rulesets 只读 GET。
+- 验证结果：最终后端 1124 通过/25 条件跳过，前端 30 通过，类型/构建/格式/迁移漂移/依赖审计通过；实际浏览器报告与 100 条分页筛选通过。失败轮与后续成功重跑分别保留，次数不累加。曾定位表示唯一键、迁移读取锁等待、诊断参数和旧报告证据授权兼容问题；保留生产校验与历史数据保护，未降低验收标准。
+- 边界/阻塞：本轮未提交推送、未改生产或 GitHub 设置、未恢复生产数据、未调用真实研究/付费 API、未对外发送真实资料。真实数据外发/平台隧道权限/远程部署需分别授权；客户端分页已验证；数据库级大规模分页、真实登录及管理员浏览器操作仍待复核。临时测试库与容器只含虚构资料。
 
 ## 2026-09-24：E4.10 PR #98 合并与受控部署
 

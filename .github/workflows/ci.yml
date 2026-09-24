@@ -172,6 +172,23 @@ jobs:
             config --format json | python -c \
               'import json,sys; config=json.load(sys.stdin); database=config["services"]["database"]; backup=config["services"]["backup"]; assert not database.get("ports"); assert set(database["networks"]) == {"app"}; assert backup["read_only"] is True; assert backup["cap_drop"] == ["ALL"]'
 
+      - name: Validate optional diagnostic deployment isolation
+        env:
+          DIAGNOSTIC_IMAGE: dealflow-diagnostic:ci-validation
+          DIAGNOSTIC_COMMIT: ci-validation
+          MCP_DATABASE_URL: postgresql+psycopg://diagnostic_reader:ci_fixture_only@database/equity_radar
+          MCP_CURSOR_SECRET: ci_fixture_cursor_key_32_characters_only
+          MCP_CREDENTIALS_DIR: /tmp/diagnostic-fixture
+          MCP_STATE_DIR: /tmp/diagnostic-state
+        run: |
+          docker compose --profile diagnostic \
+            --env-file deploy/single-host.env.example \
+            -f compose.production.yml \
+            -f deploy/compose.single-host.yml \
+            -f deploy/compose.diagnostic.yml \
+            config --format json | python -c \
+              'import json,sys; c=json.load(sys.stdin); d=c["services"]["diagnostic-mcp"]; assert d["profiles"] == ["diagnostic"]; assert d["read_only"] is True; assert d["cap_drop"] == ["ALL"]; assert d["ports"][0]["host_ip"] == "127.0.0.1"; assert c["networks"]["diagnostic"]["internal"] is True; assert d["restart"] == "no"; assert not any("docker.sock" in v.get("source", "") for v in d["volumes"])'
+
       - name: Build production container images
         env:
           APP_MODE: production
