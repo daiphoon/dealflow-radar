@@ -19,9 +19,10 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from backend.app.config import PersonalEntitlementPolicy, WebResearchPolicy
+from backend.app.demo import ALPHA_TENANT_ID, ALPHA_USER_ID
 from backend.app.diagnostic_mcp import create_mcp_app
 from backend.app.diagnostics import TOOLS, Deadline
-from backend.app.models import CompanyResearchJob
+from backend.app.models import CompanyResearchJob, Event
 from backend.app.personal_features import create_refresh_request
 from backend.app.web_research_service import prepare_pending_research_requests
 from tests.integration import test_curated_import as curated
@@ -61,6 +62,23 @@ def test_all_sdk_tools_cursor_boundaries_and_business_content_unchanged(
         }
         job_id, event_id, company_id = job.id, event.id, company.id
         s.commit()
+    private_ids = []
+    with Session(database.owner) as s:
+        original = s.get(Event, event_id)
+        for scope in ("personal_private", "organization_private"):
+            values = {c.name: getattr(original, c.name) for c in Event.__table__.columns}
+            private_id = uuid4()
+            values.update(
+                id=private_id,
+                visibility_scope=scope,
+                owner_user_id=ALPHA_USER_ID if scope == "personal_private" else None,
+                owner_tenant_id=ALPHA_TENANT_ID if scope == "organization_private" else None,
+                event_fingerprint=hashlib.sha256(private_id.bytes).hexdigest(),
+                title="synthetic-private-title-must-not-leak",
+            )
+            s.add(Event(**values))
+            private_ids.append(private_id)
+        s.commit()
     principal = replace(principal, company_ids=principal.company_ids | {company_id})
     before = snapshot(database.owner)
     token = "synthetic-sdk-closeout"
@@ -97,6 +115,11 @@ def test_all_sdk_tools_cursor_boundaries_and_business_content_unchanged(
                             assert not result.is_error
                             body = json.loads(result.content[0].text)
                             assert body["items"], (tool, body)
+                            assert (
+                                "synthetic-private-title-must-not-leak"
+                                not in result.content[0].text
+                            )
+                            assert all(str(i) not in result.content[0].text for i in private_ids)
                             assert body["stage_timestamps"] == "not_recorded"
                             cursor = body["next_cursor"]
                             if cursor:
@@ -121,6 +144,11 @@ def test_all_sdk_tools_cursor_boundaries_and_business_content_unchanged(
                             ("get_event_lineage", "event_id"),
                         ]:
                             rejected = await client.call_tool(tool, {arg: str(uuid4())})
+                            assert "diagnostic_request_denied" in rejected.content[0].text
+                        for private_id in private_ids:
+                            rejected = await client.call_tool(
+                                "get_event_lineage", {"event_id": str(private_id)}
+                            )
                             assert "diagnostic_request_denied" in rejected.content[0].text
                         first = service.call(
                             principal, "find_company", {"query": "示例", "limit": 1}
@@ -182,3 +210,63 @@ def test_deadline_and_cancel_stop_next_query_release_pool_slots_and_reservation(
         assert service.slots.acquire(blocking=False)
         service.slots.release()
         service.slots.release()
+
+
+def test_actual_http_disconnect_drains_database_work(diagnostic, monkeypatch):
+    service, principal = diagnostic
+    entered = threading.Event()
+
+    def slow(c, *args):
+        entered.set()
+        c.execute(text("SELECT pg_sleep(10)"))
+        pytest.fail("database statement deadline did not terminate work")
+
+    monkeypatch.setattr(service, "read", slow)
+    token = "synthetic-disconnect-only"
+    app = create_mcp_app(service, lambda: {hashlib.sha256(token.encode()).hexdigest(): principal})
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    server = uvicorn.Server(uvicorn.Config(app, log_level="error"))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(0.01)
+        assert server.started
+
+        async def disconnect():
+            async with httpx2.AsyncClient(timeout=0.15) as http:
+                with pytest.raises(httpx2.ReadTimeout):
+                    await http.post(
+                        f"http://127.0.0.1:{sock.getsockname()[1]}/mcp",
+                        headers={
+                            "Authorization": "Bearer " + token,
+                            "Accept": "application/json, text/event-stream",
+                        },
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "tools/call",
+                            "params": {"name": "find_company", "arguments": {"query": "示例"}},
+                        },
+                    )
+
+        started = time.monotonic()
+        asyncio.run(disconnect())
+        assert entered.is_set()
+        while service.engine.pool.checkedout() and time.monotonic() - started < 4:
+            time.sleep(0.02)
+        assert service.engine.pool.checkedout() == 0
+        assert time.monotonic() - started < 4
+        assert service.usage[principal.key()][1] == 0
+        assert service.slots.acquire(blocking=False)
+        assert service.slots.acquire(blocking=False)
+        service.slots.release()
+        service.slots.release()
+    finally:
+        server.should_exit = True
+        thread.join(5)
+        sock.close()
+        assert not thread.is_alive()

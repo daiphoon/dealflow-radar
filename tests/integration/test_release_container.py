@@ -51,7 +51,22 @@ def test_real_overlay_runtime_fail_closed_and_site_survives(diagnostic, database
     credential_file.chmod(0o444)
     budget = state / "budget.json"
     budget.write_text("{}")
-    budget.chmod(0o666)
+    docker(
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--user",
+        "0",
+        "-v",
+        f"{state}:/state",
+        "--entrypoint",
+        "python",
+        image,
+        "-c",
+        "import os; os.chown('/state',10001,10001); os.chmod('/state',0o700); "
+        "os.chown('/state/budget.json',10001,10001); os.chmod('/state/budget.json',0o600)",
+    )
     base = tmp_path / "compose.yml"
     base.write_text("services:\n  database:\n    image: postgres:16\nnetworks:\n  app: {}\n")
     env = os.environ | {
@@ -134,16 +149,6 @@ print(json.dumps({{'status_code':r.status,'text':r.read().decode()}}))
         )
         connected = True
         compose("start", "diagnostic-mcp")
-        # Simulate the explicit deploy-time ownership provisioning, not a root service.
-        docker(
-            "exec",
-            "--user",
-            "0",
-            container,
-            "python",
-            "-c",
-            "import os; os.chown('/var/lib/diagnostic/budget.json',10001,10001)",
-        )
         wait()
         info = json.loads(docker("inspect", container))[0]
         host = info["HostConfig"]
@@ -159,6 +164,8 @@ print(json.dumps({{'status_code':r.status,'text':r.read().decode()}}))
         probe = """
 import os,socket
 assert os.getuid()==10001 and os.getgid()==10001
+assert os.stat('/var/lib/diagnostic').st_mode & 0o777 == 0o700
+assert os.stat('/var/lib/diagnostic/budget.json').st_mode & 0o777 == 0o600
 for p in ['/app/forbidden','/run/diagnostic/forbidden']:
  try: open(p,'w'); raise AssertionError('write permitted')
  except OSError: pass
@@ -276,6 +283,22 @@ except OSError: pass
                 check=False,
             )
         compose("down")
+        docker(
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--user",
+            "0",
+            "-v",
+            f"{state}:/state",
+            "--entrypoint",
+            "python",
+            image,
+            "-c",
+            f"import os; os.chown('/state',{os.getuid()},{os.getgid()}); os.chmod('/state',0o700)",
+            check=False,
+        )
         with database.owner.begin() as c:
             c.execute(
                 text(
