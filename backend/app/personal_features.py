@@ -1439,13 +1439,15 @@ def _report_markdown(
     return "\n".join(lines).strip() + "\n"
 
 
-def _report_evidence_lines(event):
+def _report_evidence_lines(event, *, current_only=True):
     current = next(
         (item for item in event.tender_observations if item.is_current and item.evidence_available),
         None,
     )
     evidence = [
-        item for item in event.evidence if current is None or item.id in current.evidence_ids
+        item
+        for item in event.evidence
+        if not current_only or current is None or item.id in current.evidence_ids
     ]
     lines = []
     for item in evidence:
@@ -1545,6 +1547,8 @@ def _safe_report_out(session, user, report, *, reused=False):
         or any(permission_lost(e) for e in evidence)
     )
     if not restricted:
+        from backend.app.services import _event_out
+
         # RLS 可能只隐藏多来源中的一条，不能用“该事项仍有证据”证明旧引用仍可发出。
         # 旧报告无逐证据 ID 快照，保守要求保存的引用行仍在当前合法投影中。
         saved_citations = Counter(
@@ -1555,7 +1559,10 @@ def _safe_report_out(session, user, report, *, reused=False):
         current_citations = Counter(
             line
             for event in rows
-            for line in _report_evidence_lines(platform_shared_event_out(session, event, user))
+            for line in _report_evidence_lines(
+                _event_out(session, event, user, allow_organization_private=False),
+                current_only=False,
+            )
         )
         restricted = bool(saved_citations - current_citations)
     if restricted:
