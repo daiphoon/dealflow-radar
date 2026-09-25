@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-09-26：发布收口候选远端送审与进度同步
+
+- 任务/关键文件：收口候选 `1f6d86621684ba179cb4170643eff488b5af3ff9` 已推送到 [PR #103](https://github.com/daiphoon/dealflow-radar/pull/103)；同步本看板、实施记录和 [统一交付记录 21](21-release-closeout.md) 的送审状态，不修改业务代码。
+- 实际命令：`git push`、`gh pr create`、`gh pr view`、`gh run watch`；核对 PR base/head 与 [Verify](https://github.com/daiphoon/dealflow-radar/actions/runs/36151791282/job/108126590567)。
+- 验证：PR 初始 head 的远端 Verify 成功；后端 1174 通过/32 条件跳过，前端 30 通过，类型/构建、Ruff、迁移、Compose、Docker 构建通过。文档追加提交后，合并前仍以 PR 当前 head 的最新 Verify 为准。
+- 未解决阻塞/边界：PR 未合并、未部署；生产数据库、MCP/隧道启用、真实研究与模型调用均未操作。MCP 宿主回环接入问题仍阻断启用。
+
 ## 2026-09-25：R01—R06 本地发布前收口
 
 - 任务/文件：从远端 main `3a9680c` 新建独立 worktree，保留原目录；金额语义、历史报告权限及合法历史兼容、0035 旧数据迁移/旧镜像回退、诊断最小权限/截止时间/拒绝审计/额度状态、评分完整性；完整状态、镜像及授权清单见 [统一交付记录 21](21-release-closeout.md)。不修改历史迁移。

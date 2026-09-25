@@ -1,12 +1,12 @@
 # 21 发布前收口与分阶段执行材料
 
-日期：2026-09-25。基线为远端 `main@3a9680c88530e310629fa240a803c5490460bb2c`，PR #100—#102 已合并，不撤销、不重新拆分。此次仅执行本地工程及虚构数据验证。生产服务器、真实资料、研究 Provider、模型、MCP 远程入口和 GitHub 设置均未操作。
+本地工程验证日期：2026-09-25；远端送审进度更新：2026-09-26。基线为远端 `main@3a9680c88530e310629fa240a803c5490460bb2c`，PR #100—#102 已合并，不撤销、不重新拆分。本轮本地验证只使用虚构数据，随后按独立授权推送并创建 PR。生产服务器、真实资料、研究 Provider、模型、MCP 远程入口和 GitHub 设置均未操作。
 
 ## 工作区与证据口径
 
 原工作区仍在 `codex/integrated-delivery-review@10e926969e28f071676053aeb6dee93b65363758`；原未跟踪文件 `docs/20-pr-ci-deployment-readiness-report.md` 保留。此次独立 worktree 为 `/private/tmp/dealflow-closeout-20260925`，分支 `codex/release-closeout-20260925`。所有改动以实际远端 main 为父提交。
 
-新代码没有推送，因此新候选的 GitHub CI **未运行**；[基线 main 的 Verify](https://github.com/daiphoon/dealflow-radar/actions/runs/36076254842/job/107888013426) 已成功，但不能充当本次代码证据。代码按网站收口、诊断收口、评分三个逻辑批次提交，历史报告兼容和实际断线测试另有本地跟进提交；不是重新拆分已合并的 PR。
+收口候选已推送到 [PR #103](https://github.com/daiphoon/dealflow-radar/pull/103)，首次远端 head 为 `1f6d86621684ba179cb4170643eff488b5af3ff9`；该提交的 [Verify](https://github.com/daiphoon/dealflow-radar/actions/runs/36151791282/job/108126590567) 已通过。后续文档同步不改变业务代码，合并前仍须核对 PR 当前 head 的最新 Verify。代码按网站收口、诊断收口、评分三个逻辑批次提交，历史报告兼容和实际断线测试另有本地跟进提交；不是重新拆分已合并的 PR。
 
 代码/测试候选：`519052ee7d089ef926c7483a49f2b4b7b864b778`。本地提交依次为 `b9c26c1`（R01/R02）、`eacb54b`（R03/R04）、`9d89aea`（R05）、`2f24944`（保留合法历史报告兼容）、`8384ffc`（真实断线、私有事项与状态目录权限验证）、`519052e`（九类非空业务数据完整字段摘要）。后续仅补交付文档，不改变镜像代码。网站独立送审可选 `b9c26c1`＋`2f24944`；诊断测试复用迁移测试的内容摘要工具，依赖网站测试批次。
 
@@ -21,7 +21,7 @@
 | R03 | 诊断不再把保存的支持判断当作当前有效支持；最小列权限通过 | `scripts/bootstrap_diagnostics.py`、`scripts/bootstrap_local_database.py`；`test_release_diagnostics.py` | 真实 PostgreSQL 回归先复现过度承诺/多余表权限；视图所有者只获列白名单，reader 无基础表、角色成员、schema CREATE 和特权函数 EXECUTE。追加处理版本后不改不可变观测；`R03-red.log`、`R03-green.log`、`R04-protocol.log` | `current_support=NULL`、`validity=not_revalidated`，`state` 明确为保存的评估。初始化应用账号收回 PUBLIC 的 watchlist 特权函数执行权，显式授予应用角色；生产若存在多个应用角色应逐一核验/初始化。诊断初始化对额外可执行特权函数或可写 schema 拒绝 | 保持 MCP 关闭时不单独阻断网站；MCP 真实数据前仍需生产权限核验 |
 | R04 | 已修复拒绝审计、线程/查询截止时间、额度文件丢失重置和真实容器 tmpfs 配置；接入路径仍阻塞 | `backend/app/diagnostics.py`、`diagnostic_mcp.py`、`deploy/compose.diagnostic.yml`；`test_release_mcp.py`、`test_release_container.py`、`test_release_diagnostic_audit.py` | 五工具真实 SDK/HTTP、游标绑定/过期/篡改、未知对象、九类非空业务表全字段摘要、查询超时、实际 HTTP 断线及协作取消后连接/槽位/字节预占收尾；真实 UID 10001、只读根/凭据、持久状态、资源/日志限制和内部网。`R04-audit-red.log`、`R04-audit-green.log`、`R04-protocol-final.log`、`R04-full-row-digests.log`、`R04-container-red.log`、`R04-container-budget-red.log`、`R04-container-final.log` | 本机 Docker 实际 `NetworkSettings.Ports[8090/tcp]=[]`，虽声明 127.0.0.1 发布端口却未生效；只完成容器内部请求，不能声称宿主机/远程接通。未降低出站隔离。本机真实 HTTP 断线已验证；远程隧道认证头与目标架构下的接入/断线路径仍须独立验收；在途调用只承诺截止时间/DB 超时收尾，不承诺撤权即时中断 | **阻断 MCP 启用**；普通网站不加载诊断 overlay，可独立推进；不替代真实研究质量验收 |
 | R05 | 已修复部分评分冒充完整验收、非有限成本/耗时及冻结分母核验 | `backend/app/research_evaluation.py`、`scripts/research_replay.py`；`test_release_scorecard.py`、`test_integrated_research.py` | 缺裁决返回 partial/not_recorded，正式指标为空；子集指标显式命名；冻结 case ID/expected/allowed_date_precision 校验、缺正文仍保留分母、召回上下界、NaN/Infinity/负值拒绝、未知成本和零合格保留不可计算。`R05-red.log`、`R05-green.log`、`release-targeted.log` | 没有冻结 benchmark 的全量裁决也标 unfrozen，不作为正式验收；manifest 哈希仅证明输入固定，不证明人工答案正确。本轮未做真实研究 | 不阻断网站或 MCP 网络；下一轮真实研究还需新留出集、人工裁决、价格/预算和当次调用授权 |
-| R06 | 本地发布材料已整理；远端交付与生产执行后置 | 本文件、有效看板、实施记录 | 完整后端 1175 通过/31 条件跳过；前端 30 通过及类型/构建；main protection 只读导出；迁移/格式/Compose/固定镜像/秘密扫描通过，见下文与 `full-backend-fresh-final.log` | 候选未推送，没有新 CI；生产实际 SHA、架构、schema、旧镜像和容量未知；本地 arm64 镜像不能直接当成目标服务器镜像 | 网站部署须先完成独立的推送/审查/CI/合并及生产门禁；MCP、真实研究分别授权 |
+| R06 | 本地发布材料已整理；PR #103 已创建，首次远端 Verify 通过；审查与生产执行后置 | 本文件、有效看板、实施记录 | 本地完整后端 1175 通过/31 条件跳过；前端 30 通过及类型/构建；远端首次 Verify 后端 1174 通过/32 条件跳过、前端 30 通过及类型/构建；main protection 只读导出；迁移/格式/Compose/固定镜像/秘密扫描通过，见下文与 `full-backend-fresh-final.log` | PR 当前 head 的最新 Verify 须在合并前核对；生产实际 SHA、架构、schema、旧镜像和容量未知；本地 arm64 镜像不能直接当成目标服务器镜像 | 网站部署须先完成 PR 审查/合并及独立生产门禁；MCP、真实研究分别授权 |
 
 ## 固定运行产物与演练范围
 
@@ -82,7 +82,7 @@ tests/unit/test_release_semantics.py
 
 ## 分别提交的授权清单
 
-1. **推送/创建 PR 授权**：仅本分支已扫描的候选提交及必要报告；目标 `daiphoon/dealflow-radar`；按“网站收口→诊断收口、评分独立”的真实依赖送审。允许远端 Verify 后才可声称新 CI 通过，不复用旧 PR #100—#102 结果。
+1. **推送/创建 PR：已执行**。仅本分支已扫描的候选提交及必要报告推送到 `daiphoon/dealflow-radar` 的 PR #103；远端 Verify 已通过。不复用旧 PR #100—#102 的 CI 结果；后续提交仍以 PR 当前 head 的最新检查为准。
 2. **合并授权**：明确当次 PR、准确 head SHA、当前 main、最新 Verify；按当次审查结果合并。推送授权不包含合并，合并不包含部署。
 3. **普通网站生产授权**：通过既有 Mac/Tailscale 管理路径只读核验服务器 SHA/schema/架构/资源/任务/开关/旧镜像；冻结适配服务器架构的镜像 digest 和配置；制作加密备份、双哈希、隔离恢复并核对关键旧数据；维护窗口暂停相关写入口与 Worker；owner 迁移、应用角色初始化、RLS 与 schema check；切换固定镜像，核验 health/ready、登录、匿名拒绝、公司页、回访并发、报告复用/额度与来源撤权；观察后备份和回执。**不加载 `compose.diagnostic.yml`，不安装生产诊断账号/视图。** 若实际 schema 已为 0036，先停止并审查旧语义基线兼容方案，不直接覆盖回执。
 4. **MCP 独立授权**：先解决并重测宿主机回环接入路径与出站隔离；再申请远端虚构数据、指定客户端/认证/隧道验证。真实数据外发还需单独列明 public_metadata、公司 ID、有效期、累计调用/字节上限及撤销方案。不假定网页账户已具备接入资格，不使用匿名公网/Funnel 后备。额度文件首次初始化需明确创建 `{}`、归属 UID/GID 10001、0600，后续缺失不得自动重置；配置与状态目录分离。

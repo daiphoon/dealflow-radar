@@ -23,11 +23,11 @@
 
 ## 2. 有效执行检查点
 
-- **当前检查点：R01—R06 发布前本地收口已交付；MCP 接入仍阻塞**。基线为已合并 PR #100—#102 的远端 `main@3a9680c88530e310629fa240a803c5490460bb2c`。本轮独立 worktree 保留原目录；金额语义、旧数据迁移/回退、历史报告权限、诊断和评估收口见 [统一交付记录 21](21-release-closeout.md)。W01—W12 不重做，原交付记录保持历史证据用途。
-- **停止边界**：仅本地工程和虚构数据验证。推送/PR、合并、生产操作分别申请当次授权；不连接生产数据库、不部署、不创建生产诊断账号、不启用远程 MCP/隧道/真实 Provider/模型/关注巡检、不修改 GitHub 设置。网站不加载诊断 overlay；本地实际容器的宿主回环端口未生效，MCP 保持阻塞。只读核验 main 已要求 PR＋严格最新 Verify、约束管理员、禁止强推/删除，额外批准数 0；旧 403 记录不代表当前保护状态。
+- **当前检查点：R01—R06 已进入 [PR #103](https://github.com/daiphoon/dealflow-radar/pull/103) 审查；MCP 接入仍阻塞**。基线为已合并 PR #100—#102 的远端 `main@3a9680c88530e310629fa240a803c5490460bb2c`。收口候选 `1f6d86621684ba179cb4170643eff488b5af3ff9` 的[远端 Verify](https://github.com/daiphoon/dealflow-radar/actions/runs/36151791282/job/108126590567)已通过；合并前仍须核对 PR 当前 head 的最新 Verify。本轮独立 worktree 保留原目录；金额语义、旧数据迁移/回退、历史报告权限、诊断和评估收口见 [统一交付记录 21](21-release-closeout.md)。W01—W12 不重做，原交付记录保持历史证据用途。
+- **停止边界**：本地工程、虚构数据验证及已授权的推送/PR/远端 CI 已执行；PR 尚未合并，生产操作仍须当次授权。不连接生产数据库、不部署、不创建生产诊断账号、不启用远程 MCP/隧道/真实 Provider/模型/关注巡检、不修改 GitHub 设置。网站不加载诊断 overlay；本地实际容器的宿主回环端口未生效，MCP 保持阻塞。只读核验 main 已要求 PR＋严格最新 Verify、约束管理员、禁止强推/删除，额外批准数 0；旧 403 记录不代表当前保护状态。
 - **验收分开**：本地和远端 CI 不替代生产及业务验收；真实价值仍为 E4.9 线索 1/4、严格 0/4。其余范围不扩张，后续操作必须另行授权。
 
-- 更新日期：2026-09-25；依据：[ADR-0021](DECISIONS/ADR-0021-incremental-event-delivery.md)、[ADR-0022](DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md)、[ADR-0024](DECISIONS/ADR-0024-research-acquisition-and-extraction-evaluation.md)。
+- 更新日期：2026-09-26；依据：[ADR-0021](DECISIONS/ADR-0021-incremental-event-delivery.md)、[ADR-0022](DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md)、[ADR-0024](DECISIONS/ADR-0024-research-acquisition-and-extraction-evaluation.md)。
 - 总体阶段：`DEMO / VALIDATION`；已确认采用“增量交付＋局部重构”，保留现有系统。
 - 上一轮批准顺序已执行：PR #91、#92、#93 依次合并，最终 `de50fe48aeba174bbcfe6575c8be207f4acd9d8e` 的文件树与已验收 PR #93 一致；已完成部署、整批资料接收与固定 5 家单次研究。既有失败、账本及暂停自动续作保留。
 - 上一运行基线（历史）：香港环境曾部署 `de50fe4`，数据库 `0033`。[最终 CI](https://github.com/daiphoon/dealflow-radar/actions/runs/35512674548) 后端 897 通过/18 跳过，前端 26 通过；生产镜像、加密备份、SSH 副本双哈希及 Mac 隔离恢复、切换前后全表摘要、非 owner 权限和 HTTP 检查通过。旧 `10baf8d` 保留；原 E0—E3 与 COS 运维验收保持。
