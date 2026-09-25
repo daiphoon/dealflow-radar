@@ -1,0 +1,36 @@
+# 经独立授权后与 deploy/compose.single-host.yml 合用；默认 profile 不启动。
+services:
+  diagnostic-mcp:
+    image: ${DIAGNOSTIC_IMAGE:?use an immutable reviewed image tag}
+    profiles: [diagnostic]
+    command: [uvicorn, backend.app.diagnostic_mcp:configured_app, --factory, --host, 0.0.0.0, --port, "8090", --no-access-log]
+    environment:
+      MCP_DATABASE_URL: ${MCP_DATABASE_URL:?dedicated readonly role required}
+      MCP_CURSOR_SECRET: ${MCP_CURSOR_SECRET:?required}
+      MCP_CREDENTIALS_FILE: /run/diagnostic/credentials.json
+      MCP_BUDGET_FILE: /var/lib/diagnostic/budget.json
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-127.0.0.1,localhost}
+      APP_COMMIT: ${DIAGNOSTIC_COMMIT:?required}
+    volumes:
+      - ${MCP_CREDENTIALS_DIR:?required}:/run/diagnostic:ro
+      - ${MCP_STATE_DIR:?required}:/var/lib/diagnostic:rw
+    ports: ["127.0.0.1:8090:8090"]
+    networks: [diagnostic]
+    read_only: true
+    tmpfs: [/tmp:size=8m,noexec,nosuid]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 64
+    restart: "no"
+    healthcheck:
+      disable: true
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+  database:
+    networks: [app, diagnostic]
+networks:
+  diagnostic:
+    internal: true

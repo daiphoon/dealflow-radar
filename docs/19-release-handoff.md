@@ -61,6 +61,26 @@
 
 另更新本记录和实施记录。
 
+## PR-C 文件清单
+
+基于 [PR-B #101](https://github.com/daiphoon/dealflow-radar/pull/101)（`a0c65b2`）；它基于 PR-A #100（`6e43871`）。只增加诊断基础设施，不启用生产服务。
+
+- `backend/app/diagnostic_mcp.py`
+- `backend/app/diagnostics.py`
+- `deploy/compose.diagnostic.yml`
+- `docs/10-implementation-plan.md`
+- `docs/18-integrated-delivery.md`
+- `docs/DECISIONS/ADR-0027-integrated-diagnostics-and-semantic-delivery.md`
+- `docs/IMPLEMENTATION_LOG.md`
+- `pyproject.toml`
+- `scripts/bootstrap_diagnostics.py`
+- `scripts/diagnostic_export.py`
+- `tests/integration/test_diagnostic_service.py`
+- `uv.lock`
+- `.github/workflows/ci.yml`
+
+另更新本正式交付记录。三个 PR 合计 52 个唯一文件；A 19 个、B 23 个、C 14 个（共享交付记录在各批递进更新，不把重复计为唯一文件）。
+
 ## GitHub 门禁
 
 2026-09-24，仓库为私有，当前账号有 admin 权限；main protected=false。rulesets 和 branch protection GET 均返回 403，明确要求升级套餐或改公开。按负责人边界不购买、不改可见性、不绕过；当前采用 PR、`Verify` 全部成功和人工确认的门禁。GitHub 尚不能强制阻止直接写 main，须明确保留该限制。
@@ -72,6 +92,8 @@ PR-A 定向测试 17 通过；完整正式后端 1111 通过、19 条件跳过�
 PR-B 定向 14 通过；完整后端 1119 通过、19 条件跳过（607.77 秒），前端 30 通过，typecheck/build 通过；Ruff/格式、SQLite 往返、PostgreSQL 迁移/漂移、生产 Compose、API/前端/备份 Docker 构建、npm audit、Secret/私有路径扫描和 diff 检查通过。迁移只新增 0036，远端 CI 以当前 Verify 为准。
 
 2026-09-25 合并审查补正：报告原复用指纹未覆盖实际正文标题，事项事实不变但标题更正时会返回旧报告。新增回归先失败，修正为按实际 Markdown 内容（排除生成时点）判断复用后，回访/报告定向 9 通过。无 PostgreSQL 的本地完整回归为 915 通过、224 条件跳过；必须以补正提交的远端 PostgreSQL CI `Verify` 作为合并门禁。迁移、回访语义和诊断默认关闭配置未变。
+
+PR-C 定向 6 通过、6 SQLite 条件跳过；真实 PostgreSQL 权限、SDK HTTP 和模拟转发已执行。完整后端 1125 通过、25 条件跳过（608.39 秒）；其中 PostgreSQL 诊断参数实际执行。前端 30 通过及类型/构建通过，诊断 Compose 与新增 CI 隔离断言通过；Gitleaks 对最终 337 个发布文件扫描零发现，私有路径扫描零发现。
 
 ## 受控部署清单（待另行批准）
 
