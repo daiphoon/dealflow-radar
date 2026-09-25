@@ -64,6 +64,7 @@ def test_scorecard_preserves_missing_and_zero_qualified_denominators():
         **dict.fromkeys(QUALITY_COUNTS, 0),
     }
     result = scorecard([zero, None])
-    assert result["known_set_recall"] == 0 and result["precision"] == 0
+    assert result["known_set_recall"] is None and result["precision"] is None
+    assert result["reviewed_subset"]["known_set_recall"] == 0
     assert result["cost_per_qualified"] is None and result["missing_judgments"] == 1
     assert scorecard([None])["precision"] is None
