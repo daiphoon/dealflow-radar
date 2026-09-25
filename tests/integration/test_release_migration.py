@@ -74,18 +74,18 @@ def runtime(image, url, *args):
     return result.stdout
 
 
-def snapshot(engine):
+def snapshot(engine, *, legacy_columns=False):
     result = {}
     with engine.connect() as connection:
         for table in inspect(engine).get_table_names():
-            if table in {"alembic_version", "personal_report_requests"}:
+            if table == "alembic_version" or (
+                legacy_columns and table == "personal_report_requests"
+            ):
                 continue
             # Only 0036's explicitly added columns are omitted from the comparison.
+            exclude = " - 'semantic_version' - 'input_fingerprint'" if legacy_columns else ""
             rows = connection.execute(
-                text(
-                    f"SELECT to_jsonb(t) - 'semantic_version' - 'input_fingerprint' "
-                    f'FROM "{table}" t'
-                )
+                text(f'SELECT to_jsonb(t){exclude} FROM "{table}" t')
             ).scalars()
             encoded = sorted(json.dumps(r, sort_keys=True, default=str) for r in rows)
             result[table] = (len(encoded), hashlib.sha256("\n".join(encoded).encode()).hexdigest())
@@ -168,7 +168,7 @@ def test_populated_postgres_0035_upgrade_and_guarded_rollback(tmp_path, monkeypa
                     created_at=seen,
                 ),
             )
-        before = snapshot(owner)
+        before = snapshot(owner, legacy_columns=True)
         assert before["event_observations"][0] > 0
         image = os.getenv("RELEASE_RUNTIME_IMAGE")
         started = time.monotonic()
@@ -180,7 +180,7 @@ def test_populated_postgres_0035_upgrade_and_guarded_rollback(tmp_path, monkeypa
             f"migration_seconds={time.monotonic() - started:.3f}; "
             f"rows={sum(v[0] for v in before.values())}"
         )
-        assert snapshot(owner) == before
+        assert snapshot(owner, legacy_columns=True) == before
         command.check(Config("alembic.ini"))
         bootstrap_application_role(url, role, "local_fixture_app_only")
         app_url = (

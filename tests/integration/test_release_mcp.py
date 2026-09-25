@@ -80,7 +80,52 @@ def test_all_sdk_tools_cursor_boundaries_and_business_content_unchanged(
             private_ids.append(private_id)
         s.commit()
     principal = replace(principal, company_ids=principal.company_ids | {company_id})
+    from fastapi.testclient import TestClient
+
+    from backend.app.config import Settings
+    from backend.app.main import create_app
+    from tests.integration.test_personal_changes_reports import PERSONAL_HEADERS
+
+    site = create_app(
+        Settings(
+            database_url=database.app.url.render_as_string(hide_password=False),
+            app_mode="demo",
+            external_calls_enabled=False,
+            paid_api_calls_enabled=False,
+            auto_refresh_enabled=False,
+        )
+    )
+    try:
+        with TestClient(site) as client:
+            path = f"/api/v1/me/companies/{company_id}"
+            assert client.post(path + "/view", headers=PERSONAL_HEADERS).status_code == 200
+            assert (
+                client.post(
+                    path + "/reports", headers=PERSONAL_HEADERS, json={"idempotency_key": "9" * 64}
+                ).status_code
+                == 200
+            )
+            reused = client.post(
+                path + "/reports", headers=PERSONAL_HEADERS, json={"idempotency_key": "8" * 64}
+            )
+            assert reused.status_code == 200 and reused.json()["reused"]
+    finally:
+        site.state.engine.dispose()
     before = snapshot(database.owner)
+    required_tables = (
+        "events",
+        "event_evidence",
+        "event_observations",
+        "event_fact_supports",
+        "company_research_jobs",
+        "usage_ledger",
+        "personal_event_view_receipts",
+        "personal_company_reports",
+        "personal_report_requests",
+    )
+    assert all(before[t][0] > 0 for t in required_tables), [
+        t for t in required_tables if not before[t][0]
+    ]
     token = "synthetic-sdk-closeout"
     credentials = {hashlib.sha256(token.encode()).hexdigest(): principal}
     app = create_mcp_app(service, lambda: credentials)
