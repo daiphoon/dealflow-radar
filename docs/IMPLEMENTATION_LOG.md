@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-09-25：R01—R06 本地发布前收口
+
+- 任务/文件：从远端 main `3a9680c` 新建独立 worktree，保留原目录；金额语义、历史报告权限及合法历史兼容、0035 旧数据迁移/旧镜像回退、诊断最小权限/截止时间/拒绝审计/额度状态、评分完整性；完整状态、镜像及授权清单见 [统一交付记录 21](21-release-closeout.md)。不修改历史迁移。
+- 实际命令：真实函数 pytest 失败回归→定向修复回归；本地 PostgreSQL 16 非 owner/RLS；固定 runtime image 的 Alembic 升级及旧 image 读取；实际诊断 overlay、真实 MCP SDK/HTTP/断线；Ruff/format、SQLite 往返与 PostgreSQL check、production Compose config、Docker API/前端/备份构建和离线 runtime preflight；npm test/typecheck/build/audit；Gitleaks 当前树及本地可达历史；GitHub main/protection 只读 GET。
+- 验证：最终完整后端 1175 通过/31 条件跳过（683.24 秒，全新虚构 PG 库及固定镜像）；中间一轮 4 个合法历史报告兼容失败已定位，修正后的相关定向回归 40 通过/1 条件跳过；前端 30 通过及类型/构建；复用测试库导致的 4 项夹具残留失败在全新库全部通过，未改断言。带 213 行虚构旧数据迁移保留旧列摘要，有历史 downgrade 拒绝且无半降级；MCP 前后九类非空业务数据完整字段摘要一致，实际 HTTP 断线在本地测试 4 秒内收尾。
+- 未解决阻塞/边界：内部网络容器声明的宿主回环端口未实际发布，MCP 接入保持阻塞；生产状态、真实备份恢复、目标架构、远程客户端/隧道另验。main 已要求 PR＋strict Verify、约束管理员、禁止强推/删除。仅本地提交，无推送/新 CI/合并/生产连接或部署/真实数据外发/真实研究与模型调用/远程 MCP 启用。
+
 ## 2026-09-24：整合交付 PR-C 发布准备
 
 - 任务/文件：W09—W11；只读视图/账号、五个 MCP 工具、配额审计与可选 profile；精确锁定 SDK；新增 CI 配置隔离断言，完整清单见 [正式交付记录 19](19-release-handoff.md)。
