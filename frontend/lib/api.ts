@@ -503,6 +503,7 @@ export type PersonalCompanyReportSummary = {
 };
 
 export type PersonalCompanyReport = PersonalCompanyReportSummary & {
+  history_status: "historical_snapshot" | "restricted" | "stale";
   markdown: string;
   source_event_ids: string[];
   reused: boolean;

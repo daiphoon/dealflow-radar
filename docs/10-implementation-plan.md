@@ -23,9 +23,9 @@
 
 ## 2. 有效执行检查点
 
-- **当前唯一工程里程碑：M1-SafeDegrade 主网站安全只读降级与恢复闭环**。[PR #103](https://github.com/daiphoon/dealflow-radar/pull/103) 已按获批的精确 head `a52b06e09acf148537fe1e1cf117e7cf30e150b7` 普通合并至 `main@e1fbfcd6f6c039a6834d426840c3bf38abeced05`，合并文件树 `7bb70e6dc238f9a5a8a122458a9833309dceaeca` 与已审查 head 相同，[合并后 Verify](https://github.com/daiphoon/dealflow-radar/actions/runs/36209264154) 成功。M1 本地跨版本降级与恢复验收通过，已提交单一独立 [PR #104](https://github.com/daiphoon/dealflow-radar/pull/104)，远端门禁以最新 head 的 Verify 为准；不自动合并或部署。完整证据、阻断和下一次集中生产授权清单见 [统一就绪报告 22](22-m1-safe-degrade-release-readiness.md)。R01—R06 与 W01—W12 保留历史交付口径，不重开业务收口。
-- **停止边界**：#103 已合并但**未部署**；现场只经 Tailscale 做有限远程只读预检，确认 Linux/amd64、旧版 `ff174998`、schema `0035`、研究开关关闭、无活动刷新/研究任务。M1 隔离演练仅使用虚构数据，不执行生产备份下载/恢复、数据库写入或迁移、镜像切换、重启；不创建生产诊断账号，不启用 MCP/隧道/真实 Provider/模型/关注巡检，不修改 GitHub 设置。M1 PR 创建并通过审查后停止，不自动合并或部署；网站仍不加载诊断 overlay，MCP 接入阻断另行处理。
-- **验收分开**：本地和远端 CI 不替代生产及业务验收；真实价值仍为 E4.9 线索 1/4、严格 0/4。其余范围不扩张，后续操作必须另行授权。
+- **当前唯一工程里程碑：M1-Report-Recovery 报告许可一致性与 0036 服务恢复**。#104 已合并至 `main@6d9398b1f3f6f838acb8bb123d1d6d84afa36545`（tree `709bef993bf9186fd431137e12cbd9c26ba11009`），最终制品已冻结；获批 Gate C 的 0035→0036 迁移通过，但报告验收失败，未恢复公网。失败后已 restrict+verify、停止应用，保持 0036 和完全静态维护，**M1 = BLOCKED**，不能写成已经上线。
+- **本轮范围与证据**：仅报告全生命周期/额度/页面状态修复、本地正式测试、现有失败后加密备份的 0036 隔离恢复、独立 PR 和实际 Verify。修复和许可边界见 [工程记录 23](23-m1-report-lifecycle-recovery.md)；精确 PR/head/CI、完整摘要和下一次恢复授权统一封存在私有 `M1 Report Lifecycle Recovery Package`。本轮无生产操作，不重跑迁移、不改历史报告或 semantic baseline；保留 W01—W12/R01—R06/Safe Degrade 原交付。
+- **停止边界**：工程 PR 完成后停止，不自动合并、部署、恢复应用权限、启动生产应用或切回正常 Caddy；Provider/Model/Worker/Watchlist 自动巡检/MCP/隧道保持关闭。本地和 CI 不替代 CloudBase 与生产真实业务验收。成功恢复后才能关闭 M1，随后另行准备 M2；M3 独立。
 
 - 更新日期：2026-09-26；依据：[ADR-0021](DECISIONS/ADR-0021-incremental-event-delivery.md)、[ADR-0022](DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md)、[ADR-0024](DECISIONS/ADR-0024-research-acquisition-and-extraction-evaluation.md)。
 - 总体阶段：`DEMO / VALIDATION`；已确认采用“增量交付＋局部重构”，保留现有系统。

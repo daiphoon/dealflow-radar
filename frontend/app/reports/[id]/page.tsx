@@ -36,7 +36,15 @@ export default async function PersonalReportDetailPage({
           </Link>
         </div>
 
-        {result ? (
+        {report.history_status === "restricted" ? (
+          <p className="feedback feedback-error">
+            来源许可已变化，历史正文停止提供。本次读取或重试不会新增报告额度。
+          </p>
+        ) : report.history_status === "stale" ? (
+          <p className="feedback">
+            这份历史报告已过时，相关事项已纠正或撤回；以下保留生成时记录，请查看公司最新资料。
+          </p>
+        ) : result === "report_generated" || result === "report_reused" ? (
           <p className="feedback feedback-success">
             {result === "report_reused"
               ? "这份报告已存在，已直接为你打开；不会重复占用本月次数。"

@@ -1061,3 +1061,10 @@
 - 实际命令：新增用例先执行失败；`.venv/bin/pytest -q tests/integration/test_integrated_returns.py tests/integration/test_personal_changes_reports.py`、`.venv/bin/pytest -q`、Ruff/格式与 `git diff --check`。
 - 测试结果：定向 9 通过；本地完整 915 通过、224 条件跳过（未接 PostgreSQL）；补正提交的远端 PostgreSQL CI 待核验。
 - 未解决阻塞：PR 依赖重核及远端 CI 前不合并；生产部署、0036 迁移和 MCP 启用仍未授权。
+
+## 2026-09-26：M1-Report-Recovery（独立 PR，未合并/生产恢复）
+
+- 关键文件：`report_permissions.py`、`personal_features.py`、报告 API/Server Action/详情页、生命周期回归及工程记录 23；无 migration、安全控制或研究策略变化。
+- 实际命令：非 owner PostgreSQL 下 `pytest -q tests/integration/test_report_lifecycle_recovery.py`；完整 `pytest -q`；Ruff/check format；SQLite/PostgreSQL Alembic check；前端 test/typecheck/build；production/Safe Degrade Compose config；API/frontend amd64 Docker build；真实旧/修复镜像 `test_m1_safe_degrade.py`；本机 age 0036 restore 和真实报告页面/Server Action；Secret 扫描与 diff check。
+- 验证：先以真实 API 建立失败回归，再统一首次生成/历史读取/重试/复用闸门和额度事务；正式最终计数、实际 CI 与 42 张表完整内容摘要保存在统一私有恢复包，避免提交真实数据、凭据或测试日志。
+- 阻塞：合并、修复制品发布和生产 0036 服务恢复需分别明确授权；本轮未做生产/CloudBase 验收。
