@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-09-26：PR #103 合并与 M1-SafeDegrade 本地演练
+
+- 任务/关键文件：严格核对 head/base/required Verify/mergeable 后普通合并 [PR #103](https://github.com/daiphoon/dealflow-radar/pull/103) 为 `e1fbfcd6f6c039a6834d426840c3bf38abeced05`，tree `7bb70e6dc238f9a5a8a122458a9833309dceaeca`；M1 只读控制见 `deploy/Caddyfile.safe-degrade`、`deploy/compose.safe-degrade.yml`、`scripts/safe_degrade_database.py`、`tests/integration/test_m1_safe_degrade.py` 与 [统一就绪报告 22](22-m1-safe-degrade-release-readiness.md)。
+- 实际命令：`gh pr view`、`gh pr merge --merge --match-head-commit`、GitHub commit/check API；先运行行为级失败回归，再在虚构 PostgreSQL 16 上运行跨版本定向测试，实际 Caddy 容器及 `linux/amd64` 旧 API/前端镜像演练；完整命令与结果以报告 22 的最终校验为准。
+- 验证：合并后 main Verify 成功；本地完整后端 1175 通过/33 条件跳过，最终跨版本定向 2 通过、前端 30 通过及类型/构建、Ruff、SQLite/PostgreSQL 迁移检查、production/safe Compose 与 linux/amd64 构建通过，公开文件树 Gitleaks 零发现。42 张表完整摘要降级前后不变；旧公司页可读，报告/回访等入口及 30 并发 Server Actions 返回 503；新固定镜像恢复回访与原报告复用。额外 schema 写路径和通用 tools 隐式恢复权限均先失败、修正后通过。
+- 未解决阻塞/边界：M1 已提交独立 [PR #104](https://github.com/daiphoon/dealflow-radar/pull/104)；以最新 head 的远端 Verify 为准。最终主线固定 amd64 制品与集中生产授权另行执行；未合并 M1 PR、未部署、未执行生产写入或真实研究/MCP。
+
 ## 2026-09-26：发布收口候选远端送审与进度同步
 
 - 任务/关键文件：收口候选 `1f6d86621684ba179cb4170643eff488b5af3ff9` 已推送到 [PR #103](https://github.com/daiphoon/dealflow-radar/pull/103)；同步本看板、实施记录和 [统一交付记录 21](21-release-closeout.md) 的送审状态，不修改业务代码。

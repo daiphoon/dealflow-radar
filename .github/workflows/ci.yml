@@ -17,7 +17,7 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     env:
       APP_MODE: demo
       EXTERNAL_CALLS_ENABLED: "false"
@@ -150,6 +150,7 @@ jobs:
       - name: Validate production deployment configuration
         env:
           APP_MODE: production
+          SAFE_CONTROL_IMAGE: dealflow-m1-control:ci-validation
           DATABASE_ADMIN_URL: postgresql+psycopg://m5_owner:m5_acceptance_owner_password@acceptance-db:5432/equity_radar
           DATABASE_URL: postgresql+psycopg://equity_app:m5_acceptance_app_password@acceptance-db:5432/equity_radar
           APP_DATABASE_USER: equity_app
@@ -171,6 +172,13 @@ jobs:
             -f deploy/compose.single-host.yml \
             config --format json | python -c \
               'import json,sys; config=json.load(sys.stdin); database=config["services"]["database"]; backup=config["services"]["backup"]; assert not database.get("ports"); assert set(database["networks"]) == {"app"}; assert backup["read_only"] is True; assert backup["cap_drop"] == ["ALL"]'
+          docker compose --profile tools --profile restore --profile analysis --profile web-research --profile safe-control --profile safe-restore \
+            --env-file deploy/single-host.env.example \
+            -f compose.production.yml \
+            -f deploy/compose.single-host.yml \
+            -f deploy/compose.safe-degrade.yml \
+            config --format json | python -c \
+              'import json,sys; c=json.load(sys.stdin); s=c["services"]; p=s["proxy"]; control=s["safe-degrade-control"]; restore=s["safe-degrade-restore-role"]; assert not s["api"].get("ports") and not s["frontend"].get("ports"); assert any(v["target"]=="/etc/caddy/Caddyfile" and v["source"].endswith("Caddyfile.safe-degrade") and v["read_only"] for v in p["volumes"]); assert control["image"]==restore["image"]=="dealflow-m1-control:ci-validation"; assert control["profiles"]==["safe-control"] and restore["profiles"]==["safe-restore"]; assert control["read_only"] is True and restore["read_only"] is True; assert control["cap_drop"]==restore["cap_drop"]==["ALL"]; assert "APP_DATABASE_PASSWORD" not in control["environment"]; assert all(s["api"]["environment"][key]=="false" for key in ("EXTERNAL_CALLS_ENABLED","PAID_API_CALLS_ENABLED","AUTO_REFRESH_ENABLED","AUTO_PUBLISH_ENABLED","WATCHLIST_MONITOR_ENABLED")); assert all(s[key]["command"]==["/bin/false"] for key in ("web-research-worker","investor-analysis-worker","migrate","bootstrap-role"))'
 
       - name: Validate optional diagnostic deployment isolation
         env:
@@ -212,3 +220,32 @@ jobs:
             -f compose.production.yml \
             -f deploy/compose.acceptance.yml \
             run --rm --no-deps preflight
+
+      - name: Build frozen amd64 application for Safe Degrade rehearsal
+        run: |
+          frozen_commit=ff174998893a1a868b95e469817c1f1199221e89
+          frozen_source="${RUNNER_TEMP}/m1-frozen-source"
+          git fetch --no-tags --depth=1 origin "${frozen_commit}"
+          mkdir -p "${frozen_source}"
+          git archive "${frozen_commit}" | tar -x -C "${frozen_source}"
+          docker build --platform linux/amd64 -t dealflow-m1-frozen-api:verify -f "${frozen_source}/backend/Dockerfile" "${frozen_source}"
+          docker build --platform linux/amd64 -t dealflow-m1-frozen-frontend:verify "${frozen_source}/frontend"
+
+      - name: Exercise Safe Degrade cross-version recovery
+        env:
+          M1_DOCKER_GATE_TESTS: "1"
+          M1_GATE_UPSTREAM_IMAGE: dealflow-radar-backend:m5a-local
+        run: |
+          export M1_OLD_RUNTIME_IMAGE="$(docker image inspect --format '{{.Id}}' dealflow-m1-frozen-api:verify)"
+          export M1_OLD_FRONTEND_IMAGE="$(docker image inspect --format '{{.Id}}' dealflow-m1-frozen-frontend:verify)"
+          export M1_NEW_RUNTIME_IMAGE="$(docker image inspect --format '{{.Id}}' dealflow-radar-backend:m5a-local)"
+          export M1_NEW_FRONTEND_IMAGE="$(docker image inspect --format '{{.Id}}' dealflow-radar-frontend:m5a-local)"
+          export M1_EVIDENCE_PATH="${RUNNER_TEMP}/m1-safe-degrade-digests.json"
+          uv run --frozen pytest -q tests/integration/test_m1_safe_degrade.py
+
+      - name: Preserve synthetic Safe Degrade row digests
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: m1-safe-degrade-synthetic-digests
+          path: ${{ runner.temp }}/m1-safe-degrade-digests.json
+          if-no-files-found: error
