@@ -870,6 +870,8 @@ def create_app(
                 idempotency_key=payload.idempotency_key,
                 archive_new_timepoint=payload.archive_new_timepoint,
             )
+        except PersonalFeatureAccessError as error:
+            raise HTTPException(status_code=403, detail="report_content_restricted") from error
         except PersonalFeatureNotFoundError as error:
             raise HTTPException(status_code=404, detail="company not found") from error
         except PersonalRequestConflictError as error:

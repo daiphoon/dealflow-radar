@@ -1493,51 +1493,19 @@ def _report_out(
 
 
 def _safe_report_out(session, user, report, *, reused=False):
-    from backend.app.models import EventEvidence, RawDocument, Source
+    from backend.app.models import EventEvidence
 
     output = _report_out(report, reused=reused)
     ids = [UUID(value) for value in report.source_event_ids]
     rows = list(session.scalars(select(Event).where(Event.id.in_(ids))))
     evidence = list(session.scalars(select(EventEvidence).where(EventEvidence.event_id.in_(ids))))
-    legacy = [e for e in evidence if e.display_license_status is None and not e.display_allowed]
-    documents = {
-        d.id: d
-        for d in session.scalars(
-            select(RawDocument).where(RawDocument.id.in_([e.raw_document_id for e in legacy]))
-        )
-    }
-    sources = {
-        s.id: s
-        for s in session.scalars(
-            select(Source).where(Source.id.in_([d.source_id for d in documents.values()]))
-        )
-    }
+    from backend.app.report_permissions import report_evidence_permission
 
     def permission_lost(e):
-        if (
-            e.visibility_scope != PLATFORM_SHARED_SCOPE
-            or e.owner_user_id is not None
-            or e.owner_tenant_id is not None
-        ):
-            return True
-        if e not in legacy:
-            withdrawn_fact = any(
-                row.id == e.event_id and row.status in {"rejected", "retracted"} for row in rows
-            )
-            return (
-                not e.display_allowed and not withdrawn_fact
-            ) or e.display_license_status not in {
-                "public",
-                "permission_confirmed",
-            }
-        document = documents.get(e.raw_document_id)
-        source = sources.get(document.source_id) if document else None
-        return (
-            not document
-            or not source
-            or document.license_status != "public"
-            or source.license_status != "public"
+        withdrawn_fact = any(
+            row.id == e.event_id and row.status in {"rejected", "retracted"} for row in rows
         )
+        return not report_evidence_permission(session, e, withdrawn_fact=withdrawn_fact)
 
     # 历史报告未保存逐片段许可快照；任何已撤销来源都保守停止再次发出全文。
     restricted = (
@@ -1641,6 +1609,18 @@ def create_personal_company_report(
 
     as_of = utc_now()
     markdown = _report_markdown(company, snapshot, events, as_of, refresh_policy)
+    from backend.app.models import EventEvidence
+    from backend.app.report_permissions import report_evidence_is_demo
+
+    if any(
+        report_evidence_is_demo(session, evidence)
+        for evidence in session.scalars(
+            select(EventEvidence).where(EventEvidence.event_id.in_([event.id for event in events]))
+        )
+    ):
+        markdown = (
+            "> 资料性质：含虚构演示数据（synthetic_demo），不代表真实公司事实。\n\n" + markdown
+        )
     generated_at = f"- 报告生成时间：{as_of.astimezone(_SHANGHAI).strftime('%Y年%m月%d日 %H:%M')}"
     # 报告复用按实际正文判断；仅生成时点本身不构成内容变化。
     fingerprint = hash_canonical_object(
@@ -1661,13 +1641,14 @@ def create_personal_company_report(
         .limit(1)
     )
     if same is not None and not archive_new_timepoint:
-        session.add(
-            PersonalReportRequest(
-                owner_user_id=user.id, report_id=same.id, idempotency_key=idempotency_key
-            )
-        )
         output = _safe_report_out(session, user, same, reused=True)
-        session.commit()
+        if output.history_status != "restricted":
+            session.add(
+                PersonalReportRequest(
+                    owner_user_id=user.id, report_id=same.id, idempotency_key=idempotency_key
+                )
+            )
+            session.commit()
         return output
     report = PersonalCompanyReport(
         owner_user_id=user.id,
@@ -1685,6 +1666,10 @@ def create_personal_company_report(
     )
     session.add(report)
     session.flush()
+    output = _safe_report_out(session, user, report)
+    if output.history_status == "restricted":
+        session.rollback()
+        raise PersonalFeatureAccessError("report_content_restricted")
     _record_usage(
         session,
         user,
@@ -1694,7 +1679,6 @@ def create_personal_company_report(
         idempotency_key=_sha256(f"company-report:{report.id}"),
         now=as_of,
     )
-    output = _report_out(report)
     session.commit()
     return output
 

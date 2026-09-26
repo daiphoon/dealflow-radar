@@ -545,7 +545,9 @@ export default async function CompanyDetailPage({
             ? "更新申请已进入后台队列；现有资料可继续查看，进度可在“我的关注”查看。"
             : "相同申请仍在处理或处于 24 小时冷却期，本次没有重复计数。"
       : actionError
-        ? actionError === "limit_reached"
+        ? actionError === "report_restricted"
+          ? "报告正文许可不足，未生成报告，也未占用本月次数。请查看公司最新资料。"
+          : actionError === "limit_reached"
           ? "当前测试权益额度已用完。"
           : actionError === "not_available"
             ? "该公司当前不能加入个人关注或申请更新。"

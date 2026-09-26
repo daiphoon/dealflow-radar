@@ -20,6 +20,7 @@ const sha256Pattern = /^[0-9a-f]{64}$/;
 
 function actionError(error: unknown): string {
   if (error instanceof ApiError) {
+    if (error.status === 403 && error.detail === "report_content_restricted") return "report_restricted";
     if (error.status === 429) return "limit_reached";
     if (error.status === 404) return "not_available";
     if (error.status === 409 && error.detail === "company already available") {
@@ -154,7 +155,9 @@ export async function generateCompanyReport(formData: FormData): Promise<void> {
   try {
     const report = await createPersonalCompanyReport(companyId, idempotencyKey);
     reportId = report.id;
-    result = report.reused ? "report_reused" : "report_generated";
+    result = report.history_status === "restricted" || report.history_status === "stale"
+      ? `report_${report.history_status}`
+      : report.reused ? "report_reused" : "report_generated";
   } catch (error) {
     redirect(`/companies/${companyId}?error=${actionError(error)}`);
   }
