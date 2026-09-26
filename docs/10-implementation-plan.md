@@ -23,7 +23,7 @@
 
 ## 2. 有效执行检查点
 
-- **当前唯一工程里程碑：M1-SafeDegrade 主网站安全只读降级与恢复闭环**。[PR #103](https://github.com/daiphoon/dealflow-radar/pull/103) 已按获批的精确 head `a52b06e09acf148537fe1e1cf117e7cf30e150b7` 普通合并至 `main@e1fbfcd6f6c039a6834d426840c3bf38abeced05`，合并文件树 `7bb70e6dc238f9a5a8a122458a9833309dceaeca` 与已审查 head 相同，[合并后 Verify](https://github.com/daiphoon/dealflow-radar/actions/runs/36209264154) 成功。M1 仅补跨版本安全降级控制、虚构数据验收与单一独立 PR；完整证据、阻断和下一次集中生产授权清单见 [统一就绪报告 22](22-m1-safe-degrade-release-readiness.md)。R01—R06 与 W01—W12 保留历史交付口径，不重开业务收口。
+- **当前唯一工程里程碑：M1-SafeDegrade 主网站安全只读降级与恢复闭环**。[PR #103](https://github.com/daiphoon/dealflow-radar/pull/103) 已按获批的精确 head `a52b06e09acf148537fe1e1cf117e7cf30e150b7` 普通合并至 `main@e1fbfcd6f6c039a6834d426840c3bf38abeced05`，合并文件树 `7bb70e6dc238f9a5a8a122458a9833309dceaeca` 与已审查 head 相同，[合并后 Verify](https://github.com/daiphoon/dealflow-radar/actions/runs/36209264154) 成功。M1 本地跨版本降级与恢复验收通过，已提交单一独立 [PR #104](https://github.com/daiphoon/dealflow-radar/pull/104)，远端门禁以最新 head 的 Verify 为准；不自动合并或部署。完整证据、阻断和下一次集中生产授权清单见 [统一就绪报告 22](22-m1-safe-degrade-release-readiness.md)。R01—R06 与 W01—W12 保留历史交付口径，不重开业务收口。
 - **停止边界**：#103 已合并但**未部署**；现场只经 Tailscale 做有限远程只读预检，确认 Linux/amd64、旧版 `ff174998`、schema `0035`、研究开关关闭、无活动刷新/研究任务。M1 隔离演练仅使用虚构数据，不执行生产备份下载/恢复、数据库写入或迁移、镜像切换、重启；不创建生产诊断账号，不启用 MCP/隧道/真实 Provider/模型/关注巡检，不修改 GitHub 设置。M1 PR 创建并通过审查后停止，不自动合并或部署；网站仍不加载诊断 overlay，MCP 接入阻断另行处理。
 - **验收分开**：本地和远端 CI 不替代生产及业务验收；真实价值仍为 E4.9 线索 1/4、严格 0/4。其余范围不扩张，后续操作必须另行授权。
 

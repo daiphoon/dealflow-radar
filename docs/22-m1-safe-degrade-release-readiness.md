@@ -9,7 +9,7 @@
 | [PR #103](https://github.com/daiphoon/dealflow-radar/pull/103) | 严格核对 head `a52b06e09acf148537fe1e1cf117e7cf30e150b7`、base `3a9680c88530e310629fa240a803c5490460bb2c`、required Verify 成功且 `CLEAN / MERGEABLE` 后，按保护规则使用普通 merge commit 合并 |
 | main merge SHA / tree SHA | `e1fbfcd6f6c039a6834d426840c3bf38abeced05` / `7bb70e6dc238f9a5a8a122458a9833309dceaeca`；merge 的两个父提交分别为批准的 base 与 head，文件树与 head 相同 |
 | 合并后检查 | [main 的 Verify](https://github.com/daiphoon/dealflow-radar/actions/runs/36209264154) 成功；代码合并与生产部署分开 |
-| M1-SafeDegrade | 需要代码及部署配置修改，作为单独 PR 审查；主题只含安全只读降级和恢复闭环 |
+| M1-SafeDegrade | 需要代码及部署配置修改；独立 [PR #104](https://github.com/daiphoon/dealflow-radar/pull/104)，主题只含安全只读降级和恢复闭环。源码提交 `d91d77ede1c6c4976315620a537fb7095ee251e1`，文档同步后以 PR 的最新 head 为准；准确 head、Verify 回执与 CI 逐表摘要由该 PR 同一份报告正文同步。提交后不自动合并 |
 
 ## 安全控制与可用范围
 
@@ -74,6 +74,8 @@
 M1 PR 的最终 SHA、`linux/amd64` 新 API/前端镜像 digest 和安全控制镜像需在 PR 通过 CI、合并后绑定为同一清单；本轮不下载或运行生产现场旧镜像。真实生产备份、隔离恢复、`0035→0036`、权限初始化、镜像切换和健康/用户验收均尚未执行。
 
 本地 M1 候选的 amd64 新 API（亦可作为独立安全控制镜像）ID 为 `sha256:9b20cd62a1e731ff6f57414815b0f6b478919080e8fc0bc1d383de348c2660f3`，新前端为 `sha256:845d5bad1834c543c1afea88a88ea0ab3680e83f8a8ca515d6c444bf7901032c`。这些是本地 Docker 镜像 ID，尚未发布到 registry，不冒充可拉取的生产 digest；最终 main 还不存在于本 PR 阶段。制品清单必须分别绑定代码 SHA、文件树、平台、可拉取 digest、安全配置哈希与现场旧镜像 ID，任何一项变化重新核验相应证据。
+
+候选安全配置 SHA-256：Caddy `b1640ba1e89b2abf565f3dc376097932efa2a5b488b81bc7f5b234ebab856980`；Compose overlay `64a428f6538d753e544a23a3cf05005e5def3c38d1eb604a2cd9d87fafeadf65`；角色控制脚本 `a1a7df5d5751d235343c0542630e9571ae47ece7c34d52b6fc027ce4cd467599`。本地源码与提交 `d91d77e` 的镜像构建输入一致；后续仅文档同步不改变这些文件或镜像输入，合并后仍按最终主线重新固化可拉取制品。
 
 | 尚存闸门 | 是否阻断当前工程 PR / 生产发布 |
 | --- | --- |
