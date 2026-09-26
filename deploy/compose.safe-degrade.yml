@@ -1,0 +1,72 @@
+# Apply after compose.production.yml and the selected host overlay.
+# Use the current safety control files with either the new or frozen old images.
+services:
+  api:
+    environment:
+      EXTERNAL_CALLS_ENABLED: "false"
+      PAID_API_CALLS_ENABLED: "false"
+      AUTO_REFRESH_ENABLED: "false"
+      AUTO_PUBLISH_ENABLED: "false"
+      TRUSTED_SOURCE_CALLS_ENABLED: "false"
+      SOURCE_MONITOR_SCHEDULER_ENABLED: "false"
+      WEB_RESEARCH_ENABLED: "false"
+      WEB_RESEARCH_CALLS_ENABLED: "false"
+      WEB_RESEARCH_MATTERS_ENABLED: "false"
+      WEB_RESEARCH_EXTRACTION_ENABLED: "false"
+      WEB_RESEARCH_TOPIC_PLANNING_ENABLED: "false"
+      WEB_RESEARCH_INCREMENTAL_ENABLED: "false"
+      INVESTOR_ANALYSIS_ENABLED: "false"
+      WATCHLIST_MONITOR_ENABLED: "false"
+
+  investor-analysis-worker:
+    command: ["/bin/false"]
+    restart: "no"
+
+  web-research-worker:
+    command: ["/bin/false"]
+    restart: "no"
+
+  migrate:
+    command: ["/bin/false"]
+    restart: "no"
+
+  bootstrap-role:
+    command: ["/bin/false"]
+    restart: "no"
+
+  proxy:
+    volumes:
+      - ./deploy/Caddyfile.safe-degrade:/etc/caddy/Caddyfile:ro
+
+  safe-degrade-control:
+    image: ${SAFE_CONTROL_IMAGE:?fixed M1 safety image is required}
+    profiles: ["safe-control"]
+    environment:
+      DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL:?DATABASE_ADMIN_URL is required}
+      APP_DATABASE_USER: ${APP_DATABASE_USER:?APP_DATABASE_USER is required}
+    command: ["python", "-m", "scripts.safe_degrade_database", "restrict"]
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - app
+
+  safe-degrade-restore-role:
+    image: ${SAFE_CONTROL_IMAGE:?fixed M1 safety image is required}
+    profiles: ["safe-restore"]
+    environment:
+      DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL:?DATABASE_ADMIN_URL is required}
+      APP_DATABASE_USER: ${APP_DATABASE_USER:?APP_DATABASE_USER is required}
+      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:?APP_DATABASE_PASSWORD is required}
+    command: ["python", "-m", "scripts.bootstrap_local_database"]
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - app

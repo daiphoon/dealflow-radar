@@ -1,0 +1,69 @@
+{
+	admin off
+	log {
+		output stdout
+		format json
+	}
+}
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		X-Maintenance-Mode "read-only"
+		Cache-Control "no-store"
+		-Server
+	}
+
+	@health {
+		method GET HEAD
+		path /health
+	}
+	handle @health {
+		header Content-Type application/json
+		respond `{"status":"maintenance_read_only"}` 200
+	}
+
+	@ready {
+		method GET HEAD
+		path /ready
+	}
+	handle @ready {
+		reverse_proxy api:8000
+	}
+
+	@stale_success {
+		query result=*
+	}
+	handle @stale_success {
+		header Content-Type application/json
+		respond `{"status":"maintenance_read_only","message":"服务处于只读维护状态；本次操作未执行"}` 503
+	}
+
+	@company_read {
+		method GET HEAD
+		path_regexp company ^/companies/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/?$
+	}
+	handle @company_read {
+		reverse_proxy frontend:3000
+	}
+
+	@static_read {
+		method GET HEAD
+		path /_next/static/* /favicon.ico
+	}
+	handle @static_read {
+		reverse_proxy frontend:3000
+	}
+
+	handle {
+		header Content-Type application/json
+		header Retry-After "300"
+		respond `{"status":"maintenance_read_only","message":"服务处于只读维护状态；本次操作未执行"}` 503
+	}
+}
