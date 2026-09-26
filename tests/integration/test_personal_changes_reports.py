@@ -143,7 +143,7 @@ def _add_shared_event(
             published_at=observed_at,
             published_on=None,
             observed_at=observed_at,
-            fingerprint_version="personal-report-v1",
+            fingerprint_version="report-test-v1",
             event_fingerprint=_sha256(f"shared-event:{suffix}"),
             publication_route=publication_route,
             publication_policy_version=(

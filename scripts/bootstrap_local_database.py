@@ -123,6 +123,18 @@ def bootstrap_application_role(
                     "GRANT SELECT, INSERT, UPDATE ON TABLES TO {}"
                 ).format(role)
             )
+            cursor.execute(
+                "SELECT to_regprocedure('public.watchlist_monitor_targets()') IS NOT NULL"
+            )
+            if bool(cursor.fetchone()[0]):
+                cursor.execute(
+                    "REVOKE EXECUTE ON FUNCTION public.watchlist_monitor_targets() FROM PUBLIC"
+                )
+                cursor.execute(
+                    sql.SQL(
+                        "GRANT EXECUTE ON FUNCTION public.watchlist_monitor_targets() TO {}"
+                    ).format(role)
+                )
             cursor.execute("SELECT to_regclass('public.personal_watchlist_items') IS NOT NULL")
             if bool(cursor.fetchone()[0]):
                 cursor.execute(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -1410,28 +1411,7 @@ def _report_markdown(
                 f"- 事实版本：{event.fact_version}",
                 "",
             ]
-        current = next(
-            (
-                item
-                for item in event.tender_observations
-                if item.is_current and item.evidence_available
-            ),
-            None,
-        )
-        report_evidence = [
-            item for item in event.evidence if current is None or item.id in current.evidence_ids
-        ]
-        if not report_evidence:
-            lines.append("- 暂无允许展示的证据引用。")
-        for evidence in report_evidence:
-            source_name = _single_line(evidence.source_name)
-            if evidence.link_display_allowed:
-                url = evidence.final_url or evidence.canonical_url
-                link_status = _LINK_STATUS_LABELS.get(evidence.url_health_status, "状态尚未确认")
-                lines.append(f"- {source_name}：<{url}>（链接状态：{link_status}）")
-            else:
-                link_status = _LINK_STATUS_LABELS.get(evidence.url_health_status, "状态尚未确认")
-                lines.append(f"- {source_name}（链接不开放；状态：{link_status}）")
+        lines.extend(_report_evidence_lines(event))
         lines.append("")
     lines.extend(["## 数据状态与信息缺口", ""])
     if snapshot is None:
@@ -1457,6 +1437,29 @@ def _report_markdown(
         ]
     )
     return "\n".join(lines).strip() + "\n"
+
+
+def _report_evidence_lines(event, *, current_only=True):
+    current = next(
+        (item for item in event.tender_observations if item.is_current and item.evidence_available),
+        None,
+    )
+    evidence = [
+        item
+        for item in event.evidence
+        if not current_only or current is None or item.id in current.evidence_ids
+    ]
+    lines = []
+    for item in evidence:
+        name = _single_line(item.source_name)
+        status = _LINK_STATUS_LABELS.get(item.url_health_status, "状态尚未确认")
+        if item.link_display_allowed:
+            lines.append(
+                f"- {name}：<{item.final_url or item.canonical_url}>（链接状态：{status}）"
+            )
+        else:
+            lines.append(f"- {name}（链接不开放；状态：{status}）")
+    return lines or ["- 暂无允许展示的证据引用。"]
 
 
 def _report_summary_out(
@@ -1511,6 +1514,12 @@ def _safe_report_out(session, user, report, *, reused=False):
     }
 
     def permission_lost(e):
+        if (
+            e.visibility_scope != PLATFORM_SHARED_SCOPE
+            or e.owner_user_id is not None
+            or e.owner_tenant_id is not None
+        ):
+            return True
         if e not in legacy:
             withdrawn_fact = any(
                 row.id == e.event_id and row.status in {"rejected", "retracted"} for row in rows
@@ -1533,9 +1542,29 @@ def _safe_report_out(session, user, report, *, reused=False):
     # 历史报告未保存逐片段许可快照；任何已撤销来源都保守停止再次发出全文。
     restricted = (
         len(rows) != len(ids)
+        or set(ids) != {e.event_id for e in evidence}
         or any(e.visibility_scope != PLATFORM_SHARED_SCOPE for e in rows)
         or any(permission_lost(e) for e in evidence)
     )
+    if not restricted:
+        from backend.app.services import _event_out
+
+        # RLS 可能只隐藏多来源中的一条，不能用“该事项仍有证据”证明旧引用仍可发出。
+        # 旧报告无逐证据 ID 快照，保守要求保存的引用行仍在当前合法投影中。
+        saved_citations = Counter(
+            line
+            for line in report.markdown.splitlines()
+            if line.startswith("- ") and ("（链接状态：" in line or "（链接不开放；状态：" in line)
+        )
+        current_citations = Counter(
+            line
+            for event in rows
+            for line in _report_evidence_lines(
+                _event_out(session, event, user, allow_organization_private=False),
+                current_only=False,
+            )
+        )
+        restricted = bool(saved_citations - current_citations)
     if restricted:
         output.markdown = "报告来源权限或状态已变化，历史正文停止在线提供，请查看公司最新资料。"
         output.history_status = "restricted"

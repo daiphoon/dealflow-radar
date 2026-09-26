@@ -4,8 +4,11 @@ import asyncio
 import hashlib
 import json
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
+from functools import partial
 from pathlib import Path
 from uuid import UUID
 
@@ -14,12 +17,31 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.responses import JSONResponse
 
-from backend.app.diagnostics import DiagnosticService, Principal, build_diagnostic_engine
+from backend.app.diagnostics import (
+    Deadline,
+    DiagnosticService,
+    Principal,
+    audit,
+    build_diagnostic_engine,
+)
 
 current_principal = ContextVar("diagnostic_principal")
 
 
 def create_mcp_app(service, credentials, *, allowed_hosts=("127.0.0.1", "localhost", "testserver")):
+    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="diagnostic")
+    inflight = threading.BoundedSemaphore(2)
+    reject_counts = {}
+
+    def reject(reason, principal=None):
+        now = time.monotonic()
+        last, suppressed = reject_counts.get(reason, (0, 0))
+        if now - last >= 10:
+            audit(principal, "http", reason, now, suppressed_count=suppressed)
+            reject_counts[reason] = (now, 0)
+        else:
+            reject_counts[reason] = (last, suppressed + 1)
+
     server = MCPServer(
         "Dealflow diagnostics",
         version="1.0",
@@ -28,16 +50,25 @@ def create_mcp_app(service, credentials, *, allowed_hosts=("127.0.0.1", "localho
     annotations = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 
     async def invoke(name, values):
+        principal = current_principal.get()
+        if not inflight.acquire(blocking=False):
+            audit(principal, name, "concurrency_limit", time.monotonic())
+            return {"error": "diagnostic_request_denied", "reason": "scope_input_or_resource_limit"}
+        deadline = Deadline()
+        future = asyncio.get_running_loop().run_in_executor(
+            executor, partial(service.call, principal, name, values, deadline=deadline)
+        )
+        future.add_done_callback(lambda _: inflight.release())
         try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(service.call, current_principal.get(), name, values), timeout=5
-            )
+            result = await asyncio.wait_for(asyncio.shield(future), timeout=5)
             return json.loads(json.dumps(result, default=str))
         except (ValueError, PermissionError, TimeoutError):
             return {"error": "diagnostic_request_denied", "reason": "scope_input_or_resource_limit"}
         except Exception:
             # 数据库异常可能含连接信息或 SQL；仅记录固定类别。
             return {"error": "diagnostic_unavailable"}
+        finally:
+            deadline.cancelled.set()
 
     @server.tool(annotations=annotations)
     async def find_company(query: str, cursor: str | None = None, limit: int = 20) -> dict:
@@ -91,24 +122,60 @@ def create_mcp_app(service, credentials, *, allowed_hosts=("127.0.0.1", "localho
 
         async def __call__(self, scope, receive, send):
             if scope["type"] != "http":
-                return await self.app(scope, receive, send)
+                try:
+                    return await self.app(scope, receive, send)
+                finally:
+                    if scope["type"] == "lifespan":
+                        executor.shutdown(wait=False, cancel_futures=True)
             headers = dict(scope.get("headers", []))
             host = headers.get(b"host", b"").decode().split(":")[0]
             authorization = headers.get(b"authorization", b"")
             if host not in allowed_hosts or not authorization.startswith(b"Bearer "):
+                reject("http_host_rejected" if host not in allowed_hosts else "http_auth_rejected")
                 return await JSONResponse({"error": "unauthorized"}, status_code=401)(
                     scope, receive, send
                 )
             digest = hashlib.sha256(authorization[7:]).hexdigest()
             # 每次 HTTP 请求重新读取授权配置，删除或到期立即撤销。
-            principal = credentials().get(digest)
+            try:
+                principal = credentials().get(digest)
+            except Exception:
+                reject("http_credentials_unavailable")
+                return await JSONResponse({"error": "unauthorized"}, status_code=401)(
+                    scope, receive, send
+                )
             if principal is None or principal.expires_at <= time.time():
+                reject("http_auth_rejected", principal)
                 return await JSONResponse({"error": "unauthorized"}, status_code=401)(
                     scope, receive, send
                 )
             token = current_principal.set(principal)
+            started = time.monotonic()
+            status_code = 200
+
+            async def audited_send(message):
+                nonlocal status_code
+                if message["type"] == "http.response.start":
+                    status_code = message["status"]
+                if message["type"] == "http.response.body":
+                    body = message.get("body", b"")
+                    rejected = status_code >= 400
+                    if len(body) <= 16384:
+                        try:
+                            payload = json.loads(body)
+                            rejected = (
+                                rejected
+                                or bool(payload.get("error"))
+                                or bool(payload.get("result", {}).get("isError"))
+                            )
+                        except (ValueError, AttributeError):
+                            pass
+                    if rejected:
+                        audit(principal, "protocol", "protocol_rejected", started)
+                await send(message)
+
             try:
-                await self.app(scope, receive, send)
+                await self.app(scope, receive, audited_send)
             finally:
                 current_principal.reset(token)
 
@@ -127,6 +194,7 @@ def configured_app():
         os.environ["MCP_CURSOR_SECRET"].encode(),
         commit=os.getenv("APP_COMMIT", "not_recorded"),
         budget_path=os.environ["MCP_BUDGET_FILE"],
+        require_existing_budget=True,
     )
 
     def credentials():

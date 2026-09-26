@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -13,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import create_engine, text
 
@@ -26,6 +27,58 @@ TOOLS = (
     "get_diagnostic_summary",
 )
 logger = logging.getLogger("diagnostic.audit")
+
+
+def audit(principal, tool, reason, started, *, request_id=None, rows=0, size=0, **extra):
+    logger.info(
+        json.dumps(
+            {
+                "utc": datetime.now(UTC).isoformat(),
+                "request_id": request_id or uuid4().hex,
+                "principal": hashlib.sha256(principal.id.encode()).hexdigest()
+                if principal
+                else "anonymous",
+                "tool": tool if tool in TOOLS else "unknown_tool",
+                "reason_code": reason,
+                "duration_ms": round((time.monotonic() - started) * 1000),
+                "row_count": rows,
+                "byte_count": size,
+                "version": VERSION,
+                **extra,
+            }
+        )
+    )
+
+
+class Deadline:
+    def __init__(self, seconds=4.5):
+        self.until = time.monotonic() + seconds
+        self.cancelled = threading.Event()
+
+    def remaining(self):
+        left = self.until - time.monotonic()
+        if self.cancelled.is_set() or left < 0.05:
+            raise TimeoutError("diagnostic_deadline")
+        return left
+
+
+class BoundedConnection:
+    def __init__(self, connection, deadline):
+        self.connection, self.deadline = connection, deadline
+
+    def execute(self, statement, parameters=None):
+        milliseconds = max(1, min(2500, int(self.deadline.remaining() * 1000)))
+        self.connection.execute(
+            text("SELECT set_config('statement_timeout', :timeout, true)"),
+            {"timeout": str(milliseconds)},
+        )
+        self.deadline.remaining()
+        result = self.connection.execute(statement, parameters or {})
+        self.deadline.remaining()
+        return result
+
+    def scalar(self, statement, parameters=None):
+        return self.execute(statement, parameters).scalar()
 
 
 @dataclass(frozen=True)
@@ -53,10 +106,11 @@ def build_diagnostic_engine(url):
         pool_timeout=1,
         pool_pre_ping=True,
         connect_args={
+            "connect_timeout": 2,
             "options": (
                 "-c default_transaction_read_only=on -c statement_timeout=2500 "
                 "-c lock_timeout=500 -c idle_in_transaction_session_timeout=5000"
-            )
+            ),
         },
     )
     with engine.connect() as c:
@@ -94,6 +148,7 @@ class DiagnosticService:
         export_bytes=1048576,
         max_calls=30,
         budget_path=None,
+        require_existing_budget=False,
     ):
         if len(cursor_key) < 32:
             raise ValueError("cursor signing key too short")
@@ -101,20 +156,41 @@ class DiagnosticService:
         self.max_bytes, self.export_bytes, self.max_calls = max_bytes, export_bytes, max_calls
         self.lock, self.slots = threading.Lock(), threading.BoundedSemaphore(2)
         self.usage = {}
+        self.context = threading.local()
         self.budget_path = Path(budget_path) if budget_path else None
+        self.require_existing_budget = require_existing_budget
+        if require_existing_budget:
+            if self.budget_path is None:
+                raise ValueError("invalid_budget_state")
+            with self.usage_lock():
+                pass
 
     @contextmanager
     def usage_lock(self):
-        with self.lock:
+        if not self.lock.acquire(timeout=0.5):
+            raise TimeoutError("diagnostic_deadline")
+        try:
             if self.budget_path is None:
                 yield
                 return
-            with self.budget_path.open("a+") as stream:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            with self.budget_path.open("r+" if self.require_existing_budget else "a+") as stream:
+                try:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise ValueError("budget_busy") from None
                 os.fchmod(stream.fileno(), 0o600)
                 stream.seek(0)
                 data = stream.read()
+                if not data and self.require_existing_budget:
+                    raise ValueError("invalid_budget_state")
                 self.usage = json.loads(data) if data else {}
+                if not isinstance(self.usage, dict) or any(
+                    not isinstance(v, (list, tuple))
+                    or len(v) != 3
+                    or any(type(n) not in (int, float) or not math.isfinite(n) or n < 0 for n in v)
+                    for v in self.usage.values()
+                ):
+                    raise ValueError("invalid_budget_state")
                 try:
                     yield
                 finally:
@@ -124,16 +200,22 @@ class DiagnosticService:
                     stream.flush()
                     os.fsync(stream.fileno())
                     fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        finally:
+            self.lock.release()
 
     @contextmanager
     def transaction(self, principal):
+        deadline = getattr(self.context, "deadline", None) or Deadline()
+        deadline.remaining()
         with self.engine.connect() as c, c.begin():
+            bounded = BoundedConnection(c, deadline)
+            # set_config issues SELECT, so transaction mode must be set first.
             c.execute(text("SET TRANSACTION READ ONLY"))
-            c.execute(
+            bounded.execute(
                 text("SELECT set_config('diagnostic.company_ids', :ids, true)"),
                 {"ids": ",".join(sorted(map(str, principal.company_ids)))},
             )
-            yield c
+            yield bounded
 
     def cursor(self, value):
         payload = base64.urlsafe_b64encode(json.dumps(value, sort_keys=True).encode()).decode()
@@ -180,9 +262,52 @@ class DiagnosticService:
                 raise ValueError("invalid_cursor") from None
         return limit, state
 
-    def call(self, principal, tool, params):
-        started, status = time.monotonic(), "denied"
-        size, count = 0, 0
+    def call(self, principal, tool, params, *, deadline=None, request_id=None):
+        started, reason, result = time.monotonic(), "internal_error", None
+        self.context.deadline = deadline or Deadline()
+        try:
+            self.context.deadline.remaining()
+            result = self._call(principal, tool, params)
+            reason = "ok"
+            return result
+        except TimeoutError:
+            reason = "diagnostic_deadline"
+            raise
+        except (ValueError, PermissionError) as exc:
+            known = {
+                "invalid_principal",
+                "tool_not_allowed",
+                "unknown_parameters",
+                "concurrency_limit",
+                "export_budget_exhausted",
+                "invalid_cursor",
+                "limit_out_of_range",
+                "object_not_authorized",
+                "scope_not_authorized",
+                "window_out_of_range",
+                "query_length",
+                "response_byte_limit",
+                "budget_busy",
+                "invalid_budget_state",
+            }
+            reason = str(exc) if str(exc) in known else "invalid_input"
+            raise
+        finally:
+            self.context.deadline = None
+            audit(
+                principal,
+                tool,
+                reason,
+                started,
+                request_id=request_id,
+                rows=len(result["items"]) if result else 0,
+                size=len(json.dumps(result, default=str, ensure_ascii=False).encode())
+                if result
+                else 0,
+            )
+
+    def _call(self, principal, tool, params):
+        reserved = False
         if (
             principal.expires_at <= time.time()
             or principal.scope != "public_metadata"
@@ -211,6 +336,7 @@ class DiagnosticService:
                 if calls >= self.max_calls or used + self.max_bytes > self.export_bytes:
                     raise PermissionError("export_budget_exhausted")
                 self.usage[key] = (calls + 1, used + self.max_bytes, principal.expires_at)
+                reserved = True
             limit, page = self.page(principal, tool, params)
             with self.transaction(principal) as c:
                 revision = c.scalar(text("SELECT version_num FROM diagnostic.revision"))
@@ -240,27 +366,16 @@ class DiagnosticService:
             with self.usage_lock():
                 calls, used, expiry = self.usage[key]
                 self.usage[key] = calls, used - self.max_bytes + size, expiry
-            count, status = len(items), "ok"
+                reserved = False
             return result
         finally:
-            self.slots.release()
-            logger.info(
-                json.dumps(
-                    {
-                        "principal": hashlib.sha256(principal.id.encode()).hexdigest(),
-                        "tool": tool,
-                        "scope": principal.scope,
-                        "status": status,
-                        "parameter_hash": hashlib.sha256(
-                            json.dumps(params, default=str, sort_keys=True).encode()
-                        ).hexdigest(),
-                        "duration_ms": round((time.monotonic() - started) * 1000),
-                        "row_count": count,
-                        "byte_count": size,
-                        "version": VERSION,
-                    }
-                )
-            )
+            try:
+                if reserved:
+                    with self.usage_lock():
+                        calls, used, expiry = self.usage[key]
+                        self.usage[key] = calls, max(0, used - self.max_bytes), expiry
+            finally:
+                self.slots.release()
 
     def read(self, c, principal, tool, params, page, limit):
         bindings = {"as_of": page["as_of"], "after": page["after"], "limit": limit + 1}

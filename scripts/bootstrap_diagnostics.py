@@ -50,25 +50,58 @@ VIEWS = {
         ON u.task_key='web-research:' || j.id::text WHERE u.quota_scope='platform_web'""",
     "lineage": """SELECT id, event_id, created_at, 'historical_observation'::text AS record_kind,
         raw_document_id::text AS source_record_id, processing_version AS version,
-        observation_kind AS state, false AS current_support
+        observation_kind AS state, NULL::boolean AS current_support,
+        'not_revalidated'::text AS validity, 'saved_assessment'::text AS state_basis
         FROM public.event_observations
         UNION ALL SELECT id, event_id, created_at, 'evidence'::text,
         raw_document_id::text, span_hash, display_url_health_status,
-        display_allowed AND display_license_status='public' AND display_url_health_status='healthy'
-        AND encode(sha256(convert_to(evidence_excerpt,'UTF8')),'hex')=span_hash
-        AND source_event_evidence_id IS NULL
-        AND event_id IN (SELECT id FROM public.events WHERE status NOT IN ('rejected','retracted'))
+        NULL::boolean, 'not_revalidated', 'saved_assessment'
         FROM public.event_evidence
         UNION ALL SELECT s.id, s.event_id, s.assessed_at, 'field_support'::text,
         s.event_evidence_id::text, s.policy_version, s.support_status,
-        e.display_allowed AND e.display_license_status='public'
-        AND e.display_url_health_status='healthy' AND s.support_status='supported'
-        AND encode(sha256(convert_to(e.evidence_excerpt,'UTF8')),'hex')=e.span_hash
-        AND e.source_event_evidence_id IS NULL
-        AND s.event_id IN (SELECT id FROM public.events
-        WHERE status NOT IN ('rejected','retracted'))
+        NULL::boolean, 'not_revalidated', 'saved_assessment'
         FROM public.event_fact_supports s JOIN public.event_evidence e ON
         e.id=s.event_evidence_id""",
+}
+
+# 视图列及既有 RLS 的关联条件；不含原文、持仓金额、用户信息或报告正文。
+READ_COLUMNS = {
+    "companies": "id legal_name identity_status created_at tenant_id visibility_scope",
+    "company_research_jobs": (
+        "id company_id status current_stage policy_version external_calls "
+        "input_tokens output_tokens last_error_code created_at "
+        "coverage created_by_user_id"
+    ),
+    "events": (
+        "id company_id event_type event_subtype status fingerprint_version created_at "
+        "visibility_scope owner_user_id owner_tenant_id"
+    ),
+    "event_evidence": (
+        "id event_id raw_document_id span_hash support_type display_allowed "
+        "display_license_status display_url_health_status created_at "
+        "visibility_scope owner_user_id owner_tenant_id"
+    ),
+    "event_observations": (
+        "id event_id raw_document_id schema_version fact_version "
+        "processing_version observation_kind date_precision created_at"
+    ),
+    "event_fact_supports": (
+        "id event_id event_fact_id event_evidence_id support_status policy_version assessed_at"
+    ),
+    "alembic_version": "version_num",
+    "usage_ledger": (
+        "id created_at operation usage_state cost_status estimated_cost "
+        "external_calls task_key quota_scope provider metrics"
+    ),
+    "users": "id tenant_id status",
+    "roles": "id code",
+    "user_role_assignments": "user_id role_id valid_until",
+    "investments": "company_id fund_id tenant_id",
+    "fund_access_grants": "fund_id user_id valid_until",
+    "personal_company_requests": "research_job_id owner_user_id",
+    "raw_documents": "id source_id visibility_scope owner_user_id owner_tenant_id license_status",
+    "sources": "id code license_status",
+    "entity_mentions": "raw_document_id candidate_company_id resolution_status",
 }
 
 
@@ -114,12 +147,28 @@ def bootstrap(database_admin_url, reader, password):
                 )
             )
             c.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(owner)))
-            # 非登录视图所有者需读取旧 RLS 中的关联表；客户端没有角色成员资格或基础表权限。
-            c.execute(
-                sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA public TO {}").format(
-                    sql.Identifier(owner)
+            for table, columns in READ_COLUMNS.items():
+                c.execute(
+                    sql.SQL("GRANT SELECT ({}) ON public.{} TO {}").format(
+                        sql.SQL(",").join(map(sql.Identifier, columns.split())),
+                        sql.Identifier(table),
+                        sql.Identifier(owner),
+                    )
                 )
+            # PUBLIC 的特权函数授权不能通过对 reader 单独 REVOKE 抵消。
+            c.execute(
+                "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
+                "WHERE n.nspname='public' AND p.prosecdef "
+                "AND has_function_privilege(%s,p.oid,'EXECUTE')",
+                (reader,),
             )
+            if c.fetchone()[0]:
+                raise ValueError(
+                    "diagnostic_executable_definer_function; bootstrap application role first"
+                )
+            c.execute("SELECT has_schema_privilege(%s,'public','CREATE')", (reader,))
+            if c.fetchone()[0]:
+                raise ValueError("diagnostic_public_schema_writable")
             c.execute(
                 sql.SQL("CREATE SCHEMA diagnostic AUTHORIZATION {}").format(sql.Identifier(owner))
             )

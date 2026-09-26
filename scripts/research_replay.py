@@ -24,6 +24,17 @@ def replay_file(input_path, output):
     cases = data["cases"]
     if not 1 <= len(cases) <= 100:
         raise ValueError("bounded case count required")
+    benchmark = data.get("frozen_benchmark")
+    if benchmark is not None:
+        ids = [case["id"] for case in cases]
+        if (
+            len(set(ids)) != len(ids)
+            or len(benchmark) != len(cases)
+            or {b["id"] for b in benchmark} != set(ids)
+        ):
+            raise ValueError("frozen_benchmark_case_mismatch")
+        benchmark = [next(b for b in benchmark if b["id"] == case_id) for case_id in ids]
+    scores = scorecard([case.get("frozen_judgment") for case in cases], benchmark=benchmark)
     output.mkdir(parents=True, exist_ok=False)
     results = []
     for case in cases:
@@ -70,7 +81,8 @@ def replay_file(input_path, output):
         "search_response": "not_retained_no_search_in_this_experiment",
         "result_path": "results.json",
         "business_acceptance": "not_run",
-        "scorecard": scorecard([case.get("frozen_judgment") for case in cases]),
+        "scorecard": scores,
+        "frozen_benchmark": benchmark,
         "cost_per_qualified_matter": None,
     }
     write_private(output / "results.json", results, exclusive=True)
