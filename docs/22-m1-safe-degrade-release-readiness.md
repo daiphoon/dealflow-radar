@@ -29,7 +29,7 @@
 
 ## 跨版本演练与数据不变量
 
-隔离 PostgreSQL 16 在 schema `0036` 下使用虚构公司、用户、事项、证据、观测、报告、回访及历史任务。测试先以新版生成回访与报告，再撤销应用角色写权限；冻结旧 API 和旧前端的 `linux/amd64` 重建镜像实际读取公司页，Caddy 对报告、关注、刷新、认证写入和并发 Server Action 请求返回维护状态；之后显式恢复权限，新版回访和相同报告复用成功。Caddy 另完成正常入口 → 安全入口 → 正常入口的实际容器切换。只读阶段未启动 Worker、巡检或研究容器，所有研究开关关闭，虚构用量账本中的外部调用数保持 0。
+隔离 PostgreSQL 16 在 schema `0036` 下使用虚构公司、用户、事项、证据、观测、报告、回访及历史任务。测试先以新版生成回访与报告，并启动真实新版 API＋前端＋正常 Caddy 读取公司页，再撤销应用角色写权限；冻结旧 API 和旧前端的 `linux/amd64` 重建镜像实际读取公司页，旧前端编译产物中真正的回访 Server Action 请求、报告/关注/刷新/认证操作与 30 并发请求均被 Caddy 拒绝。停掉旧栈后显式恢复权限并重新启动新版 API＋前端＋正常 Caddy；使用真实编译的 Next Server Actions 完成回访和报告表单，浏览器协议的 HTTP 响应实际跳转到原报告的 `report_reused` 页面。只读阶段未启动 Worker、巡检或研究容器，所有研究开关关闭，虚构用量账本中的外部调用数保持 0。
 
 以 PostgreSQL `to_jsonb` 的**完整行内容**排序后计算 SHA-256，而非只比较行数。42 张表在进入安全模式前与旧版页面、恶意/误操作及并发请求之后的逐表 `(行数, SHA-256)` 完全相同；下列重点表各有一条非空虚构记录，具体完整摘要见私有回执：
 
@@ -41,15 +41,15 @@
 | `personal_watchlist_items` / `company_watch_schedules` | 1 / 1 | 相同 | 无关注或巡检写入 |
 | `event_observations` / `event_evidence` / `event_facts` / `event_fact_supports` | 各 1 | 相同 | 不可变观测及事实支持未改写 |
 
-显式恢复正常能力后，42 张表中只有 `personal_company_view_states` 因合法回访更新；所有其余表（包括 events 及 receipts 的 semantic_version）仍与基线一致。不同租户的关注记录在只读角色下继续被 RLS 隔离。额外可执行的 `SECURITY DEFINER` 函数、其他用户 schema 的写权限会使安全转换失败并回滚，已由真实 PostgreSQL 负向测试验证。
+显式恢复正常能力后，42 张表中只有 `personal_company_view_states` 因合法回访更新；所有其余表（包括 events 的事实内容及 receipts 的非空 semantic_version）仍与基线一致。不同租户的关注记录在只读角色下继续被 RLS 隔离。额外可执行的 `SECURITY DEFINER` 函数、其他用户 schema 的写权限会使安全转换失败并回滚，已由真实 PostgreSQL 负向测试验证。
 
 本地最终演练对 42 张表的 `(行数, SHA-256)` 映射按键排序、使用无空白 JSON 再做 SHA-256：
 
 | 阶段 | 完整映射 SHA-256 | 变化表 |
 | --- | --- | --- |
-| 降级前新版 | `345bf8c3290d696af4283f6b1823672b3813a983799d27bcc14e227560488600` | 基线 |
-| 旧版只读与攻击尝试后 | `345bf8c3290d696af4283f6b1823672b3813a983799d27bcc14e227560488600` | 无 |
-| 显式恢复新版回访/报告复用后 | `29532b7caf96d03eae3957329f4b3f8a4096c707a51a17d507056bd3b703727b` | 仅 `personal_company_view_states` |
+| 降级前新版 | `5eca50ce9b718c785fbcaab5d0c3ef620e47580bc60f371380cfb6b197dd48a6` | 基线 |
+| 旧版只读与攻击尝试后 | `5eca50ce9b718c785fbcaab5d0c3ef620e47580bc60f371380cfb6b197dd48a6` | 无 |
+| 显式恢复新版回访/报告复用后 | `784126bc70c9da79352c297683ca4c5dcd6fb7b310dded6bfdcd685c53e768c5` | 仅 `personal_company_view_states` |
 
 回执属于虚构隔离数据；每次随机夹具执行的哈希会不同，验收比较同一次演练的前后值。CI 还将完整逐表回执保存为 `m1-safe-degrade-synthetic-digests` 附件，不上传真实数据、数据库、密码或本地私有目录。
 
@@ -59,13 +59,13 @@
 | --- | --- |
 | 行为失败回归 | 首次因缺少独立安全门/角色收缩失败；后续额外 schema 写权限及通用 tools 隐式恢复权限分别失败，最小修正后通过 |
 | 完整后端 | `1175 passed, 33 skipped`，648.51 秒；虚构 PostgreSQL 与非 owner 应用角色/RLS。全量完成后新增的上述两个负向断言及容器恢复由最终定向回归覆盖；远端 CI 会执行最终文件全量 |
-| 最终 M1 跨版本定向 | `2 passed`，8.53 秒；真实 Caddy、旧 amd64 API/前端、新 amd64 API 恢复、42 表内容摘要与 30 并发拒绝。无 Worker 启动，无研究/模型调用；用量账本保持外部调用 0 |
+| 最终 M1 跨版本定向 | `2 passed`，13.46 秒；新旧 amd64 API/前端分别配合真实 Caddy 完成正常→降级→正常的完整栈演练；真实 Next Server Actions 拒绝/恢复、42 表内容摘要与 30 并发拒绝。无 Worker 启动，无研究/模型调用；用量账本保持外部调用 0。首次扩展测试误将内部 API 当公网入口而得到 404，随后按实际 Server Action 协议校正，没有新增 API 公网入口或修改业务代码 |
 | 前端 | `30 passed`，typecheck/build 通过；本 PR 不修改前端源码 |
 | 迁移 | SQLite upgrade/check/downgrade 通过；PostgreSQL upgrade/check、RLS 和 `0036` 虚构数据演练通过。无 migration diff，历史 `0035` / `0036` 不变 |
 | 风格/部署 | Ruff/check + format（213 文件）通过；普通生产和安全 overlay Compose config 通过；新旧 amd64 镜像构建通过；API/前端无宿主发布端口，公网只能经 Caddy |
 | Secret / private 路径 | 公开文件树 Gitleaks 零发现；本 PR 不含私有目录、日志、数据库、备份或临时脚本，`git diff --check` 通过 |
 
-复现入口：先建立本机一次性 PostgreSQL 并配置 `DATABASE_ADMIN_URL`（不接受远程主机）；普通全量 `pytest -q` 会执行 PostgreSQL 角色/RLS 用例，未显式启用的 Docker 分支按条件跳过。配置 `M1_DOCKER_GATE_TESTS=1`、`M1_OLD_RUNTIME_IMAGE`、`M1_OLD_FRONTEND_IMAGE`、`M1_NEW_RUNTIME_IMAGE` 为已构建的固定 `sha256:` 镜像 ID，再运行 `pytest -q tests/integration/test_m1_safe_degrade.py`；`M1_EVIDENCE_PATH` 可指定 Git 忽略的本地回执路径。镜像固定分支是额外跨版本验收，不为追平全量跳过计数重跑套件。CI 使用同一路径，在冻结旧提交源码构建完成后执行独立跨版本步骤。
+复现入口：先建立本机一次性 PostgreSQL 并配置 `DATABASE_ADMIN_URL`（不接受远程主机）；普通全量 `pytest -q` 会执行 PostgreSQL 角色/RLS 用例，未显式启用的 Docker 分支按条件跳过。配置 `M1_DOCKER_GATE_TESTS=1`、`M1_OLD_RUNTIME_IMAGE`、`M1_OLD_FRONTEND_IMAGE`、`M1_NEW_RUNTIME_IMAGE`、`M1_NEW_FRONTEND_IMAGE` 为已构建的固定 `sha256:` 镜像 ID，再运行 `pytest -q tests/integration/test_m1_safe_degrade.py`；`M1_EVIDENCE_PATH` 可指定 Git 忽略的本地回执路径。镜像固定分支是额外跨版本验收，不为追平全量跳过计数重跑套件。CI 使用同一路径，在冻结旧提交源码构建完成后执行独立跨版本步骤。
 
 ## 平台镜像与剩余限制
 

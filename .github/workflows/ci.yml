@@ -239,6 +239,7 @@ jobs:
           export M1_OLD_RUNTIME_IMAGE="$(docker image inspect --format '{{.Id}}' dealflow-m1-frozen-api:verify)"
           export M1_OLD_FRONTEND_IMAGE="$(docker image inspect --format '{{.Id}}' dealflow-m1-frozen-frontend:verify)"
           export M1_NEW_RUNTIME_IMAGE="$(docker image inspect --format '{{.Id}}' dealflow-radar-backend:m5a-local)"
+          export M1_NEW_FRONTEND_IMAGE="$(docker image inspect --format '{{.Id}}' dealflow-radar-frontend:m5a-local)"
           export M1_EVIDENCE_PATH="${RUNNER_TEMP}/m1-safe-degrade-digests.json"
           uv run --frozen pytest -q tests/integration/test_m1_safe_degrade.py
 

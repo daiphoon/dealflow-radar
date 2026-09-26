@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -67,6 +68,98 @@ def _docker(*args: str) -> str:
     result = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr[-1500:]
     return result.stdout.strip()
+
+
+@contextmanager
+def _normal_application_stack(api_image, frontend_image, database_url):
+    """Start only the selected API, frontend and normal Caddy; never a Worker."""
+    suffix = uuid4().hex[:10]
+    network = f"m1-normal-{suffix}"
+    api, frontend, proxy = (f"m1-{name}-{suffix}" for name in ("api", "frontend", "proxy"))
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    origin = f"http://127.0.0.1:{port}"
+    _docker("network", "create", network)
+    try:
+        for name, alias, image, environment in (
+            (
+                api,
+                "api",
+                api_image,
+                {
+                    "DATABASE_URL": database_url,
+                    "APP_MODE": "demo",
+                    "EXTERNAL_CALLS_ENABLED": "false",
+                    "PAID_API_CALLS_ENABLED": "false",
+                    "AUTO_REFRESH_ENABLED": "false",
+                    "AUTO_PUBLISH_ENABLED": "false",
+                    "WEB_RESEARCH_ENABLED": "false",
+                    "WEB_RESEARCH_CALLS_ENABLED": "false",
+                },
+            ),
+            (
+                frontend,
+                "frontend",
+                frontend_image,
+                {
+                    "AUTH_PROVIDER": "demo",
+                    "DEMO_USER_ID": PERSONAL_HEADERS["X-Demo-User-Id"],
+                    "API_BASE_URL": "http://api:8000",
+                    "APP_PUBLIC_ORIGIN": origin,
+                },
+            ),
+        ):
+            env_args = [
+                arg for key, value in environment.items() for arg in ("-e", f"{key}={value}")
+            ]
+            _docker(
+                "run",
+                "--rm",
+                "-d",
+                "--name",
+                name,
+                "--network",
+                network,
+                "--network-alias",
+                alias,
+                "--add-host=host.docker.internal:host-gateway",
+                *env_args,
+                image,
+            )
+        _docker(
+            "run",
+            "--rm",
+            "-d",
+            "--name",
+            proxy,
+            "--network",
+            network,
+            "-e",
+            "SITE_ADDRESS=:80",
+            "-p",
+            f"127.0.0.1:{port}:80",
+            "-v",
+            f"{Path('deploy/Caddyfile').resolve()}:/etc/caddy/Caddyfile:ro",
+            "caddy:2.10.2-alpine",
+        )
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(
+                    f"{origin}/companies/{SHARED_COMPANY_ID}", timeout=5
+                ) as response:
+                    body = response.read().decode()
+                    if response.status == 200 and "示例星河科技一号有限公司" in body:
+                        break
+            except (OSError, urllib.error.URLError):
+                pass
+            time.sleep(0.2)
+        else:
+            pytest.fail("new frontend did not render the actual company through normal Caddy")
+        yield origin, frontend
+    finally:
+        subprocess.run(["docker", "rm", "-f", proxy, frontend, api], capture_output=True)
+        subprocess.run(["docker", "network", "rm", network], capture_output=True)
 
 
 def test_real_caddy_safe_gate_rejects_server_actions_before_old_frontend():
@@ -368,11 +461,28 @@ def test_restrict_existing_app_role_preserves_rows_and_can_be_explicitly_restore
                 )
             )
             session.commit()
+        new_image = os.getenv("M1_NEW_RUNTIME_IMAGE")
+        new_frontend = os.getenv("M1_NEW_FRONTEND_IMAGE")
+        container_url = (
+            make_url(app_url).set(host="host.docker.internal").render_as_string(hide_password=False)
+        )
+        if new_image and new_frontend:
+            assert new_image.startswith("sha256:") and new_frontend.startswith("sha256:")
+            with _normal_application_stack(new_image, new_frontend, container_url):
+                pass
         before = snapshot(owner)
         with owner.connect() as connection:
             first_seen = connection.execute(
                 text("SELECT id, first_seen_at FROM personal_event_view_receipts ORDER BY id")
             ).all()
+            versions = (
+                connection.execute(
+                    text("SELECT semantic_version FROM personal_event_view_receipts")
+                )
+                .scalars()
+                .all()
+            )
+            assert versions and all(version and len(version) == 64 for version in versions)
 
         # The actual application role can write before entering safe mode.
         with app.connect() as connection:
@@ -587,6 +697,28 @@ print('frozen old API reads; write rejected by database role')
                             pass
                         time.sleep(0.2)
                     assert "示例星河科技一号有限公司" in body, (page_url, body[-300:])
+                    old_action = _docker(
+                        "exec",
+                        front_name,
+                        "node",
+                        "-e",
+                        "const fs=require('fs'); const m=JSON.parse(fs.readFileSync("
+                        "'.next/server/server-reference-manifest.json','utf8')); "
+                        "console.log(Object.entries(m.node).find("
+                        "([id,v])=>v.exportedName==='loadPersonalCompanyChanges')[0]);",
+                    )
+                    background = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/companies/{SHARED_COMPANY_ID}",
+                        data=json.dumps([str(SHARED_COMPANY_ID)]).encode(),
+                        headers={
+                            "Next-Action": old_action,
+                            "Content-Type": "text/plain;charset=UTF-8",
+                        },
+                    )
+                    with pytest.raises(urllib.error.HTTPError) as denied:
+                        urllib.request.urlopen(background, timeout=5)
+                    assert denied.value.code == 503
+                    assert b"maintenance_read_only" in denied.value.read()
 
                     def denied_request(path, method="GET"):
                         request = urllib.request.Request(
@@ -632,7 +764,6 @@ print('frozen old API reads; write rejected by database role')
             assert connection.scalar(
                 text("SELECT has_table_privilege(current_user, 'users', 'UPDATE')")
             )
-        new_image = os.getenv("M1_NEW_RUNTIME_IMAGE")
         if new_image:
             assert new_image.startswith("sha256:")
             restored_probe = f"""
@@ -678,6 +809,62 @@ print('new immutable API restored receipt and original report reuse')
             )
             assert result.returncode == 0, result.stderr[-1500:]
             assert "new immutable API restored" in result.stdout
+        if new_image and new_frontend:
+            with _normal_application_stack(new_image, new_frontend, container_url) as (
+                origin,
+                frontend,
+            ):
+                actions = json.loads(
+                    _docker(
+                        "exec",
+                        frontend,
+                        "node",
+                        "-e",
+                        "const fs=require('fs'); const m=JSON.parse(fs.readFileSync("
+                        "'.next/server/server-reference-manifest.json','utf8')); "
+                        "console.log(JSON.stringify(Object.fromEntries(Object.entries(m.node)"
+                        ".filter(([id,v])=>v.filename==='app/personal-actions.ts')"
+                        ".map(([id,v])=>[v.exportedName,id]))));",
+                    )
+                )
+                path = f"{origin}/companies/{SHARED_COMPANY_ID}"
+                # The public application uses real Next Server Actions, not a public API route.
+                request = urllib.request.Request(
+                    path,
+                    data=json.dumps([str(SHARED_COMPANY_ID)]).encode(),
+                    headers={
+                        "Content-Type": "text/plain;charset=UTF-8",
+                        "Origin": origin,
+                        "Next-Action": actions["loadPersonalCompanyChanges"],
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    assert response.status == 200 and b"viewed_at" in response.read()
+                form = {
+                    f"$ACTION_ID_{actions['generateCompanyReport']}": "",
+                    "company_id": str(SHARED_COMPANY_ID),
+                    "idempotency_key": report_key,
+                }
+                boundary = "m1-" + uuid4().hex
+                multipart = (
+                    "".join(
+                        f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n'
+                        f"\r\n{value}\r\n"
+                        for key, value in form.items()
+                    )
+                    + f"--{boundary}--\r\n"
+                )
+                request = urllib.request.Request(
+                    path,
+                    data=multipart.encode(),
+                    headers={
+                        "Content-Type": f"multipart/form-data; boundary={boundary}",
+                        "Origin": origin,
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    assert response.status == 200
+                    assert f"/reports/{report_id}?result=report_reused" in response.url
         with TestClient(new_application) as client:
             path = f"/api/v1/me/companies/{SHARED_COMPANY_ID}"
             assert client.post(path + "/view", headers=PERSONAL_HEADERS).status_code == 200
@@ -732,6 +919,7 @@ print('new immutable API restored receipt and original report reuse')
                         "old_image": old_image,
                         "old_frontend": os.getenv("M1_OLD_FRONTEND_IMAGE"),
                         "new_image": new_image,
+                        "new_frontend": new_frontend,
                     },
                     indent=2,
                     sort_keys=True,
