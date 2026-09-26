@@ -38,7 +38,7 @@ export default async function PersonalReportDetailPage({
 
         {report.history_status === "restricted" ? (
           <p className="feedback feedback-error">
-            来源许可已变化，历史正文停止提供。本次读取或重试不会新增报告额度。
+            报告当前不可交付，历史正文停止提供。本次读取或重试不会新增报告额度。
           </p>
         ) : report.history_status === "stale" ? (
           <p className="feedback">

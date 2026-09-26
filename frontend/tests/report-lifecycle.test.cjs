@@ -32,7 +32,7 @@ test('真实报告页面展示正文与虚构性质；URL 只提示合法成功�
 test('撤权和过时状态优先于伪造成功参数，也在无 query 时显示',async()=>{
   for(const result of ['report_generated','report_reused',undefined]){
     const restricted=await render('restricted',result);
-    assert.match(restricted,/正文停止/);assert.doesNotMatch(restricted,/报告已生成|已直接为你打开|允许的正文/);
+    assert.match(restricted,/正文停止/);assert.doesNotMatch(restricted,/来源许可已变化/);assert.doesNotMatch(restricted,/报告已生成|已直接为你打开|允许的正文/);
     const stale=await render('stale',result);
     assert.match(stale,/已过时/);assert.match(stale,/允许的正文/);assert.doesNotMatch(stale,/报告已生成|已直接为你打开/);
   }
