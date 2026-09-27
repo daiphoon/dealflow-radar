@@ -23,11 +23,12 @@
 
 ## 2. 有效执行检查点
 
-- **当前唯一工程里程碑：M1-Report-Recovery 报告许可一致性与 0036 服务恢复**。#104 已合并至 `main@6d9398b1f3f6f838acb8bb123d1d6d84afa36545`（tree `709bef993bf9186fd431137e12cbd9c26ba11009`），最终制品已冻结；获批 Gate C 的 0035→0036 迁移通过，但报告验收失败，未恢复公网。失败后已 restrict+verify、停止应用，保持 0036 和完全静态维护，**M1 = BLOCKED**，不能写成已经上线。
-- **本轮范围与证据**：仅报告全生命周期/额度/页面状态修复、本地正式测试、现有失败后加密备份的 0036 隔离恢复、独立 PR 和实际 Verify。修复和许可边界见 [工程记录 23](23-m1-report-lifecycle-recovery.md)；精确 PR/head/CI、完整摘要和下一次恢复授权统一封存在私有 `M1 Report Lifecycle Recovery Package`。本轮无生产操作，不重跑迁移、不改历史报告或 semantic baseline；保留 W01—W12/R01—R06/Safe Degrade 原交付。
-- **停止边界**：工程 PR 完成后停止，不自动合并、部署、恢复应用权限、启动生产应用或切回正常 Caddy；Provider/Model/Worker/Watchlist 自动巡检/MCP/隧道保持关闭。本地和 CI 不替代 CloudBase 与生产真实业务验收。成功恢复后才能关闭 M1，随后另行准备 M2；M3 独立。
+- **当前唯一里程碑：M1-Ops-Recovery 阶段 A（运维执行链诊断与可信核验）**。业务 main 冻结 `47c4a5ce82731b6b9a03899012c47ff84d2d7abd` / tree `5afb3f90ba31f459c6ed183639862ade38c87017`，#105 的报告修复及此前限定业务验收保持有效；不得因运维检查失败重新开发报告功能。
+- **实际运行状态**：上一恢复遇到两次运维停止，生产保留 schema `0036`、普通应用角色只读、API/frontend/Worker 停止和静态维护，current 仍指向原发布。第一处摘要类型误判已复现；第二处历史原始异常无法恢复，保留 `unknown`。**M1 未关闭**。
+- **本轮交付**：独立运维分支，仅统一制品身份、分层有界探针、首次异常留证、一次试开/锁、current 预检与原子收尾及测试。固定业务镜像的本机隔离演练通过，无报告生成。运行证据和集中授权清单在私有 `M1 Operations Diagnosis & Controlled Resume Package`；可提交脱敏部分见 [运维执行说明](operations-release-recovery.md)。远端 Verify 只以该 PR 准确 head 的实际状态为准。
+- **停止边界**：阶段 A 完成后等待一次集中阶段 B 授权；不自动合并、启动/重启生产、恢复权限、切 current 或试开公网。研究/Provider/Model/Watchlist/自动刷新发布/MCP/隧道保持关闭。M2/M3 不在本轮执行。
 
-- 更新日期：2026-09-26；依据：[ADR-0021](DECISIONS/ADR-0021-incremental-event-delivery.md)、[ADR-0022](DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md)、[ADR-0024](DECISIONS/ADR-0024-research-acquisition-and-extraction-evaluation.md)。
+- 更新日期：2026-09-27；依据：[ADR-0021](DECISIONS/ADR-0021-incremental-event-delivery.md)、[ADR-0022](DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md)、[ADR-0024](DECISIONS/ADR-0024-research-acquisition-and-extraction-evaluation.md)。
 - 总体阶段：`DEMO / VALIDATION`；已确认采用“增量交付＋局部重构”，保留现有系统。
 - 上一轮批准顺序已执行：PR #91、#92、#93 依次合并，最终 `de50fe48aeba174bbcfe6575c8be207f4acd9d8e` 的文件树与已验收 PR #93 一致；已完成部署、整批资料接收与固定 5 家单次研究。既有失败、账本及暂停自动续作保留。
 - 上一运行基线（历史）：香港环境曾部署 `de50fe4`，数据库 `0033`。[最终 CI](https://github.com/daiphoon/dealflow-radar/actions/runs/35512674548) 后端 897 通过/18 跳过，前端 26 通过；生产镜像、加密备份、SSH 副本双哈希及 Mac 隔离恢复、切换前后全表摘要、非 owner 权限和 HTTP 检查通过。旧 `10baf8d` 保留；原 E0—E3 与 COS 运维验收保持。

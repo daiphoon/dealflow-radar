@@ -1068,3 +1068,10 @@
 - 实际命令：非 owner PostgreSQL 下 `pytest -q tests/integration/test_report_lifecycle_recovery.py`；完整 `pytest -q`；Ruff/check format；SQLite/PostgreSQL Alembic check；前端 test/typecheck/build；production/Safe Degrade Compose config；API/frontend amd64 Docker build；真实旧/修复镜像 `test_m1_safe_degrade.py`；本机 age 0036 restore 和真实报告页面/Server Action；Secret 扫描与 diff check。
 - 验证：先以真实 API 建立失败回归，再统一首次生成/历史读取/重试/复用闸门和额度事务；正式最终计数、实际 CI 与 42 张表完整内容摘要保存在统一私有恢复包，避免提交真实数据、凭据或测试日志。
 - 阻塞：合并、修复制品发布和生产 0036 服务恢复需分别明确授权；本轮未做生产/CloudBase 验收。
+
+
+## 2026-09-27 — M1-Ops-Recovery 阶段 A
+
+- 范围：仅 `scripts/release_ops/`、运维说明及测试；冻结 47c4a5c 业务制品，生产保持0036/只读角色/静态维护。实际事故版误判已复现，第二次历史异常保持 unknown。
+- 验证：`pytest -q tests/unit/test_ops_release.py`；显式 `M1_OPS_ISOLATED=1 pytest -q tests/integration/test_ops_release_containers.py` 使用本机内部网络、新虚构 PostgreSQL 和既有固定镜像；Ruff/format、`git diff --check`。本地隔离报告/用量/请求增量均0，生产仅收集必要只读元数据。
+- 结果与剩余：50项定向回归、1项固定镜像隔离恢复通过（含真实PostgreSQL只读/普通角色门禁）；远端完整 Verify 按独立 PR 精确 head 记录于统一私有 Package。没有执行阶段 B；恢复必须绑定新运维 revision/package SHA 并再次集中批准，不能写 M1=CLOSED。
