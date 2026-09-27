@@ -848,15 +848,32 @@ def test_compose_gate_checks_normal_flags_and_never_returns_secrets(tmp_path):
         "disabled_flags": ["EXTERNAL_CALLS_ENABLED"],
         "configuration_sha256": {"config": hashlib.sha256(b"frozen").hexdigest()},
     }
+    for key, profile in zip(list(refs)[2:], ("safe-control", "safe-restore"), strict=True):
+        services[key].update(
+            profiles=[profile],
+            read_only=True,
+            cap_drop=["ALL"],
+            security_opt=["no-new-privileges:true"],
+            restart="no",
+            networks={"app": {}},
+            command=["python", "-m", "scripts.safe_degrade_database", "restrict"]
+            if profile == "safe-control"
+            else ["python", "-m", "scripts.bootstrap_local_database"],
+        )
+    normal_services = {**{k: services[k] for k in ("api", "frontend")}, "database": {}, "proxy": {}}
+    version = subprocess.CompletedProcess([], 0, "Docker Compose version v2.40.3", "")
     response = subprocess.CompletedProcess([], 0, json.dumps({"services": services}), "")
-    with patch("scripts.release_ops.metadata.subprocess.run", return_value=response):
+    normal = subprocess.CompletedProcess([], 0, json.dumps({"services": normal_services}), "")
+    with patch(
+        "scripts.release_ops.compose.subprocess.run", side_effect=[version, normal, response]
+    ):
         value = observe_metadata(spec)
     assert value["status"] == "PASS"
     assert "private-content" not in json.dumps(value)
-    wrong = copy.deepcopy(services)
+    wrong = copy.deepcopy(normal_services)
     wrong["api"]["environment"]["EXTERNAL_CALLS_ENABLED"] = "true"
     normal = subprocess.CompletedProcess([], 0, json.dumps({"services": wrong}), "")
-    with patch("scripts.release_ops.metadata.subprocess.run", side_effect=[response, normal]):
+    with patch("scripts.release_ops.compose.subprocess.run", side_effect=[version, normal]):
         assert observe_metadata(spec)["status"] == "BLOCKED"
 
 

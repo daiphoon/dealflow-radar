@@ -1,13 +1,13 @@
 """Finite release metadata checks; no business rows, credentials, or write SQL."""
 
 import hashlib
-import json
 import re
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
-from .evidence import command, redact
+from .evidence import command
 from .probes import mounted_configuration
 from .snapshot import json_command
 
@@ -85,66 +85,9 @@ def evaluate_database(kind, actual, expected):
 def observe_metadata(spec):
     kind = spec["kind"]
     if kind == "compose-frozen":
-        from .actions import commands
+        from .compose import observe_frozen
 
-        directory, normal = commands(spec["root"], spec["business_sha"], "open_normal_proxy")
-        argv = normal[0][:-2] + [
-            "-f",
-            "deploy/compose.safe-degrade.yml",
-            "config",
-            "--format",
-            "json",
-        ]
-        run = subprocess.run(argv, cwd=directory, capture_output=True, text=True, timeout=20)
-        if run.returncode:
-            return {
-                "status": "CHECK_ERROR",
-                "exit_code": run.returncode,
-                "stderr": redact(run.stderr),
-            }
-        services = json.loads(run.stdout)["services"]
-        images = {
-            k: services[k]["image"]
-            for k in ("api", "frontend", "safe-degrade-control", "safe-degrade-restore-role")
-        }
-        expected = spec["images"]
-        if set(images) != set(expected) or not spec["configuration_sha256"]:
-            raise ValueError("complete image/configuration binding required")
-        hashes = {
-            f: hashlib.sha256((directory / f).read_bytes()).hexdigest()
-            for f in spec["configuration_sha256"]
-        }
-        # Normal configuration must also have all approved switches off;
-        # the safe overlay alone cannot prove the normal runtime is closed.
-        raw = subprocess.run(
-            normal[0][:-2] + ["config", "--format", "json"],
-            cwd=directory,
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if raw.returncode:
-            return {
-                "status": "CHECK_ERROR",
-                "exit_code": raw.returncode,
-                "stderr": redact(raw.stderr),
-            }
-        regular = json.loads(raw.stdout)["services"]
-        flags = {
-            k: str(regular["api"]["environment"].get(k, "MISSING")) for k in spec["disabled_flags"]
-        }
-        good = (
-            images == expected
-            and hashes == spec["configuration_sha256"]
-            and all(regular[k]["image"] == expected[k] for k in ("api", "frontend"))
-            and bool(flags)
-            and all(v.lower() == "false" for v in flags.values())
-        )
-        return {
-            "status": "PASS" if good else "BLOCKED",
-            "exit_code": 0,
-            "actual": {"images": images, "configurations": hashes, "closed_flags": flags},
-        }
+        return observe_frozen(spec)
     if kind in {"schema", "role-readonly", "role-normal", "jobs-off"}:
         result = database(spec)
         if result["status"] != "PASS":
@@ -196,6 +139,20 @@ def observe_metadata(spec):
         if result["status"] != "PASS":
             return result
         mounts = [v for v in proxy["Mounts"] if v["Destination"] == "/etc/caddy/Caddyfile"]
+        sources = [str(path)]
+        if spec.get("isolation") is not None:
+            from .compose import ComposeSpec
+
+            isolated = ComposeSpec(spec["root"], spec["business_sha"], spec["isolation"])
+            if (
+                spec["proxy_container"] != isolated.project + "-proxy-1"
+                or path.parent != isolated.directory / "deploy"
+            ):
+                raise PermissionError("isolated mount must belong to approved release/project")
+            if sys.platform == "darwin":
+                # Docker Desktop may report this daemon-side alias for the same host bind.
+                sources.append("/host_mnt" + str(path))
+
         started = datetime.fromisoformat(proxy["State"]["StartedAt"].replace("Z", "+00:00"))
         argv = [proxy["Path"], *proxy["Args"]]
         uses = (
@@ -215,8 +172,20 @@ def observe_metadata(spec):
                 process_uses_config=uses,
                 read_only_mount=len(mounts) == 1
                 and not mounts[0]["RW"]
-                and mounts[0]["Source"] == str(path),
+                and mounts[0]["Source"] in sources,
             ),
+            "configuration_adoption": {
+                "expected_source": str(path),
+                "allowed_isolated_sources": sources,
+                "mounts": [{k: v[k] for k in ("Source", "Destination", "RW")} for v in mounts],
+                "started_at": proxy["State"]["StartedAt"],
+                "host_file_mtime": path.stat().st_mtime,
+                "started_after_file": started.timestamp() >= path.stat().st_mtime,
+                "process_uses_config": uses,
+                "argv": argv,
+                "host_sha256": sha,
+                "mounted_sha256": result["stdout"].split()[0],
+            },
             "target_container_id": proxy["Id"],
         }
     raise ValueError("unsupported metadata checkpoint")

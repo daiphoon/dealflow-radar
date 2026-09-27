@@ -2,10 +2,10 @@
 
 import hashlib
 import json
-import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .compose import ComposeSpec, compose_environment
 from .current import release_lock
 from .evidence import command, package_sha256, write_json
 
@@ -55,56 +55,36 @@ REQUIRED = {
 }
 
 
-def commands(root, business_sha, action):
-    if action not in REQUIRED or not re.fullmatch(r"[a-f0-9]{40}", business_sha):
-        raise ValueError("unknown action or invalid business SHA")
-    root = Path(root).resolve(strict=True)
-    directory = root / "releases" / business_sha
-    if directory.resolve(strict=True) != directory:
-        raise ValueError("release directory must not escape via symlink")
-    compose = [
-        "docker",
-        "compose",
-        "--project-name",
-        "dealflow-radar-production",
-        "--env-file",
-        "deploy/single-host.env",
-        "-f",
-        "compose.production.yml",
-        "-f",
-        "deploy/compose.single-host.yml",
-    ]
-    safe = compose + ["-f", "deploy/compose.safe-degrade.yml"]
+def commands(root, business_sha, action, isolation=None):
+    if action not in REQUIRED:
+        raise ValueError("unknown action")
+    spec = ComposeSpec(root, business_sha, isolation)
     up = ["up", "-d", "--no-deps", "--no-build", "--pull", "never"]
-    control = safe + [
-        "run",
-        "--rm",
-        "--no-deps",
-        "--pull",
-        "never",
-        "-T",
-        "safe-degrade-control",
-        "python",
-        "-m",
-        "scripts.safe_degrade_database",
-    ]
+    run = ["run", "--rm", "--no-deps", "--pull", "never", "-T"]
+    control = run + ["safe-degrade-control", "python", "-m", "scripts.safe_degrade_database"]
     table = {
-        "start_api": [compose + up + ["api"]],
-        "start_frontend": [compose + up + ["frontend"]],
-        "restore_role": [
-            safe
-            + ["run", "--rm", "--no-deps", "--pull", "never", "-T", "safe-degrade-restore-role"]
+        "start_api": [spec.argv("normal", *up, "api")],
+        "start_frontend": [spec.argv("normal", *up, "frontend")],
+        "restore_role": [spec.argv("restore", *run, "safe-degrade-restore-role")],
+        "open_normal_proxy": [
+            spec.argv("normal", "config", "--quiet"),
+            spec.argv("normal", *up, "proxy"),
         ],
-        "open_normal_proxy": [compose + ["config", "--quiet"], compose + up + ["proxy"]],
         "isolate": [
-            safe + ["-f", "deploy/compose.maintenance-static.yml"] + up + ["proxy"],
-            compose
-            + ["stop", "api", "frontend", "web-research-worker", "investor-analysis-worker"],
-            control + ["restrict"],
-            control + ["verify"],
+            spec.argv("static", *up, "proxy"),
+            spec.argv(
+                "normal",
+                "stop",
+                "api",
+                "frontend",
+                "web-research-worker",
+                "investor-analysis-worker",
+            ),
+            spec.argv("control", *control, "restrict"),
+            spec.argv("control", *control, "verify"),
         ],
     }
-    return directory, table[action]
+    return spec.directory, table[action]
 
 
 def authorize(binding, authorization, action, gates, *, now=None):
@@ -116,6 +96,8 @@ def authorize(binding, authorization, action, gates, *, now=None):
         or action not in authorization["allowed_actions"]
     ):
         raise PermissionError("unapproved code or action")
+    if binding.get("isolation") != authorization.get("isolation"):
+        raise PermissionError("authorization isolation mapping mismatch")
     now = now or datetime.now(UTC)
     valid = set()
     for gate in gates:
@@ -140,11 +122,15 @@ def apply_action(binding, authorization, action, gates, recorder, execute=None):
     if recorder.attempt != binding["attempt"]:
         raise PermissionError("recorder attempt differs from action")
     authorize(binding, authorization, action, gates)
-    directory, argvs = commands(binding["root"], binding["business_sha"], action)
+    directory, argvs = commands(
+        binding["root"], binding["business_sha"], action, binding.get("isolation")
+    )
 
     def local(argv):
         # cwd is explicit; current is never used to choose a Compose file.
-        return command(argv, timeout=60, expect_json=False, cwd=directory)
+        return command(
+            argv, timeout=60, expect_json=False, cwd=directory, env=compose_environment()
+        )
 
     execute = execute or local
     results = []
@@ -159,7 +145,7 @@ def apply_action(binding, authorization, action, gates, recorder, execute=None):
                 f"{action}-{index}",
                 "host",
                 "release",
-                {"approved_action": action},
+                {"approved_action": action, "compose_argv": argv, "cwd": str(directory)},
                 action,
                 lambda argv=argv: execute(argv),
             )

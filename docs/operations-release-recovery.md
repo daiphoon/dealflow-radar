@@ -1,6 +1,8 @@
 # M1-Ops-Recovery：发布执行链与一次受控恢复
 
-本轮只完成阶段 A。业务冻结在 `47c4a5ce82731b6b9a03899012c47ff84d2d7abd`，tree `5afb3f90ba31f459c6ed183639862ade38c87017`；API/frontend 和既有 safety-control 不重建。阶段 A 不启动生产应用、不恢复权限、不切换 current/公网、不生成报告。运维 PR 合并也不构成恢复授权。
+本轮收口真实 Compose 执行契约，仅提交一个运维修复 PR，并用最终候选进行目标主机纯观察验证。#106 已合并到 `f5a5a09908d8c3334204c4a6a6e365635c51c8d4`，随后阶段 B 在 `compose-frozen` 安全停止。业务仍冻结 `47c4a5ce82731b6b9a03899012c47ff84d2d7abd` / tree `5afb3f90ba31f459c6ed183639862ade38c87017`；三个私有不可变业务/安全镜像均不重建。
+
+生产保持0036、只读应用角色、API/frontend/Worker停止、静态维护及原current。本轮不合并新PR、不生产apply/prepare、不处理旧锁、不登录、不切入口。已结束attempt的首错、持久归属和封存证据保留；M1尚未关闭。
 
 ## 事故结论与边界
 
@@ -9,6 +11,21 @@
 第二次正常 Caddy 切换的远端 stderr 被原脚本的安全停止流程遮蔽。已查有限时间窗 Docker events、现存容器日志和 daemon journal，不能恢复原始异常。**第二次根因仍为 unknown**，不声称为 Caddy、CloudBase、网络或启动速度问题。它不推翻此前通过的报告生命周期验收。不得以找不到历史异常为由无限阻塞；下一阶段须批准一次完整留证复测。
 
 原始事故版、修正版、26 份相关本机脚本、调用链、原始证据及实际主机参数只保存于受限私有归档。Git 只含脱敏代码、虚构回归和本说明；不提交远程地址、数据库内容、登录身份、备份或凭据。
+
+## Compose 2.40 的真实执行契约
+
+阶段B首错是 `metadata.py` 未选profile却直接索引 `safe-degrade-control`。生产2.40.3默认config裁剪未启用服务；Compose退出0、检查器退出2、SSH包装退出0分别记录。它不解释第二次历史unknown，也不涉及业务报告或迁移失败。
+
+`compose.py` 的有限 `ComposeSpec` 同时生成配置观察与实际动作。工作目录始终是明确的业务发布目录；project、env来源及文件顺序固定，不从current或另一条命令截取参数。正常视图不选profile；控制config局部显式选择safe-control和safe-restore。restore动作只选择safe-restore；静态动作使用safe overlay、静态overlay及明确proxy目标。所有子进程去除偶然的COMPOSE_PROFILES/FILE/PROJECT_NAME/ENV_FILES，不改变操作员全局环境。
+
+| 视图 | 文件顺序与profile | 必检 |
+| --- | --- | --- |
+| normal | production → single-host；无profile | api/frontend固定image、关闭开关、冻结配置SHA；无需可选控制服务 |
+| control config | production → single-host → safe；safe-control + safe-restore | 两控制服务固定image、单独profile、read_only、cap_drop、no-new-privileges、restart、network和命令 |
+| restore action | 同safe文件；safe-restore | 仅run指定restore服务，不隐式依赖/拉取 |
+| static action | production → single-host → safe → static；safe-control | 仅up proxy；停止应用/Worker；明确restrict/verify |
+
+正确profile下缺服务返回BLOCKED；命令非零、坏JSON、缺判断字段返回CHECK_ERROR，超时INCONCLUSIVE。expected记录白名单契约；actual仅服务名、镜像、文件摘要、安全属性、关闭开关及版本，完整展开和env不离开进程。
 
 ## 唯一身份判定
 
@@ -78,13 +95,25 @@ python -m scripts.release_ops apply-current --input commit.json --authorization 
 - `apply-current` 的 prepared SHA、公网既有报告只读验收和临时路由清理证明必须另列到批准记录。重复提交同一目标可读回确认；中断前后有回归覆盖。公开状态、运行版本、current、回执状态分别记录。
 - 共享 `flock` 和持久 `.release.lock` attempt 阻止并发/不同尝试；`.opened-ATTEMPT.json` 在首次正常入口操作前独占写入，即使命令失败也不自动允许第二次试开。失败后保留锁/证据，只有负责人批准新 attempt 才可人工归档并解锁，禁止自动删锁重试。
 
-## 本地验收与复用
+## 真实回归与隔离执行链
 
-先复现实际事故表达式失败，再验证统一判定。定向回归覆盖 classic/containerd/index、伪造 label/错 image/缺元数据、各入口预期、迟就绪、超时、SSH/JSON/断言/清理失败、配置采用、原子 current/中断/权限/并发、一次试开与证据保存。
+普通Verify在RUNNER_TEMP安装官方Compose2.40.3独立二进制并验证固定SHA，不替换宿主插件。`test_ops_compose_contract.py` 调用正式 `python -m scripts.release_ops observe-metadata`，真实解析冻结Compose和虚构env；不需要Docker daemon/GHCR凭据，CI缺二进制直接失败。测试记录实际调用，拒绝单profile/缺服务/错镜像/开关开启/缺环境或字段/命令失败/坏JSON，证明全程只有version/config。旧总含全部服务的fixture不再代表profile行为。
 
-可选 `tests/integration/test_ops_release_containers.py` 仅在显式 `M1_OPS_ISOLATED=1`、Mac Docker Desktop 本地 context、已缓存冻结镜像时运行。使用全新虚构 PostgreSQL、内部无外网网络，真实 API/frontend/control/Caddy，验证只读→普通角色、本机正常入口、完整身份和原子指针。测试中的 migration 只初始化新虚构库；生产不迁移。报告/用量/请求前后都是 0，不产生任何报告。合成 browser 完成标记只测指针状态机，不计为生产认证/报告阅读验收。CI 没有私有制品输入时显式 skip，此分支由本地固定镜像证据补足。
+`test_ops_release_compose.py` 另须显式M1_OPS_ISOLATED=1、本机unix Docker、已缓存三个冻结amd64镜像及原始registry字节。实际经归档安装、正式CLI、Compose、apply-step/prepare-current/apply-current，贯通静态0036只读→启动应用→显式恢复角色→prepared序列化读回→正常代理→实际探针→原子current；再注入真实契约拒绝，验证实际停止/限权、首错不变及第二次正常入口拒绝。42张虚构业务表完整内容摘要不变，报告/用量/映射零新增。browser完成标记明确SIMULATED，不代表CloudBase或生产报告验收；私有镜像分支不在普通CI运行。
 
-业务代码、migration、frontend 和部署配置均未修改。完整既有 Verify 的实际结果以 PR 准确 head 为准；不得为追平不同环境 skip 数重复跑全站测试。
+隔离参数仅允许独立root/project、虚构env、loopback端口、关闭NAT的独立bridge网络（internal=true在本机Docker会取消已请求的端口发布）及amd64平台。测试覆盖文件固定为`deploy/compose.ops-isolated.yml`且摘要绑定；不接受业务command/image/env替换，拒绝远端Docker。生产不使用此映射，也不改被冻结配置。
+
+## 审查过的执行适配器
+
+`bridge.py` 用同一源码完成Mac→SSH→明确Python→独立归档→正式CLI；输入只有声明式参数，不能注入任意远端Shell。archive成员只允许已摘要批准的ops模块，拒绝链接/重复/覆盖；安装前后核对归档及内容SHA。解释器以-I启动，固定模块引导器只选择核验过的scripts包，不借用仓库cwd/PYTHONPATH，也不会被operator.py同名文件遮蔽。引导器仍进入正式CLI解析、Recorder和apply逻辑，不直接调用prepare/commit。
+
+Mac端使用已审查的 `python -m scripts.release_ops.bridge --request PRIVATE_REQUEST.json --destination APPROVED_HOST --interpreter /usr/bin/python3 --output ENVELOPE.json`。当前仅安装新的独立候选目录及观察；request不携带生产apply授权。远端-I引导正式模块CLI，输出记录具体解释器、工作目录、包内容SHA、bridge源码SHA及formal argv。Docker Desktop挂载别名只在已核验的本机隔离root/project中允许，生产仍精确匹配Source。
+
+本轮本机定向74项通过；冻结制品同路径演练1项通过（42张虚构表摘要不变，一次正常入口，故障后真实限权/停止）。普通完整Verify及最终现场只读证据均须绑定提交后的准确head，不能以该本机数量代替CI。
+
+SSH传输/远端包装/检查器退出码独立；包装0不能覆盖检查器失败。`host.py` 只读采集停止态、实际Cmd/Entrypoint/Healthcheck、角色/RLS、current和锁；不假设frontend继承入口为null，也不把systemd解释器二进制当脚本读取。实际下一次执行不再依赖旧私有可执行适配器；私有参数和业务验收对象仍需集中批准。
+
+最终候选可以安装至新的独立观察目录，运行compose-frozen、schema/role-readonly/jobs-off/config-static/维护及同一identity。观察不写锁/current，不启动容器，不可复用为未来恢复的新鲜门槛。准确head/tree/Verify、包及现场证据只以统一私有 `M1 Operations Execution Contract & Resume Readiness` 为准。
 
 ## 下一次集中批准应涵盖
 
@@ -96,4 +125,4 @@ python -m scripts.release_ops apply-current --input commit.json --authorization 
 6. 真实公网验收通过、临时路由清理后执行预验证的 current 原子收尾，记录运行版本/current/公网/回执四种状态，完成最终备份、摘要及回执。未实际完成不得写 M1=CLOSED。
 7. 任一硬条件失败，保存原始失败→静态维护→停应用/Worker→固定 control restrict→verify；schema 保持0036，不覆盖备份、不降库、不第二次试开。限制验证失败单独报告，不能标记安全完成。
 
-研究 Worker、Provider、模型、Watchlist、自动刷新/发布、MCP、隧道持续关闭。阶段 B 未获批前停在此处。
+研究 Worker、Provider、模型、Watchlist、自动刷新/发布、MCP、隧道持续关闭。旧阶段B授权已经结束。新PR/head/包经复审后，须另批新attempt及旧持久锁处理：先确认无活动flock持锁进程，再按批准方式归档归属，不无条件rm锁。本轮认证0；将来登录/刷新各最多2次及指定用户last_login_at/updated_at伴随写入，仅在新集中授权中有效。

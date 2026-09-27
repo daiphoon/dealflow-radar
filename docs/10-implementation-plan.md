@@ -23,10 +23,10 @@
 
 ## 2. 有效执行检查点
 
-- **当前唯一里程碑：M1-Ops-Recovery 阶段 A（运维执行链诊断与可信核验）**。业务 main 冻结 `47c4a5ce82731b6b9a03899012c47ff84d2d7abd` / tree `5afb3f90ba31f459c6ed183639862ade38c87017`，#105 的报告修复及此前限定业务验收保持有效；不得因运维检查失败重新开发报告功能。
-- **实际运行状态**：上一恢复遇到两次运维停止，生产保留 schema `0036`、普通应用角色只读、API/frontend/Worker 停止和静态维护，current 仍指向原发布。第一处摘要类型误判已复现；第二处历史原始异常无法恢复，保留 `unknown`。**M1 未关闭**。
-- **本轮交付**：独立运维分支，仅统一制品身份、分层有界探针、首次异常留证、一次试开/锁、current 预检与原子收尾及测试。固定业务镜像的本机隔离演练通过，无报告生成。运行证据和集中授权清单在私有 `M1 Operations Diagnosis & Controlled Resume Package`；可提交脱敏部分见 [运维执行说明](operations-release-recovery.md)。远端 Verify 只以该 PR 准确 head 的实际状态为准。
-- **停止边界**：阶段 A 完成后等待一次集中阶段 B 授权；不自动合并、启动/重启生产、恢复权限、切 current 或试开公网。研究/Provider/Model/Watchlist/自动刷新发布/MCP/隧道保持关闭。M2/M3 不在本轮执行。
+- **当前唯一里程碑：M1-Ops-Recovery 真实 Compose 执行契约收口**。开发基线main `f5a5a09908d8c3334204c4a6a6e365635c51c8d4` / tree `27b2ebacecb9f8bce03749090b0b33e0d5e1c677`；#106已合并，随后阶段B在compose-frozen安全停止。本轮只修复运维规格/适配器和正式测试，提交独立PR；不重做业务。
+- **生产状态及保护**：业务固定47c4a5c，三个不可变镜像不重建；0036、equity_app只读、API/frontend/Worker停止、公网静态维护、current仍指向ff174998。已结束attempt `m1-b-20260927T045333Z-51784ccc` 的锁、首错、证据和备份保留。第二次历史原始异常仍unknown；M1未关闭。
+- **本轮验收**：正式CLI真实Compose2.40.3配置回归进入普通CI；正常/控制视图与实际动作共用有限构造，归档/SSH适配器纳入审查；冻结镜像本机同路径隔离演练及最终候选目标主机纯观察证据按统一 `M1 Operations Execution Contract & Resume Readiness` 记录。[运行说明](operations-release-recovery.md)解释权限与证据边界；没有把未来生产恢复项目记为通过。
+- **停止边界**：新PR不自动合并；生产没有apply/prepare、角色恢复、服务启动/重启、current/公网切换、旧锁处理或认证。最终head/CI/观察证据复审后再集中批准一次新attempt；研究/Provider/Model/Watchlist/自动刷新发布/MCP/隧道持续关闭，不进入M2/M3。
 
 - 更新日期：2026-09-27；依据：[ADR-0021](DECISIONS/ADR-0021-incremental-event-delivery.md)、[ADR-0022](DECISIONS/ADR-0022-curated-baseline-and-incremental-research.md)、[ADR-0024](DECISIONS/ADR-0024-research-acquisition-and-extraction-evaluation.md)。
 - 总体阶段：`DEMO / VALIDATION`；已确认采用“增量交付＋局部重构”，保留现有系统。
