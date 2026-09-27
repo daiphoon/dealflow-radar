@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .actions import apply_action
+from .compose import expected_contract
 from .current import commit, prepare, save_prepared
 from .evidence import Recorder, redact
 from .identity import verify_identity
@@ -85,7 +86,9 @@ def dispatch(args, recorder, checkpoint):
             checkpoint,
             "docker_host",
             "release",
-            data.get("expected"),
+            expected_contract(data)
+            if data["kind"] == "compose-frozen"
+            else data.get("expected", {"kind": data["kind"]}),
             "readonly_metadata",
             lambda: observe_metadata(data),
         )

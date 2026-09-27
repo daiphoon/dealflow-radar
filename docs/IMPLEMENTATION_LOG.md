@@ -1075,3 +1075,10 @@
 - 范围：仅 `scripts/release_ops/`、运维说明及测试；冻结 47c4a5c 业务制品，生产保持0036/只读角色/静态维护。实际事故版误判已复现，第二次历史异常保持 unknown。
 - 验证：`pytest -q tests/unit/test_ops_release.py`；显式 `M1_OPS_ISOLATED=1 pytest -q tests/integration/test_ops_release_containers.py` 使用本机内部网络、新虚构 PostgreSQL 和既有固定镜像；Ruff/format、`git diff --check`。本地隔离报告/用量/请求增量均0，生产仅收集必要只读元数据。
 - 结果与剩余：50项定向回归、1项固定镜像隔离恢复通过（含真实PostgreSQL只读/普通角色门禁）；远端完整 Verify 按独立 PR 精确 head 记录于统一私有 Package。没有执行阶段 B；恢复必须绑定新运维 revision/package SHA 并再次集中批准，不能写 M1=CLOSED。
+
+
+## 2026-09-27 — M1-Ops-Recovery Compose执行契约收口
+
+- 关键文件：`release_ops/compose.py`、`actions.py`、`metadata.py`、归档/SSH `bridge.py`、只读 `host.py`、正式配置回归、同路径隔离测试、必要CI及运行说明；业务/migration/冻结部署配置不变。
+- 实际命令：官方Compose2.40.3校验安装；正式CLI失败回归；`pytest tests/unit/test_ops_release.py tests/unit/test_ops_bridge.py tests/integration/test_ops_compose_contract.py`；显式本机冻结镜像 `test_ops_release_compose.py`；Ruff/format、diff/private/Secret核对。完整Verify和最终候选现场只读证据见统一私有交付。
+- 结果/阻塞：修前真实KeyError被复现；修后配置回归通过，拒绝缺服务/错镜像/开启开关及检查器故障，SSH成功不覆盖检查器失败。同路径演练和最终head证据分别留存，不把模拟browser标记当生产认证。生产仍0036/只读/停应用/静态维护；旧attempt和unknown保留；新PR不合并，新的集中恢复另批。

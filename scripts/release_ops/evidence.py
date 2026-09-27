@@ -152,10 +152,12 @@ class Recorder:
         return {**redact(record), "evidence": str(path), "evidence_sha256": sha}
 
 
-def command(argv, *, remote=False, timeout=20, expect_json=True, cwd=None):
+def command(argv, *, remote=False, timeout=20, expect_json=True, cwd=None, env=None):
     """Run an already selected command; never print argv/env or invoke cleanup."""
     try:
-        run = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        run = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout, cwd=cwd, env=env
+        )
     except subprocess.TimeoutExpired as exc:
         return {
             "status": "INCONCLUSIVE",

@@ -137,6 +137,15 @@ jobs:
           DATABASE_URL="${DATABASE_ADMIN_URL}" uv run --frozen python -m scripts.seed_demo
           uv run --frozen python -m scripts.bootstrap_local_database
 
+      - name: Install isolated Compose 2.40.3 contract test binary
+        run: |
+          compose_binary="${RUNNER_TEMP}/m1-compose-2.40.3"
+          curl --fail --location --retry 2 https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-x86_64 --output "${compose_binary}"
+          echo "dba9d98e1ba5bfe11d88c99b9bd32fc4a0624a30fafe68eea34d61a3e42fd372  ${compose_binary}" | sha256sum --check
+          chmod 700 "${compose_binary}"
+          "${compose_binary}" version
+          echo "M1_COMPOSE_BINARY=${compose_binary}" >> "${GITHUB_ENV}"
+
       - name: Run backend tests
         run: uv run --frozen pytest -q
 
