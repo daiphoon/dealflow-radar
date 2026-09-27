@@ -1,11 +1,13 @@
 """Real Compose 2.40.3 config through the formal CLI; no daemon or GHCR needed."""
 
 import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -59,6 +61,10 @@ args=sys.argv[1:]
 assert args[0]=="compose" and (args[-1]=="version" or "config" in args), args
 with open(os.environ["M1_CONFIG_TRACE"], "a") as f: f.write(json.dumps(args)+"\n")
 r=subprocess.run([os.environ["M1_COMPOSE_BINARY"], *args[1:]],capture_output=True,text=True)
+if "config" in args and r.returncode==0:
+ d=json.loads(r.stdout)
+ with open(os.environ["M1_CONFIG_TRACE"]+".models", "a") as f:
+  f.write(json.dumps({"argv":args,"exit_code":r.returncode,"services":sorted(d["services"])})+"\n")
 fault=os.getenv("M1_CONFIG_FAULT")
 if "config" in args and fault=="command": sys.exit(17)
 if "config" in args and fault=="json": print("broken json"); sys.exit(0)
@@ -223,3 +229,34 @@ def test_real_compose_refuses_contract_breakage(compose_case, fault, expected):
     assert result["expected"] and result["actual"] and result["exception_type"] is not None
     first = Path(result["evidence"]).parent / "first-failure.json"
     assert json.loads(first.read_text())["status"] == expected
+
+
+def test_frozen_baseline_cli_reproduces_default_profile_incident(compose_case):
+    release, spec, env, invoke = compose_case
+    source = Path(__file__).resolve().parents[2]
+    legacy = Path(spec["root"]) / "legacy-ops"
+    legacy.mkdir()
+    raw = subprocess.check_output(
+        ["git", "archive", "f5a5a09908d8c3334204c4a6a6e365635c51c8d4", "scripts/release_ops"],
+        cwd=source,
+    )
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        for member in archive:
+            if member.isdir():
+                continue
+            assert member.isfile() and member.name.startswith("scripts/release_ops/")
+            assert Path(member.name).suffix == ".py"
+        archive.extractall(legacy, filter="data")
+    env.pop("COMPOSE_PROFILES", None)
+    # Actual frozen source, actual real config, actual formal -m CLI; no monkeypatch dispatch.
+    run, result, commands = invoke("legacy-default", cwd=legacy)
+    assert run.returncode == 2 and result["status"] == "CHECK_ERROR"
+    assert result["exception_type"] == "KeyError" and "safe-degrade-control" in result["actual"]
+    models = [
+        json.loads(line)
+        for line in Path(env["M1_CONFIG_TRACE"] + ".models").read_text().splitlines()
+    ]
+    assert models[-1]["exit_code"] == 0
+    assert models[-1]["services"] == ["api", "database", "frontend", "proxy"]
+    assert all("--profile" not in command for command in commands)
+    assert (release / "deploy/compose.safe-degrade.yml").is_file()

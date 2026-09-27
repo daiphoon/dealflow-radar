@@ -1081,4 +1081,4 @@
 
 - 关键文件：`release_ops/compose.py`、`actions.py`、`metadata.py`、归档/SSH `bridge.py`、只读 `host.py`、正式配置回归、同路径隔离测试、必要CI及运行说明；业务/migration/冻结部署配置不变。
 - 实际命令：官方Compose2.40.3校验安装；正式CLI失败回归；`pytest tests/unit/test_ops_release.py tests/unit/test_ops_bridge.py tests/integration/test_ops_compose_contract.py`；显式本机冻结镜像 `test_ops_release_compose.py`；Ruff/format、diff/private/Secret核对。完整Verify和最终候选现场只读证据见统一私有交付。
-- 结果/阻塞：修前真实KeyError被复现；修后配置回归通过，拒绝缺服务/错镜像/开启开关及检查器故障，SSH成功不覆盖检查器失败。同路径演练和最终head证据分别留存，不把模拟browser标记当生产认证。生产仍0036/只读/停应用/静态维护；旧attempt和unknown保留；新PR不合并，新的集中恢复另批。
+- 结果/阻塞：修前真实KeyError被复现，普通CI额外归档冻结基线并调用旧正式CLI复现默认profile事故；本机最终12项真实Compose回归通过；修后配置回归通过，拒绝缺服务/错镜像/开启开关及检查器故障，SSH成功不覆盖检查器失败。同路径演练和最终head证据分别留存，不把模拟browser标记当生产认证。生产仍0036/只读/停应用/静态维护；旧attempt和unknown保留；新PR不合并，新的集中恢复另批。

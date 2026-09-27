@@ -145,6 +145,7 @@ jobs:
           chmod 700 "${compose_binary}"
           "${compose_binary}" version
           echo "M1_COMPOSE_BINARY=${compose_binary}" >> "${GITHUB_ENV}"
+          git fetch --no-tags --depth=1 origin f5a5a09908d8c3334204c4a6a6e365635c51c8d4
 
       - name: Run backend tests
         run: uv run --frozen pytest -q
