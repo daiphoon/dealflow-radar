@@ -118,7 +118,12 @@ def test_frozen_images_isolated_ops_recovery(tmp_path):
         result = wait_ready(
             lambda timeout: internal_probe(replace(contract, timeout=timeout)),
             lambda i, f: rec.check(
-                f"{label}-{i}", "mac_local", contract.layer, contract.__dict__, "http", f
+                f"{label}-{i}",
+                "isolated_api_container",
+                contract.layer,
+                contract.__dict__,
+                "http",
+                f,
             ),
             deadline=90,
             max_attempts=30,
