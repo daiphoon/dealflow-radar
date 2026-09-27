@@ -21,7 +21,17 @@ def database(spec):
       'writable_tables',(SELECT count(*) FROM information_schema.tables
         WHERE table_schema='public' AND has_table_privilege('{role}',
         quote_ident(table_schema)||'.'||quote_ident(table_name),'INSERT,UPDATE,DELETE')),
-      'role_safe',(SELECT NOT rolsuper AND NOT rolbypassrls FROM pg_roles WHERE rolname='{role}'),
+      'role_safe',(SELECT NOT (rolsuper OR rolbypassrls OR rolcreatedb OR rolcreaterole
+                              OR rolreplication) FROM pg_roles WHERE rolname='{role}'),
+      'owned_relations',(SELECT count(*) FROM pg_class
+                        WHERE relowner=(SELECT oid FROM pg_roles WHERE rolname='{role}')),
+      'memberships',(SELECT count(*) FROM pg_auth_members
+                     WHERE member=(SELECT oid FROM pg_roles WHERE rolname='{role}')),
+      'migration_write',has_table_privilege('{role}','public.alembic_version','INSERT,UPDATE,DELETE'),
+      'critical_rls',(SELECT count(*)=4 AND bool_and(relrowsecurity) FROM pg_class c
+                      JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public'
+                      AND c.relname IN ('personal_report_requests','personal_company_reports',
+                                       'personal_watchlist_items','personal_event_view_receipts')),
       'active_refresh',(SELECT count(*) FROM refresh_jobs
         WHERE status IN ('pending','queued','running','leased')),
       'active_research',(SELECT count(*) FROM company_research_jobs
@@ -48,14 +58,24 @@ def database(spec):
     )
 
 
+def ordinary_role(actual):
+    return (
+        actual["role_safe"] is True
+        and actual["owned_relations"] == 0
+        and actual["memberships"] == 0
+        and actual["migration_write"] is False
+        and actual["critical_rls"] is True
+    )
+
+
 def evaluate_database(kind, actual, expected):
     if kind == "schema":
         good = actual["schema"] == "0036"
     elif kind == "role-readonly":
-        good = actual["role_safe"] is True and actual["writable_tables"] == 0
+        good = ordinary_role(actual) and actual["writable_tables"] == 0
     elif kind == "role-normal":
         # Exact previously reviewed counts, not merely "has some write permission".
-        good = actual["role_safe"] is True and all(actual[k] == v for k, v in expected.items())
+        good = ordinary_role(actual) and all(actual[k] == v for k, v in expected.items())
         good = good and {"writable_tables", "rls_tables"} <= set(expected)
     else:
         raise ValueError("unknown database metadata check")

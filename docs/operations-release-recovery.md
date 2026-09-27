@@ -37,7 +37,7 @@
 | 匿名拒绝 | 预期 401 或同站登录重定向；不跟随重定向 | 不读取 Cookie、不生成报告 |
 | 配置候选/实际采用 | `config-normal` 验候选 SHA；`config-static`/`config-normal-active` 验宿主文件、容器内 hash、只读挂载、进程参数、启动晚于文件 | 文件改了不等于进程已采用；admin off，不调用 reload 管理 API |
 | Compose 实际解析 | `compose-frozen` 验 normal/safe 两组实际 image、normal 关闭开关及冻结文件 SHA；完整展开只在内存，不输出 Secret | 停止中容器正确不能证明下一次启动的配置正确 |
-| 数据库/任务/开关 | `observe-metadata` 只读事务，0036、普通角色、RLS 数量、任务数、指定 Worker 状态和已审查关闭开关 | 不读取业务正文；normal 权限要求已审查的准确权限/RLS 基线 |
+| 数据库/任务/开关 | `observe-metadata` 只读事务，0036、普通角色、RLS 数量、任务数、指定 Worker 状态和已审查关闭开关 | 不读取业务正文；normal 权限要求已审查的准确权限/RLS 基线，且保留五项特权关闭、无自有表/角色继承、迁移表禁写及四张关键表 RLS |
 
 每个 JSON 证据包含 attempt/checkpoint、观察位置、容器 ID（不适用时 null）、UTC 开始/结束、耗时、预期/实际、命令类别、退出码与 SSH 远端退出码、脱敏异常、HTTP/传输分类、Location 去查询/片段、证据路径与 SHA。HTTP body 只记录大小、摘要和规则结果。SSH 255 的远端退出码未知，不能伪造 0。第一个失败和清理步骤分别保留，后者不覆盖前者；存储失败也保留原观察并返回 CHECK_ERROR。
 

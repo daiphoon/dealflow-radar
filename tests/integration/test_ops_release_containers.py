@@ -14,6 +14,7 @@ import pytest
 from scripts.release_ops.current import commit, prepare
 from scripts.release_ops.evidence import Recorder, package_sha256
 from scripts.release_ops.identity import verify_identity
+from scripts.release_ops.metadata import observe_metadata
 from scripts.release_ops.probes import Contract, wait_ready
 from scripts.release_ops.snapshot import observe_daemon
 
@@ -188,6 +189,14 @@ def test_frozen_images_isolated_ops_recovery(tmp_path):
         assert json.loads(control("python", "-m", "scripts.safe_degrade_database", "restrict"))[
             "read_only"
         ]
+        metadata_spec = {
+            "application_role": "equity_app",
+            "database_container": names["db"],
+            "database_user": "ops_owner",
+            "database_name": "ops_isolated",
+        }
+        readonly_proof = observe_metadata({**metadata_spec, "kind": "role-readonly"})
+        assert readonly_proof["status"] == "PASS", readonly_proof
         run(
             "api",
             API,
@@ -249,6 +258,14 @@ def test_frozen_images_isolated_ops_recovery(tmp_path):
             ),
         )
         control("python", "-m", "scripts.bootstrap_local_database")
+        normal_proof = observe_metadata(
+            {
+                **metadata_spec,
+                "kind": "role-normal",
+                "expected": {"writable_tables": 42, "rls_tables": 37},
+            }
+        )
+        assert normal_proof["status"] == "PASS", normal_proof
         root = tmp_path / "release-root"
         (root / "releases" / BUSINESS).mkdir(parents=True)
         old = root / "releases" / ("a" * 40)
@@ -299,6 +316,8 @@ def test_frozen_images_isolated_ops_recovery(tmp_path):
             "production_contacted": False,
             "reports_usage_requests_before_after": baseline,
             "identity_checks": 2,
+            "readonly_role": readonly_proof["actual"],
+            "normal_role": normal_proof["actual"],
             "normal_entry_continuous_successes": 2,
             "current_idempotent": True,
             "browser_report_signal": "synthetic-only; production browser acceptance still required",

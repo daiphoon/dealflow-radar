@@ -793,7 +793,16 @@ def test_pointer_interrupt_after_replace_is_read_back_without_second_formula(tmp
 def test_metadata_is_readonly_and_checks_exact_role_baseline():
     from scripts.release_ops.metadata import database, evaluate_database
 
-    actual = {"schema": "0036", "role_safe": True, "writable_tables": 0, "rls_tables": 42}
+    actual = {
+        "schema": "0036",
+        "role_safe": True,
+        "writable_tables": 0,
+        "rls_tables": 42,
+        "owned_relations": 0,
+        "memberships": 0,
+        "migration_write": False,
+        "critical_rls": True,
+    }
     assert evaluate_database("role-readonly", actual, {})["status"] == "PASS"
     assert evaluate_database("role-normal", actual, {})["status"] == "BLOCKED"
     assert evaluate_database("schema", {**actual, "schema": "0035"}, {})["status"] == "BLOCKED"
@@ -877,3 +886,34 @@ def test_cli_readiness_summary_is_a_durable_named_gate(tmp_path):
     assert persisted["checkpoint_id"] == "api-ready"
     assert persisted["continuous_successes"] == 2
     assert persisted["target_container_id"] == "synthetic-id"
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        {"owned_relations": 1},
+        {"memberships": 1},
+        {"migration_write": True},
+        {"critical_rls": False},
+    ],
+)
+def test_normal_role_keeps_existing_ownership_and_rls_gates(drift):
+    from scripts.release_ops.metadata import evaluate_database
+
+    actual = {
+        "schema": "0036",
+        "role_safe": True,
+        "writable_tables": 42,
+        "rls_tables": 37,
+        "owned_relations": 0,
+        "memberships": 0,
+        "migration_write": False,
+        "critical_rls": True,
+        **drift,
+    }
+    assert (
+        evaluate_database("role-normal", actual, {"writable_tables": 42, "rls_tables": 37})[
+            "status"
+        ]
+        == "BLOCKED"
+    )
