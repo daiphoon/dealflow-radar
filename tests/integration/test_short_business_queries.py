@@ -17,7 +17,7 @@ database = fallback.database
 research = fallback.research
 
 
-def test_new_job_freezes_both_queries_before_resume_and_fallback(research):
+def test_legacy_limited_job_keeps_both_frozen_queries_on_resume_and_fallback(research):
     r = research
     r.step()
     job = r.job()

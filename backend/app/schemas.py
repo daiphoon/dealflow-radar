@@ -322,6 +322,40 @@ class CategoryCoverageOut(BaseModel):
     gaps: list[str] = Field(default_factory=list)
 
 
+class ResearchCategoryCompletionOut(BaseModel):
+    category: EventType
+    planned: bool
+    status: Literal["completed", "partial", "failed", "budget_deferred", "not_run"]
+    last_attempt_at: datetime | None = None
+    last_successful_check_at: datetime | None = None
+    failure_class: (
+        Literal[
+            "source_unreachable",
+            "network_environment_blocked",
+            "robots_denied",
+            "dynamic_content_unavailable",
+            "budget_deferred",
+            "not_checked",
+        ]
+        | None
+    ) = None
+    source_acquisition_status: Literal[
+        "not_attempted",
+        "search_only",
+        "body_obtained",
+        "body_unavailable",
+        "no_qualified_results",
+    ]
+
+
+class ResearchCompletionOut(BaseModel):
+    version: str
+    scope: Literal["bounded_full_scope_refresh", "limited_scope_check"]
+    status: Literal["complete", "partial", "failed", "not_run"]
+    network_preflight_failed: bool
+    categories: list[ResearchCategoryCompletionOut]
+
+
 class ResearchResultOut(BaseModel):
     outcome: Literal["no_usable_evidence", "candidates_available"]
     finished_at: datetime | None
@@ -329,6 +363,7 @@ class ResearchResultOut(BaseModel):
     limitations: list[str]
     coverage_summary: list[str] = Field(default_factory=list)
     category_coverage: list[CategoryCoverageOut] = Field(default_factory=list)
+    completion: ResearchCompletionOut | None = None
 
 
 class CurrentCompanyContentOut(BaseModel):

@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.app import research_plan as planning
 from backend.app import web_research_service
 from backend.app.config import PersonalEntitlementPolicy, RefreshPolicy
 from backend.app.database import set_request_context
@@ -30,6 +31,7 @@ from backend.app.services import get_company_detail
 from backend.app.source_fetcher import TrustedSourceFetcher
 from backend.app.web_research_service import (
     SEARCH_GROUPS,
+    _initial_coverage,
     _store_search_response,
     run_web_research_worker_once,
 )
@@ -42,6 +44,27 @@ from backend.app.web_search import (
 from tests.integration import test_incremental_research as incremental
 
 database = incremental.database
+
+
+def legacy_limited_coverage(policy):
+    """重放已发布两主题任务；新的主动更新八类契约另由正式入口测试。"""
+    coverage = _initial_coverage(policy)
+    if policy.topic_planning_enabled:
+        assignments = planning.plan_topics([])
+        coverage["query_strategy_version"] = planning.VERSION
+        coverage["search_groups"] = {
+            code: {
+                "status": "pending",
+                "providers": {},
+                "topic_category": category,
+                "topic": planning.topic_terms(category, policy),
+            }
+            for code, category in assignments.items()
+        }
+        coverage["source_routes"] = planning.coverage_routes(
+            assignments, policy.primary_provider, policy.fallback_provider
+        )
+    return coverage
 
 
 def row(path):
@@ -64,6 +87,20 @@ def research(database, tmp_path, monkeypatch):
     with Session(database.app, expire_on_commit=False) as session:
         user, company = incremental.initial(session, tmp_path)
         request = create_refresh_request(session, user, PersonalEntitlementPolicy(), company.id)
+        user = incremental.curated.enter(session)
+        # 保存旧任务形状，验证升级后恢复不会改变已冻结的两主题查询或调用硬帽。
+        saved_job = CompanyResearchJob(
+            company_id=company.id,
+            created_by_user_id=user.id,
+            status="queued",
+            current_stage=f"search:{SEARCH_GROUPS[0][0]}",
+            policy_version=incremental.POLICY.version,
+            coverage=legacy_limited_coverage(incremental.POLICY),
+        )
+        session.add(saved_job)
+        session.flush()
+        session.get(PersonalCompanyRequest, request.id).research_job_id = saved_job.id
+        session.commit()
         user = incremental.curated.enter(session)
         subject = load_subject(session, company)
         queries = [short_business_query(subject, topic) for topic in SHORT_SEARCH_TOPICS.values()]

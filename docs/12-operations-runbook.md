@@ -2,6 +2,21 @@
 
 当前已有可本地运行的 Demo、已验收的 M5A 生产构件和腾讯云中国香港 M5B 邀请测试环境。香港环境已完成 HTTPS、端口收口、四类账户、主机重启、COS 加密备份下载与隔离恢复；本手册继续保留可重复部署和告警接线步骤。
 
+## M2-R 研究执行环境预检
+
+先在拟用 Runner 检查能力，不能仅凭网站健康或普通 curl 放行研究。以下独立入口不创建应用、Provider 或数据库连接：
+
+```bash
+python -m scripts.research_network_preflight
+python -m scripts.research_network_preflight --execute
+```
+
+缺省 dry-run 仅显示固定 HTTPS 目标及硬帽；execute 最多 12 次免费 HTTP/256KB，退出 0 为 `research_network_ready`，退出 2 为未通过。需要正常验证 TLS、所有解析地址、connected peer、rebinding、逐跳 URL/robots。失败元数据用于运维，不能原样展示给用户。
+
+当前 Mac/Docker 的 `198.18/15` 形态会在 HTTP 前拒绝，适合继续 Mock/离线开发；不能开 `allow_private_test_hosts`、改 hosts 或降低 SSRF 来制造通过。香港必须运行相同候选代码与正式 Fetcher；只有实际通过才可记录 `HONG_KONG_RESEARCH_NETWORK_READY`。该状态不授权 Worker、生产数据库、用户或真实 Provider。
+
+真实任务同样在计量前验证，成功只在同一进程复用五分钟。未开始/环境失败、部分完成、预算延期与完整有限检查无达标事项分别交付；八类完成时间不能从已有事件倒推。主动更新默认预算没有增加，完整执行条件及限制见 [ADR-0028](DECISIONS/ADR-0028-bounded-research-completion.md)。正式研究和生产开关仍需要独立授权。
+
 ## E3 关注公司低频检查（默认关闭）
 
 本节为操作说明，不表示已安装定时任务或已获真实运行授权；完整范围见 [E3 固定切片](15-incremental-event-delivery-plan.md#e3-固定切片与停止边界)。需先在目标环境按常规迁移流程应用 `0031`，配置活跃平台管理员的 `WEB_RESEARCH_WORKER_USER_ID`、`WORKER_TENANT_ID` 及非 owner 数据库角色。

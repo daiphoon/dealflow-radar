@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-09-29：M2-R 网络能力与如实交付候选
+
+- 任务/关键文件：`research_network.py` / `source_fetcher.py`、`research_completion.py` / 研究与巡检投影、`personal_features.py` / lead 许可及 v4 报告、页面状态；[ADR-0028](DECISIONS/ADR-0028-bounded-research-completion.md) 与 [交付说明 24](24-m2-r-truthful-delivery.md)。不改历史迁移或旧实验回执，不提高默认调用上限。
+- 实际命令：行为失败回归后定向 pytest；全新虚构 PostgreSQL 16 和非 owner/RLS 的完整 `pytest -q`；`ruff check/format --check`、SQLite upgrade/check/downgrade、PostgreSQL check；`npm test/typecheck/build`；四套 production/safe/diagnostic Compose config、独立本机 amd64 API/frontend 构建；Gitleaks 候选树与私有路径扫描。旧 C 备份只恢复至新增本机隔离库，挂入封存 B 终态后走报告 API；香港只读短命容器运行同候选网络预检并清理。
+- 验证：完整后端 1386 通过/48 条件跳过、前端 35 通过及类型/构建；报告矩阵 30、离线维护 14、网络 26、完成投影 18 均通过（已计入全套，不累加）。正式预检 Mac/Docker HTTP 0，香港 HTTPS 6/60,188 字节且 TLS/peer 6/6；Provider/模型/生产连接 0。旧 C 的 42 表恢复内容一致，离线报告期间 39 表完整内容摘要不变。复用测试库的遗留夹具失败及回放脚本顺序/映射预期错误均保留；改用新隔离库及正确冻结顺序验证，没有改测试门槛或旧数据。
+- 阻塞/边界：本地条件跳过及 pinned Compose/冻结镜像 CI 分支另列；远端 Verify 以独立 PR 实际 head 为准。待核表没有单靠说明自动确认入口，跨阶段人工记录 ID 不冒充自动事项归并。上一轮 M2 `PARTIAL / FAIL`、`0/8` 不变；候选未合并/部署，没有新留出或真实研究、生产写入、自动巡检、MCP/隧道。
+
 ## 2026-09-26：PR #103 合并与 M1-SafeDegrade 本地演练
 
 - 任务/关键文件：严格核对 head/base/required Verify/mergeable 后普通合并 [PR #103](https://github.com/daiphoon/dealflow-radar/pull/103) 为 `e1fbfcd6f6c039a6834d426840c3bf38abeced05`，tree `7bb70e6dc238f9a5a8a122458a9833309dceaeca`；M1 只读控制见 `deploy/Caddyfile.safe-degrade`、`deploy/compose.safe-degrade.yml`、`scripts/safe_degrade_database.py`、`tests/integration/test_m1_safe_degrade.py` 与 [统一就绪报告 22](22-m1-safe-degrade-release-readiness.md)。

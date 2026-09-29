@@ -336,7 +336,7 @@ def test_dns_private_address_and_rebinding_are_rejected() -> None:
             retention_policy="metadata_only",
             conditional_state={},
         )
-    assert rebound_error.value.code == "blocked_network"
+    assert rebound_error.value.code == "dns_rebinding_detected"
     assert rebound_fetcher.request_count == 2
 
 

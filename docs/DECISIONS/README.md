@@ -28,6 +28,8 @@
 | [ADR-0024](ADR-0024-research-acquisition-and-extraction-evaluation.md) | 先比较专业搜索、正文获取与有证据约束的抽取，再按实测完成事项维护闭环；不全量盲换供应商 |
 | [ADR-0025](ADR-0025-matter-reliability-contract.md) | 资料到公司事项的证据、独立校验、事项身份比较、观测版本及历史/未知日期保留契约；仅本地工程授权 |
 | [ADR-0026](ADR-0026-delivery-loop-time-and-outcomes.md) | 动作时间分槽、阶段关联、任务意图、部分结果终态和请求内批量读取；保留权限及付费边界 |
+| [ADR-0027](ADR-0027-integrated-diagnostics-and-semantic-delivery.md) | 有效内容版本、历史回执基线、报告复用和远程诊断权限边界 |
+| [ADR-0028](ADR-0028-bounded-research-completion.md) | 计量前网络预检、八类完成状态和如实报告；既有预算与安全规则保持 |
 
 当前有效决策适用于 `DEMO / VALIDATION`。ADR-0014 取代 ADR-0013 的短期地域与备案主体路线；ADR-0018 取代 ADR-0010，并部分取代 ADR-0015、ADR-0016 的供应商专用实现方向，仍保留其通用队列、缓存、取消恢复和证据分层原则。历史理由不回改。
 

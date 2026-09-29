@@ -66,3 +66,28 @@ def report_evidence_permission(session, evidence, *, withdrawn_fact=False):
             == "demo-evidence-v1"
         )
     return evidence.display_license_status in {"public", "permission_confirmed"}
+
+
+def report_lead_permission(session, user, event, evidence):
+    """线索仍是线索；只允许共享合法来源或本人的人工整理资料，不扩大机构权限。"""
+    if event.status != "candidate" or event.publication_route != "unconfirmed_lead":
+        return False
+    if _shared(event):
+        return report_evidence_permission(session, evidence)
+    document, source = _document_source(session, evidence)
+    return (
+        all(
+            row is not None
+            and row.visibility_scope == "personal_private"
+            and row.owner_user_id == user.id
+            and row.owner_tenant_id is None
+            for row in (event, evidence, document)
+        )
+        and source is not None
+        and (
+            source.code.startswith("curated_")
+            and document.payload.get("curated_record")
+            and source.license_status == document.license_status == "public"
+            and evidence.display_license_status in {None, "public", "permission_confirmed"}
+        )
+    )

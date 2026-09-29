@@ -3640,13 +3640,18 @@ def get_company_detail(
             PersonalCompanyRequest.owner_user_id == user.id,
             PersonalCompanyRequest.company_id == company_id,
             CompanyResearchJob.company_id == company_id,
-            PersonalCompanyRequest.status.in_(["completed", "failed"]),
-            or_(
-                CompanyResearchJob.status == "completed",
-                and_(
-                    CompanyResearchJob.status == "failed",
-                    CompanyResearchJob.coverage["completion_status"].as_string() == "partial",
-                ),
+            PersonalCompanyRequest.status.in_(
+                [
+                    "research_queued",
+                    "researching",
+                    "partial",
+                    "completed",
+                    "failed",
+                    "budget_deferred",
+                ]
+            ),
+            CompanyResearchJob.status.in_(
+                ["queued", "running", "partial", "completed", "failed", "budget_deferred"]
             ),
         )
         .order_by(PersonalCompanyRequest.created_at.desc(), PersonalCompanyRequest.id.desc())

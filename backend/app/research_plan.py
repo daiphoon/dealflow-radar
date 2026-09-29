@@ -1,7 +1,6 @@
 """可回放的主题计划和正文调度；不调用 Provider，不读取盲测答案。"""
 
 import re
-from datetime import datetime
 from urllib.parse import urlsplit
 
 VERSION = "topic-research-v1"
@@ -67,6 +66,12 @@ def plan_topics(histories):
                 last_attempt[category] = sequence
     order = sorted(TOPICS, key=lambda category: last_attempt.get(category, -1))
     return dict(zip(GROUPS, order[: len(GROUPS)]))
+
+
+def full_scope_topics(histories):
+    first = list(plan_topics(histories).values())
+    order = [*first, *[category for category in TOPICS if category not in first]]
+    return dict(zip([*GROUPS, *[f"scope_{c}" for c in order[2:]]], order))
 
 
 def directory_page(url):
@@ -188,56 +193,16 @@ def recovery_terms(category, candidates):
 
 def successful_topic_checks(histories):
     """只使用完整主题检查的原时间；部分读取、失败和缓存命中不重置保鲜期。"""
+    from backend.app.research_completion import completion_projection
+
     checks = {}
     for coverage in histories:
-        if not planned(coverage):
+        if not planned(coverage) and not coverage.get("source_routes"):
             continue
-        docs = coverage.get("documents", [])
-        for group in coverage.get("search_groups", {}).values():
-            category = group.get("topic_category")
-            if category not in TOPICS or group.get("status") != "completed":
-                continue
-            if group.get("coverage_scope") == "intent_only":
-                # 一个子问题完成不能刷新整个融资/退出大类的完成时间。
-                continue
-            if not any(
-                s.get("status") in {"completed", "cache_hit", "cache_fused"}
-                for s in group.get("providers", {}).values()
-            ):
-                continue
-            candidates = [
-                c
-                for c in coverage.get("candidates", [])
-                if c.get("coverage_category") == category and not directory_page(c["url"])
-            ]
-            if any(
-                c.get("coverage_category") == category
-                for c in coverage.get("deferred_candidates", [])
-            ):
-                continue
-            relevant_docs = [
-                d
-                for d in docs
-                if category in document_categories(d) or category in d.get("searched_topics", [])
-            ]
-            if any(d.get("status") == "failed" for d in relevant_docs):
-                continue
-            eligible = {d["url"]: d for d in relevant_docs if checked_document(d)}
-            if any(c["url"] not in eligible for c in candidates):
-                continue
-            if not eligible and group.get("subject_results") != 0:
-                continue
-            values = [group.get("checked_at"), *[d.get("checked_at") for d in eligible.values()]]
-            dates = []
-            for value in values:
-                try:
-                    parsed = datetime.fromisoformat(str(value))
-                    if parsed.tzinfo:
-                        dates.append(parsed)
-                except ValueError:
-                    pass
-            if len(dates) == len(values):
-                checked = min(dates)
+        for row in completion_projection(coverage)["categories"]:
+            checked = row["last_successful_check_at"]
+            if checked is not None:
+                category = row["category"]
                 checks[category] = max(checks.get(category, checked), checked)
     return checks
 

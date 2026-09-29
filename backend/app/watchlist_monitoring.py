@@ -1,6 +1,6 @@
 """Bounded public checks for watched companies; personal ownership stays private."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, timedelta
 
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -14,7 +14,9 @@ from backend.app.models import (
     User,
     utc_now,
 )
-from backend.app.research_coverage import SEARCH_GROUP_MODULES, SUCCESSFUL_SEARCHES
+from backend.app.research_completion import completion_projection
+from backend.app.research_coverage import SEARCH_GROUP_MODULES
+from backend.app.research_plan import successful_topic_checks
 from backend.app.services import user_has_role
 
 GROUP = "business_capital"
@@ -174,6 +176,21 @@ def queue_due_watch_checks(session, user, web_policy, *, dry_run=True, now=None)
             category: route if category in CATEGORIES else None
             for category, route in coverage["source_routes"].items()
         }
+        histories = session.scalars(
+            select(CompanyResearchJob)
+            .where(
+                CompanyResearchJob.company_id == company_id,
+                CompanyResearchJob.status.in_(["completed", "failed", "cancelled"]),
+            )
+            .order_by(CompanyResearchJob.created_at.desc())
+            .limit(32)
+        ).all()
+        coverage["previous_successful_checks"] = {
+            category: checked.isoformat()
+            for category, checked in successful_topic_checks(
+                [j.coverage for j in histories]
+            ).items()
+        }
         coverage["semantic_before"] = company_semantic_version(session, user, company_id)
         coverage["watchlist_monitor"] = {
             "version": policy.version,
@@ -223,23 +240,20 @@ def record_outcome(session, user, job, policy, *, commit=True):
         return
     current = utc_now()
     coverage = job.coverage or {}
-    group = coverage.get("search_groups", {}).get(GROUP, {})
-    documents = coverage.get("documents", [])
-    checked = group.get("checked_at")
-    try:
-        checked = datetime.fromisoformat(checked) if checked else None
-    except (ValueError, TypeError):
-        checked = None
+    rows = [
+        row
+        for row in completion_projection(coverage)["categories"]
+        if row["category"] in CATEGORIES
+    ]
+    checked = (
+        min(row["last_successful_check_at"] for row in rows)
+        if len(rows) == len(CATEGORIES)
+        and all(row["status"] == "completed" and row["last_successful_check_at"] for row in rows)
+        else None
+    )
     successful = (
         job.status == "completed"
-        and group.get("status") == "completed"
         and checked is not None
-        and checked.tzinfo is not None
-        and any(
-            item.get("status") in SUCCESSFUL_SEARCHES
-            for item in group.get("providers", {}).values()
-        )
-        and not any(item.get("status") == "failed" for item in documents)
         and int(coverage.get("candidate_index", 0)) >= len(coverage.get("candidates", []))
         and coverage.get("stop_reason") is None
     )

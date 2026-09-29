@@ -320,7 +320,7 @@ def test_worker_result_lost_after_external_success_is_not_replayed(database, mon
         session.commit()
         set_request_context(session, admin.id, admin.tenant_id)
         result = run_web_research_worker_once(session, admin, providers, WebResearchPolicy())
-        assert result.status == "completed"
+        assert result.status == "failed"
         set_request_context(session, admin.id, admin.tenant_id)
         assert (
             session.get(CompanyResearchJob, job_id).coverage["stop_reason"]

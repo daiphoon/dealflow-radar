@@ -360,13 +360,16 @@ def test_worker_reads_late_alias_body_continues_after_captcha_and_keeps_baseline
             )
             if result.status in {"completed", "failed", "budget_deferred"}:
                 break
-        assert result.status == "completed"
+        # 正文与基线保护仍应通过，但两类结果不能把新八类计划标成完整。
+        assert result.status == "failed"
         user = curated.enter(session)
         job = session.get(
             CompanyResearchJob, session.get(PersonalCompanyRequest, request.id).research_job_id
         )
-        assert job.coverage["query_strategy_version"] == SHORT_QUERY_STRATEGY_VERSION
-        assert len(primary.calls) == 2 and not fallback.calls, job.coverage["documents"]
+        assert job.coverage["query_strategy_version"] == "topic-research-v1"
+        assert job.coverage["completion"]["status"] == "partial"
+        assert len(job.coverage["completion"]["categories"]) == 8
+        assert len(primary.calls) + len(fallback.calls) == POLICY.max_search_calls_per_job
         assert "/blocked" in seen and "/article" in seen
         assert any(d.get("error_code") == "captcha_required" for d in job.coverage["documents"])
         assert job.coverage["stats"]["events_created"] == 1

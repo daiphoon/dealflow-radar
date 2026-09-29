@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from backend.app.models import CompanyResearchJob
+from backend.app.research_completion import completion_projection
 from backend.app.research_coverage import COVERAGE_VERSION, category_coverage
 from backend.app.schemas import ResearchResultOut
 
@@ -11,14 +12,13 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
     """Return allowlisted result metadata, never private URLs, excerpts or owner details."""
     if (
         job is None
-        or (
-            job.status != "completed"
-            and not (job.status == "failed" and job.coverage.get("completion_status") == "partial")
-        )
+        or job.status
+        not in {"queued", "running", "partial", "completed", "failed", "budget_deferred"}
         or not job.policy_version.startswith("bounded-web-")
     ):
         return None
     coverage = job.coverage
+    completion = completion_projection(coverage)
     stats = coverage.get("stats", {})
     passed = stats.get("quality_gate_passed", 0) if isinstance(stats, dict) else 0
     usable = isinstance(passed, int) and passed > 0
@@ -95,11 +95,20 @@ def research_result(job: CompanyResearchJob | None) -> ResearchResultOut | None:
         outcome="candidates_available" if usable else "no_usable_evidence",
         finished_at=finished_at,
         message=(
-            "本轮查询已结束，取得有原文支持的未确认事项；不等于人工确认或资料已查全。"
-            if usable
-            else "本轮查询已结束，暂未取得可展示的变化证据；不代表公司没有重要变化。"
+            "本次研究尚未开始：环境预检失败，未检查各类事项；已有资料仍可读取。"
+            if completion["network_preflight_failed"] and completion["status"] == "not_run"
+            else "本次研究中断：环境预检失败，未完成范围已保留，已产生的用量不作零用量。"
+            if completion["network_preflight_failed"]
+            else "本次研究未完成，部分范围未检查或读取失败；不代表公司没有重要变化。"
+            if completion["status"] != "complete"
+            else (
+                "本轮查询已结束，取得有原文支持的未确认事项；不等于人工确认或资料已查全。"
+                if usable
+                else "本轮查询已结束，暂未取得可展示的变化证据；不代表公司没有重要变化。"
+            )
         ),
         limitations=limitations,
         coverage_summary=coverage_summary,
         category_coverage=category_coverage(coverage),
+        completion=completion,
     )

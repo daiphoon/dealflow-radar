@@ -28,7 +28,8 @@ pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
   "external: 需要显式授权的外部集成测试",
-  "postgres: 需要显式提供本地 PostgreSQL 测试数据库",
+    "postgres: 需要显式提供本地 PostgreSQL 测试数据库",
+    "network_gate: 调用正式网络闸门，底层 DNS/HTTP 必须使用 Mock",
 ]
 
 [tool.ruff]

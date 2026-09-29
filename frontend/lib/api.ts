@@ -336,6 +336,19 @@ export type CategoryCoverage = {
   gaps: string[];
 };
 
+export type ResearchCompletion = {
+  version: string;
+  scope: "bounded_full_scope_refresh" | "limited_scope_check";
+  status: "complete" | "partial" | "failed" | "not_run";
+  network_preflight_failed: boolean;
+  categories: {
+    category: string; planned: boolean;
+    status: "completed" | "partial" | "failed" | "budget_deferred" | "not_run";
+    last_attempt_at: string | null; last_successful_check_at: string | null;
+    failure_class: string | null; source_acquisition_status: string;
+  }[];
+};
+
 export type ResearchResult = {
   outcome: "no_usable_evidence" | "candidates_available";
   finished_at: string | null;
@@ -343,6 +356,7 @@ export type ResearchResult = {
   limitations: string[];
   coverage_summary?: string[];
   category_coverage?: CategoryCoverage[];
+  completion?: ResearchCompletion | null;
 };
 
 export type CompanyDetail = {

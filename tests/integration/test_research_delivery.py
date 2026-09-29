@@ -241,12 +241,13 @@ def test_topic_worker_reads_financing_and_ipo_before_high_rank_homepage(database
                 POLICY,
                 fetcher_factory=factory,
             )
-            if result.status == "completed":
+            if result.status in {"completed", "failed", "budget_deferred"}:
                 break
-        assert result.status == "completed"
+        assert result.status == "failed"
         assert [path for path in seen if path != "/robots.txt"][:2] == ["/financing", "/ipo"]
         user = curated.enter(session)
         job = session.get(CompanyResearchJob, result.job_id)
+        assert job.coverage["completion"]["status"] == "partial"
         assert job.coverage["query_strategy_version"] == VERSION
         assert job.coverage["stats"]["fetch_calls"] <= 8
         assert job.coverage["stats"]["search_calls"] <= 4

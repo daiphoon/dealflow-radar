@@ -782,7 +782,7 @@ export default async function CompanyDetailPage({
               </p>
               <p>当次任务结束时间：{formatDate(company.personal_research_result.finished_at, true)}</p>
               <p>{company.personal_research_result.message}</p>
-              <ResearchCoverage items={company.personal_research_result.category_coverage} />
+              <ResearchCoverage items={company.personal_research_result.category_coverage} completion={company.personal_research_result.completion} />
               {company.personal_research_result.limitations.length > 0 ? (
                 <ul>
                   {company.personal_research_result.limitations.map((item) => <li key={item}>{item}</li>)}

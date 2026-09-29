@@ -33,7 +33,7 @@ from backend.app.models import (
 )
 from backend.app.personal_features import create_refresh_request
 from backend.app.research_matters import VERSION, digest
-from backend.app.research_plan import TOPICS, topic_terms
+from backend.app.research_plan import TOPICS
 from backend.app.research_subject import load_subject, short_business_query
 from backend.app.services import get_company_detail
 from backend.app.source_fetcher import DiscoveredDocument
@@ -268,10 +268,7 @@ def test_worker_cached_professional_body_model_budget_and_restart(
         )
         primary = MockSearchProvider(
             "tavily",
-            {
-                short_business_query(subject, topic_terms(t, POLICY)): [row]
-                for t in list(TOPICS)[:2]
-            },
+            {short_business_query(subject, TOPICS[t]): [row] for t in list(TOPICS)[:2]},
         )
         costs = WebResearchCostPolicy(
             tavily_extract_price_per_call=Decimal("0"),
@@ -318,15 +315,16 @@ def test_worker_cached_professional_body_model_budget_and_restart(
                 document_provider=documents,
                 fetcher_factory=lambda _: pytest.fail("must reuse acquired body"),
             )
-            if result.status in {"completed", "budget_deferred"}:
+            if result.status in {"completed", "failed", "budget_deferred"}:
                 break
         assert documents.calls == int(not cached_body)
         assert model.calls == 1
         assert result.to_dict()["input_tokens"] == (None if failure else 100)
         assert result.to_dict()["output_tokens"] == (None if failure else 10)
-        assert result.status == ("budget_deferred" if failure else "completed")
+        assert result.status == ("budget_deferred" if failure else "failed")
         user = curated.enter(session)
         job = session.get(CompanyResearchJob, result.job_id)
+        assert job.coverage["completion"]["status"] == "partial"
         rows = list(
             session.scalars(select(UsageLedger).where(UsageLedger.operation == "matter_extraction"))
         )

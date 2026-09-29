@@ -14,6 +14,8 @@ research = fallback.research
 def test_topic_recovery_uses_discovered_round_once_and_reads_replacement(research):
     r = research
     r.policy = replace(r.policy, topic_planning_enabled=True)
+    r.job().coverage = fallback.legacy_limited_coverage(r.policy)
+    r.session.commit()
     r.queries = [short_business_query(r.subject, topic) for topic in list(TOPICS.values())[:2]]
     r.primary = MockSearchProvider(
         "baidu",
@@ -44,6 +46,8 @@ def test_topic_recovery_uses_discovered_round_once_and_reads_replacement(researc
 def test_full_candidate_queue_keeps_replacement_and_defers_unread_lower_priority(research):
     r = research
     r.policy = replace(r.policy, topic_planning_enabled=True)
+    r.job().coverage = fallback.legacy_limited_coverage(r.policy)
+    r.session.commit()
     queries = [short_business_query(r.subject, topic) for topic in list(TOPICS.values())[:2]]
     unrelated = [
         replace(
