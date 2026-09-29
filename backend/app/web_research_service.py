@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select
@@ -33,6 +33,7 @@ from backend.app.models import (
     EventEvidence,
     IdentityResearchState,
     PersonalCompanyRequest,
+    PersonalUsageRecord,
     RawDocument,
     Source,
     UsageLedger,
@@ -40,6 +41,7 @@ from backend.app.models import (
     WebSearchCacheEntry,
     utc_now,
 )
+from backend.app.research_completion import stored_completion
 from backend.app.research_coverage import (
     COVERAGE_VERSION,
     RESEARCH_MODULES,
@@ -50,6 +52,7 @@ from backend.app.research_coverage import (
     category_coverage,
     source_routes,
 )
+from backend.app.research_network import fetch_failure_metadata, run_research_network_preflight
 from backend.app.research_subject import (
     QUERY_STRATEGY_VERSION,
     SHORT_QUERY_STRATEGY_VERSION,
@@ -82,6 +85,7 @@ CONTENT_QUALITY_GATE_VERSION = RESEARCH_CANDIDATE_POLICY_VERSION
 EVIDENCE_ROUTING_VERSION = "compliant-evidence-routing-v1"
 ACTIVE_JOB_STATUSES = ("queued", "running", "partial", "budget_deferred")
 ACTIVE_REQUEST_STATUSES = ("research_queued", "researching", "partial", "budget_deferred")
+_NETWORK_RUNTIME = uuid4().hex
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_NAMES = {"from", "spm"}
 BLOCKED_DISCOVERY_DOMAINS = {
@@ -511,6 +515,7 @@ def _initial_coverage(policy: WebResearchPolicy, *, watchlist: bool = False) -> 
     short_topics = policy.incremental_research_enabled and not watchlist
     return {
         "research_intent": "discovery",
+        "research_scope": "limited_scope_check",
         "reference_at": utc_now().isoformat(),
         "event_window_days": policy.recent_change_window_days,
         "policy_version": policy.version,
@@ -605,7 +610,11 @@ def prepare_pending_research_requests(
             continue
         if job is None:
             coverage = _initial_coverage(policy)
-            if policy.topic_planning_enabled and policy.incremental_research_enabled:
+            if request.request_type == "refresh":
+                coverage["research_scope"] = "bounded_full_scope_refresh"
+            if policy.incremental_research_enabled and (
+                request.request_type == "refresh" or policy.topic_planning_enabled
+            ):
                 histories = session.scalars(
                     select(CompanyResearchJob)
                     .where(
@@ -617,9 +626,7 @@ def prepare_pending_research_requests(
                 ).all()
                 # 在管理员 Worker 内跨申请复用检查，普通查询不扩大任务表读取权限。
                 latest = histories[0] if histories else None
-                checks = planning.successful_topic_checks(
-                    [j.coverage for j in histories if j.status == "completed"]
-                )
+                checks = planning.successful_topic_checks([j.coverage for j in histories])
                 fresh = set(checks) == set(planning.TOPICS) and all(
                     checked + timedelta(days=policy.company_check_ttl_days) > utc_now()
                     for checked in checks.values()
@@ -635,7 +642,24 @@ def prepare_pending_research_requests(
                     request.leased_until = None
                     prepared += 1
                     continue
-                assignments = planning.plan_topics([j.coverage for j in reversed(histories)])
+                full_scope = request.request_type == "refresh"
+                assignments = (
+                    planning.full_scope_topics([j.coverage for j in reversed(histories)])
+                    if full_scope
+                    else planning.plan_topics([j.coverage for j in reversed(histories)])
+                )
+                if full_scope and not policy.topic_planning_enabled:
+                    categories = ["financing_cap_table", "product_technology"]
+                    order = [*categories, *[c for c in planning.TOPICS if c not in categories]]
+                    assignments = dict(
+                        zip([*planning.GROUPS, *[f"scope_{c}" for c in order[2:]]], order)
+                    )
+                coverage["research_scope"] = (
+                    "bounded_full_scope_refresh" if full_scope else "limited_scope_check"
+                )
+                coverage["previous_successful_checks"] = {
+                    category: checked.isoformat() for category, checked in checks.items()
+                }
                 coverage["query_strategy_version"] = planning.VERSION
                 coverage["source_routes"] = planning.coverage_routes(
                     assignments, policy.primary_provider, policy.fallback_provider
@@ -645,12 +669,24 @@ def prepare_pending_research_requests(
                         "status": "pending",
                         "providers": {},
                         "topic_category": category,
-                        "topic": planning.topic_terms(category, policy),
+                        "topic": (
+                            SHORT_SEARCH_TOPICS[code]
+                            if full_scope
+                            and not policy.topic_planning_enabled
+                            and code in SHORT_SEARCH_TOPICS
+                            else planning.TOPICS[category]
+                            if full_scope
+                            else planning.topic_terms(category, policy)
+                        ),
+                        "coverage_scope": "bounded_category"
+                        if full_scope
+                        and (policy.topic_planning_enabled or code not in SHORT_SEARCH_TOPICS)
+                        else "intent_only",
                         **(
                             planning.plan_intent(
                                 category, [j.coverage for j in reversed(histories)]
                             )
-                            if policy.matter_processing_enabled
+                            if policy.matter_processing_enabled and not full_scope
                             else {}
                         ),
                     }
@@ -669,7 +705,7 @@ def prepare_pending_research_requests(
                 company_id=company.id,
                 created_by_user_id=request.owner_user_id,
                 status="queued",
-                current_stage=f"search:{SEARCH_GROUPS[0][0]}",
+                current_stage=f"search:{next(iter(coverage['search_groups']))}",
                 policy_version=policy.version,
                 coverage=coverage,
             )
@@ -1464,7 +1500,11 @@ def _process_search_group(
         if primary_failure_code is not None
         else "insufficient_qualified_subject_results"
     )
-    if primary_qualified_results < policy.fallback_min_subject_results:
+    if (
+        primary_qualified_results < policy.fallback_min_subject_results
+        and int(job.coverage.get("stats", {}).get("search_calls", 0))
+        < policy.max_search_calls_per_job
+    ):
         try:
             response, cached = _provider_response(
                 session,
@@ -1499,6 +1539,8 @@ def _process_search_group(
                 "http_status": error.http_status,
                 "reason": fallback_reason,
             }
+    elif primary_qualified_results < policy.fallback_min_subject_results:
+        provider_state[fallback.code] = {"status": "budget_deferred", "reason": "task_call_limit"}
     else:
         cached_fallback = _cached_response(
             session,
@@ -1596,7 +1638,7 @@ def _process_search_group(
     )
     groups[group_code] = {
         **groups.get(group_code, {}),
-        "status": "completed",
+        "status": "completed" if successful_providers else "failed",
         "query_text": query,
         "providers": provider_state,
         "attempted_at": utc_now().isoformat(),
@@ -1680,14 +1722,8 @@ def _process_search_group(
         ]
     coverage["candidates"] = candidates[: policy.max_candidate_urls]
     job.coverage = coverage
-    group_codes = (
-        [monitoring.GROUP]
-        if job.trigger_type == "watchlist"
-        else [code for code, _ in SEARCH_GROUPS]
-    )
-    next_groups = [
-        code for code in group_codes if groups.get(code, {}).get("status") != "completed"
-    ]
+    group_codes = list(groups)
+    next_groups = [code for code in group_codes if groups.get(code, {}).get("status") == "pending"]
     job.current_stage = f"search:{next_groups[0]}" if next_groups else "fetch"
     job.status = "partial"
     job.leased_until = None
@@ -1733,7 +1769,7 @@ def _readability_fallback_group(
     ):
         return None
     documents = {item["url"]: item for item in coverage.get("documents", [])}
-    for code, _ in SEARCH_GROUPS:
+    for code in coverage.get("search_groups", {}):
         group = coverage.get("search_groups", {}).get(code, {})
         providers = group.get("providers", {})
         if providers.get(policy.fallback_provider, {}).get("status") != "not_called":
@@ -1777,7 +1813,9 @@ def _process_readability_fallback(session, user, job, company, policy, providers
         return _finalize(session, job)
     provider = providers[policy.fallback_provider]
     query = job.coverage["search_groups"][group_code].get("query_text") or _query_for(
-        company, dict(SEARCH_GROUPS)[group_code]
+        company,
+        job.coverage.get("search_groups", {}).get(group_code, {}).get("topic")
+        or dict(SEARCH_GROUPS)[group_code],
     )
     if planning.planned(job.coverage):
         coverage = dict(job.coverage)
@@ -3158,6 +3196,7 @@ def _fetch_candidate(
     error_code: str | None = None
     http_status: int | None = None
     transport_failures = []
+    fetch_request_log = []
     usage = None
     fetch_accounted = False
     if cached_document is not None:
@@ -3424,6 +3463,7 @@ def _fetch_candidate(
                     if row.get("error_type")
                 ]
             finally:
+                fetch_request_log = list(getattr(fetcher, "request_log", []))
                 fetcher.close()
         if not fetch_accounted:
             job.external_calls += fetch_calls
@@ -3437,6 +3477,16 @@ def _fetch_candidate(
                     "error_code": error_code,
                     "downloaded_bytes": downloaded_bytes,
                     "transport_failures": transport_failures,
+                    "failure_metadata": fetch_failure_metadata(
+                        url,
+                        candidate.get("coverage_category"),
+                        error_code,
+                        fetch_request_log,
+                        fetch_calls,
+                        http_status,
+                    )
+                    if error_code
+                    else None,
                 },
             )
         if error_code is not None:
@@ -3467,6 +3517,14 @@ def _fetch_candidate(
                     "source_access_status": candidate["source_access_status"],
                     "http_status": http_status,
                     "transport_failures": transport_failures,
+                    "failure_metadata": fetch_failure_metadata(
+                        url,
+                        candidate.get("coverage_category"),
+                        error_code,
+                        fetch_request_log,
+                        fetch_calls,
+                        http_status,
+                    ),
                     "coverage_category": candidate.get("coverage_category"),
                     "attempted_at": utc_now().isoformat(),
                     "checked_at": None,
@@ -3551,7 +3609,10 @@ def _finalize(session: Session, job: CompanyResearchJob) -> WebResearchWorkerRes
             "reconciled_result_unavailable",
         }
     ) and coverage.get("matter_processing", False)
-    coverage["completion_status"] = "partial" if partial else "complete"
+    coverage["completion"] = stored_completion(coverage)
+    if coverage.get("research_scope") == "bounded_full_scope_refresh":
+        partial = coverage["completion"]["status"] != "complete"
+    coverage["completion_status"] = coverage["completion"]["status"]
     coverage["unique_matters_retained"] = len(
         {
             event_id
@@ -3602,7 +3663,14 @@ def _defer_budget(
     job.coverage = {
         **job.coverage,
         "cost_summary": _job_cost_summary(session, job),
+        "stop_reason": "web_research_budget_deferred",
     }
+    groups = {code: dict(state) for code, state in job.coverage.get("search_groups", {}).items()}
+    for state in groups.values():
+        if state.get("status") == "pending":
+            state["status"] = "budget_deferred"
+    job.coverage = {**job.coverage, "search_groups": groups}
+    job.coverage = {**job.coverage, "completion": stored_completion(job.coverage)}
     if job.current_stage in {"gap_follow_up", "source_recovery"}:
         kind = job.current_stage
         attempts = session.scalars(
@@ -3669,6 +3737,21 @@ def run_web_research_worker_once(
         session.info.pop("watchlist_policy", None)
 
 
+def _void_preflight_credit(session, request, job=None):
+    # 使用既有作废语义，不删除申请/账本；已实际调用过的任务不得退成零用量。
+    if request.external_calls or (job and job.external_calls):
+        return
+    for usage in session.scalars(
+        select(PersonalUsageRecord).where(
+            PersonalUsageRecord.resource_id == request.id,
+            PersonalUsageRecord.owner_user_id == request.owner_user_id,
+            PersonalUsageRecord.operation == "company_request",
+            PersonalUsageRecord.voided_at.is_(None),
+        )
+    ):
+        usage.voided_at, usage.void_reason = utc_now(), "research_network_preflight_failed"
+
+
 def _run_web_research_worker_once(
     session: Session,
     user: User,
@@ -3690,10 +3773,77 @@ def _run_web_research_worker_once(
     if job is None:
         from backend.app.identity_research import run_identity_step
 
+        if (
+            session.scalar(
+                select(PersonalCompanyRequest.id)
+                .where(PersonalCompanyRequest.status.in_(["identity_queued", "identity_checking"]))
+                .limit(1)
+            )
+            is not None
+        ):
+            preflight = run_research_network_preflight(
+                fetcher_factory=fetcher_factory or TrustedSourceFetcher
+            )
+            if preflight["status"] != "research_network_ready":
+                for request in session.scalars(
+                    select(PersonalCompanyRequest).where(
+                        PersonalCompanyRequest.status.in_(["identity_queued", "identity_checking"])
+                    )
+                ):
+                    request.status = "failed"
+                    request.last_error_code = preflight["status"]
+                    _void_preflight_credit(session, request)
+                session.commit()
+                return WebResearchWorkerResult(
+                    status="failed", stage="network_preflight", error_code=preflight["status"]
+                )
         identity_result = run_identity_step(session, user, providers, policy, fetcher_factory)
         if identity_result is not None:
             return identity_result
         return WebResearchWorkerResult(status="idle")
+    previous = job.coverage.get("network_preflight", {})
+    try:
+        recent = utc_now() - _aware(datetime.fromisoformat(previous["checked_at"])) < timedelta(
+            minutes=5
+        )
+    except (KeyError, ValueError, TypeError):
+        recent = False
+    if not (
+        recent
+        and previous.get("runtime") == _NETWORK_RUNTIME
+        and previous.get("status") == "research_network_ready"
+    ):
+        preflight = run_research_network_preflight(
+            fetcher_factory=fetcher_factory or TrustedSourceFetcher
+        )
+        job.coverage = {
+            **job.coverage,
+            "network_preflight": {**preflight, "runtime": _NETWORK_RUNTIME},
+        }
+        if preflight["status"] != "research_network_ready":
+            job.status, job.current_stage, job.last_error_code = (
+                "failed",
+                "network_preflight",
+                preflight["status"],
+            )
+            job.leased_until, job.heartbeat_at = None, utc_now()
+            job.coverage = {
+                **job.coverage,
+                "completion": stored_completion(job.coverage),
+                "completion_status": stored_completion(job.coverage)["status"],
+            }
+            for request in _active_linked_requests(session, job.id):
+                request.status, request.last_error_code = "failed", preflight["status"]
+                _void_preflight_credit(session, request, job)
+            session.commit()
+            return WebResearchWorkerResult(
+                status="failed",
+                job_id=job.id,
+                company_id=job.company_id,
+                stage="network_preflight",
+                error_code=preflight["status"],
+                external_calls=job.external_calls,
+            )
     if job.trigger_type == "watchlist":
         policy = replace(
             policy,
@@ -3806,7 +3956,27 @@ def _run_web_research_worker_once(
             )
         if job.current_stage.startswith("search:"):
             group_code = job.current_stage.split(":", 1)[1]
-            group = next((item for item in SEARCH_GROUPS if item[0] == group_code), None)
+            state = job.coverage.get("search_groups", {}).get(group_code, {})
+            if (
+                job.coverage.get("research_scope") == "bounded_full_scope_refresh"
+                and int(job.coverage.get("stats", {}).get("search_calls", 0))
+                >= policy.max_search_calls_per_job
+            ):
+                groups = {code: dict(g) for code, g in job.coverage["search_groups"].items()}
+                for g in groups.values():
+                    if g.get("status") == "pending":
+                        g["status"] = "budget_deferred"
+                job.coverage = {**job.coverage, "search_groups": groups}
+                job.current_stage, job.status, job.leased_until = "fetch", "partial", None
+                session.commit()
+                return WebResearchWorkerResult(
+                    status="partial", job_id=job.id, company_id=job.company_id, stage="fetch"
+                )
+            group = (
+                (group_code, state["topic"])
+                if state.get("topic")
+                else next((item for item in SEARCH_GROUPS if item[0] == group_code), None)
+            )
             if group is None:
                 raise RuntimeError("unknown web research search stage")
             return _process_search_group(

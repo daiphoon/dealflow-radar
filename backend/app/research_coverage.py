@@ -115,7 +115,9 @@ def category_coverage(coverage: dict[str, object]) -> list[CategoryCoverageOut]:
                 )
             )
             continue
-        if group_code not in SEARCH_GROUP_MODULES or not route.get("providers"):
+        if (group_code not in SEARCH_GROUP_MODULES and group_code not in groups) or not route.get(
+            "providers"
+        ):
             result.append(
                 CategoryCoverageOut(
                     category=category,
@@ -188,7 +190,7 @@ def category_coverage(coverage: dict[str, object]) -> list[CategoryCoverageOut]:
             CategoryCoverageOut(
                 category=category,
                 status=status,
-                route=group_code,
+                route=group_code if group_code in SEARCH_GROUP_MODULES else None,
                 topic=group.get("topic") if planning.planned(coverage) else None,
                 last_attempt_at=_latest(
                     [group.get("attempted_at"), *[d.get("attempted_at") for d in docs]]

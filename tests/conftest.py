@@ -107,3 +107,24 @@ def block_real_http_by_default(monkeypatch, request):
 
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", blocked)
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked_async)
+
+
+@pytest.fixture(autouse=True)
+def offline_worker_network_gate(monkeypatch, request):
+    """既有业务 Mock 测试只隔离环境闸门；网络/整链闸门回归调用正式实现。"""
+    if request.node.get_closest_marker("network_gate"):
+        return
+    from backend.app import web_research_service
+    from backend.app.models import utc_now
+
+    monkeypatch.setattr(
+        web_research_service,
+        "run_research_network_preflight",
+        lambda **_: {
+            "version": "research-network-v1",
+            "status": "research_network_ready",
+            "checked_at": utc_now().isoformat(),
+            "http_requests": 0,
+            "bytes": 0,
+        },
+    )

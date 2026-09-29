@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import calendar
 import hashlib
+import re
 from collections import Counter
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -47,7 +49,7 @@ from backend.app.services import (
 )
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_REPORT_VERSION = "personal-company-v3"
+_REPORT_VERSION = "personal-company-v4"
 _FIRST_VIEW_LOOKBACK_DAYS = 90
 
 _EVENT_TYPE_LABELS = {
@@ -549,10 +551,20 @@ def _request_out(
             or 0
         )
     status_message = _REQUEST_STATUS_MESSAGES[request.status]
-    result = research_result(research_job) if request.status == "completed" else None
+    result = research_result(research_job)
     if result is not None:
         status_message = result.message
     last_error_code = request.last_error_code
+    from backend.app.research_network import NETWORK_FAILURES
+
+    if last_error_code in NETWORK_FAILURES:
+        status_message = (
+            "研究中断：环境预检失败；已产生的用量保留，已有资料仍可读取。"
+            if request.external_calls or (research_job and research_job.external_calls)
+            else "研究未开始：环境预检失败。已有资料仍可读取，研究额度未消耗。"
+        )
+        if not include_internal_details:
+            last_error_code = "network_environment_blocked"
     identity_messages = {
         "identity_input_required": "请填写公司工商全称和有效的统一社会信用代码，无需上传营业执照。",
         "identity_conflict": "公开资料中的主体信息存在冲突，请核对名称和信用代码；尚未绑定公司。",
@@ -1339,11 +1351,26 @@ def _report_markdown(
     events: list[EventOut],
     as_of: datetime,
     refresh_policy: RefreshPolicy,
+    *,
+    completion: dict | None = None,
+    leads: list[EventOut] = (),
+    reference_at: datetime | None = None,
+    event_window_days: int = 365,
 ) -> str:
+    from backend.app.research_completion import (
+        CATEGORY_LABELS,
+        FAILURE_LABELS,
+        STATUS_LABELS,
+        completion_projection,
+    )
+
+    completion = completion or completion_projection({})
+    reference_at = reference_at or as_of
+    start = (reference_at - timedelta(days=event_window_days)).date()
     lines = [
         f"# {_single_line(company.legal_name)}",
         "",
-        "> 本报告根据平台已经审核的信息生成，不包含投资建议、机构私有数据或未确认线索。",
+        "> 本报告区分已确认资料和未确认线索，不包含投资建议或机构私有数据。线索不构成事实。",
         "",
         "## 工商主体身份",
         "",
@@ -1366,12 +1393,79 @@ def _report_markdown(
         ),
         f"- 报告生成时间：{as_of.astimezone(_SHANGHAI).strftime('%Y年%m月%d日 %H:%M')}",
         "",
-        "## 已审核的重要信息",
+        "## 本次研究状态与范围",
+        "",
+        f"- 状态：{STATUS_LABELS[completion['status']]}",
+        *(
+            [
+                "- 环境预检失败：本次联网研究未开始，不把环境故障解释为没有事件。"
+                if completion["status"] == "not_run"
+                else "- 环境预检失败：本次联网研究中断，已完成范围和已产生用量保留。"
+            ]
+            if completion["network_preflight_failed"]
+            else []
+        ),
+        *(
+            ["- 本次研究未完成；未检查、失败和预算暂缓不能解释为公司经营正常或没有风险。"]
+            if completion["status"] != "complete"
+            else ["- 完成的是固定预算内的有限检查，不能保证公开信息穷尽。"]
+        ),
+        f"- 资料窗口：{start.isoformat()} 至 {reference_at.date().isoformat()}；"
+        "窗口外资料另列为历史。",
+        *[
+            f"- {CATEGORY_LABELS[r['category']]}：{STATUS_LABELS[r['status']]}；"
+            f"{FAILURE_LABELS.get(r['failure_class'], '本轮来源检查完成')}；"
+            f"最近成功检查：{r['last_successful_check_at'] or '未记录'}"
+            for r in completion["categories"]
+        ],
+        "",
+        "## 近期已确认资料",
         "",
     ]
     if not events:
         lines.append("暂无已审核的重要信息。")
-    for event in events:
+
+    def section(event):
+        if event.temporal_status in {"historical", "historical_only"}:
+            return "历史资料（窗口外，不代表近期变化）"
+        when = event.occurred_on or (event.occurred_at.date() if event.occurred_at else None)
+        latest = when
+        if when is None and event.curated_versions:
+            current = next((v for v in event.curated_versions if v.is_current), None)
+            text = current.date_text if current else ""
+            try:
+                if re.fullmatch(r"\d{4}-\d{2}", text or ""):
+                    year, month = map(int, text.split("-"))
+                    when, latest = (
+                        date(year, month, 1),
+                        date(year, month, calendar.monthrange(year, month)[1]),
+                    )
+                elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", text or ""):
+                    when = latest = date.fromisoformat(text)
+            except ValueError:
+                when = latest = None
+        if when is None:
+            return "已确认资料（发生日期未能确定，不冒充近期变化）"
+        if latest < start:
+            return "历史资料（窗口外，不代表近期变化）"
+        return (
+            "近期已确认资料"
+            if start <= when <= latest <= reference_at.date()
+            else "已确认资料（发生日期未能确定，不冒充近期变化）"
+        )
+
+    ordered = sorted(
+        events,
+        key=lambda e: {"近期已确认资料": 0, "历史资料（窗口外，不代表近期变化）": 1}.get(
+            section(e), 2
+        ),
+    )
+    previous_section = "近期已确认资料"
+    for event in ordered:
+        current_section = section(event)
+        if current_section != previous_section:
+            lines.extend(["", f"## {current_section}", ""])
+            previous_section = current_section
         curated = next((v for v in event.curated_versions if v.is_current), None)
         lines.extend(
             [
@@ -1412,8 +1506,41 @@ def _report_markdown(
                 "",
             ]
         lines.extend(_report_evidence_lines(event))
+        lines.extend(f"- 信息缺口：{_single_line(item)}" for item in event.uncertainties)
         lines.append("")
+    lines.extend(["## 待核线索（未确认，不进入已确认事实）", ""])
+    if not leads:
+        lines.append("本报告没有当前许可允许展示的待核线索；不代表不存在待核信息。")
+    for lead in leads:
+        lines.extend(
+            [
+                f"### {_single_line(lead.title)}",
+                "",
+                f"- 日期口径：{_event_date_label(lead)}",
+                f"- 分类：{_EVENT_TYPE_LABELS.get(lead.event_type, '其他')}",
+                "- 状态：candidate / unconfirmed，未确认。",
+                _single_line(lead.summary),
+                "- 缺少支持：" + "；".join(_single_line(x) for x in lead.uncertainties)
+                if lead.uncertainties
+                else "- 缺少支持：尚不足以形成已确认事实，需补充可核验的主体、日期和事项证据。",
+                "- 未确认原因："
+                + (
+                    "人工初始资料标为待核；本报告不改变审核或发布状态。"
+                    if lead.curated_versions
+                    else "尚未完成证据核验；本报告不提高置信度。"
+                ),
+                *_report_evidence_lines(lead),
+                "",
+            ]
+        )
     lines.extend(["## 数据状态与信息缺口", ""])
+    lines.append("- 公开财务等字段没有可靠资料时保持未知；未公开、未检查和获取失败是不同状态。")
+    if all(r["status"] == "not_run" for r in completion["categories"]):
+        lines.append("- 仅有已存资料或人工初始资料；尚未完成本次联网研究。")
+    elif any(
+        r["source_acquisition_status"] == "body_unavailable" for r in completion["categories"]
+    ):
+        lines.append("- 搜索线索不等于取得正文；部分来源正文不可获取，不能据此确认事项。")
     if snapshot is None:
         lines.append("- 尚无可展示的数据概况。")
     else:
@@ -1426,7 +1553,9 @@ def _report_markdown(
             if snapshot.last_checked_at
             else "尚未联网检查"
         )
-        lines.append(f"- 最后检查时间：{last_checked_label}")
+        lines.append(
+            f"- 已发布数据最后检查时间：{last_checked_label}；与上方本次研究范围分别记录。"
+        )
         for gap in snapshot.information_gaps:
             lines.append(f"- 信息缺口：{_single_line(gap)}")
     lines.extend(
@@ -1478,6 +1607,29 @@ def _report_summary_out(
     )
 
 
+def _report_reference_ids(report):
+    ids, leads, valid = [], set(), True
+    for value in report.source_event_ids:
+        try:
+            if isinstance(value, str):
+                identifier = UUID(value)
+            elif (
+                report.report_version == "personal-company-v4"
+                and isinstance(value, dict)
+                and set(value) == {"id", "kind"}
+                and value["kind"] == "unconfirmed_lead"
+            ):
+                identifier = UUID(value["id"])
+                leads.add(identifier)
+            else:
+                valid = False
+                continue
+            ids.append(identifier)
+        except (TypeError, ValueError, AttributeError):
+            valid = False
+    return ids, leads, valid and len(ids) == len(set(ids))
+
+
 def _report_out(
     report: PersonalCompanyReport,
     *,
@@ -1487,7 +1639,7 @@ def _report_out(
     return PersonalCompanyReportOut(
         **summary.model_dump(),
         markdown=report.markdown,
-        source_event_ids=[UUID(event_id) for event_id in report.source_event_ids],
+        source_event_ids=_report_reference_ids(report)[0],
         reused=reused,
     )
 
@@ -1496,12 +1648,17 @@ def _safe_report_out(session, user, report, *, reused=False):
     from backend.app.models import EventEvidence
 
     output = _report_out(report, reused=reused)
-    ids = [UUID(value) for value in report.source_event_ids]
+    ids, lead_ids, valid_references = _report_reference_ids(report)
     rows = list(session.scalars(select(Event).where(Event.id.in_(ids))))
     evidence = list(session.scalars(select(EventEvidence).where(EventEvidence.event_id.in_(ids))))
     from backend.app.report_permissions import report_evidence_permission
 
     def permission_lost(e):
+        row = next((row for row in rows if row.id == e.event_id), None)
+        if e.event_id in lead_ids and row:
+            from backend.app.report_permissions import report_lead_permission
+
+            return not report_lead_permission(session, user, row, e)
         withdrawn_fact = any(
             row.id == e.event_id and row.status in {"rejected", "retracted"} for row in rows
         )
@@ -1509,9 +1666,21 @@ def _safe_report_out(session, user, report, *, reused=False):
 
     # 历史报告未保存逐片段许可快照；任何已撤销来源都保守停止再次发出全文。
     restricted = (
-        len(rows) != len(ids)
+        not valid_references
+        or len(rows) != len(ids)
         or set(ids) != {e.event_id for e in evidence}
-        or any(e.visibility_scope != PLATFORM_SHARED_SCOPE for e in rows)
+        or any(
+            e.visibility_scope != PLATFORM_SHARED_SCOPE
+            and not (
+                report.report_version == "personal-company-v4"
+                and e.id in lead_ids
+                and e.visibility_scope == "personal_private"
+                and e.owner_user_id == user.id
+                and e.owner_tenant_id is None
+                and e.status == "candidate"
+            )
+            for e in rows
+        )
         or any(permission_lost(e) for e in evidence)
     )
     if not restricted:
@@ -1596,6 +1765,57 @@ def create_personal_company_report(
 
     events = _company_event_outputs(session, event_rows, user, allow_organization_private=False)
     events = [event for event in events if event.display_kind != "unconfirmed"]
+    from backend.app.curated_publication import has_pending_curated_record
+    from backend.app.models import EventEvidence
+    from backend.app.report_permissions import report_lead_permission
+    from backend.app.research_completion import completion_projection
+
+    lead_rows = session.scalars(
+        select(Event)
+        .where(
+            Event.company_id == company_id,
+            Event.status == "candidate",
+            Event.publication_route == "unconfirmed_lead",
+            Event.owner_tenant_id.is_(None),
+            or_(
+                and_(
+                    Event.visibility_scope == PLATFORM_SHARED_SCOPE, Event.owner_user_id.is_(None)
+                ),
+                and_(Event.visibility_scope == "personal_private", Event.owner_user_id == user.id),
+            ),
+        )
+        .order_by(Event.observed_at.desc(), Event.id)
+    ).all()
+    allowed_leads = []
+    for row in lead_rows:
+        evidence = session.scalars(
+            select(EventEvidence).where(EventEvidence.event_id == row.id)
+        ).all()
+        if (
+            evidence
+            and all(report_lead_permission(session, user, row, e) for e in evidence)
+            and (
+                row.fingerprint_version != "curated-v1" or has_pending_curated_record(session, row)
+            )
+        ):
+            allowed_leads.append(row)
+    leads = _company_event_outputs(session, allowed_leads, user, allow_organization_private=False)
+    leads = [lead for lead in leads if lead.evidence]
+    latest_job = session.scalar(
+        select(CompanyResearchJob)
+        .join(
+            PersonalCompanyRequest,
+            PersonalCompanyRequest.research_job_id == CompanyResearchJob.id,
+        )
+        .where(
+            PersonalCompanyRequest.owner_user_id == user.id,
+            PersonalCompanyRequest.company_id == company_id,
+        )
+        .order_by(PersonalCompanyRequest.created_at.desc(), PersonalCompanyRequest.id.desc())
+        .limit(1)
+    )
+    coverage = latest_job.coverage if latest_job else {}
+    completion = completion_projection(coverage)
     snapshot = session.scalar(
         select(CompanySnapshot).where(
             CompanySnapshot.company_id == company_id,
@@ -1608,14 +1828,30 @@ def create_personal_company_report(
     from backend.app.evidence_integrity import hash_canonical_object
 
     as_of = utc_now()
-    markdown = _report_markdown(company, snapshot, events, as_of, refresh_policy)
+    try:
+        reference_at = _aware_utc(datetime.fromisoformat(coverage.get("reference_at", "")))
+    except (TypeError, ValueError):
+        reference_at = as_of
+    markdown = _report_markdown(
+        company,
+        snapshot,
+        events,
+        as_of,
+        refresh_policy,
+        completion=completion,
+        leads=leads,
+        reference_at=reference_at,
+        event_window_days=coverage.get("event_window_days", 365),
+    )
     from backend.app.models import EventEvidence
     from backend.app.report_permissions import report_evidence_is_demo
 
     if any(
         report_evidence_is_demo(session, evidence)
         for evidence in session.scalars(
-            select(EventEvidence).where(EventEvidence.event_id.in_([event.id for event in events]))
+            select(EventEvidence).where(
+                EventEvidence.event_id.in_([event.id for event in [*events, *leads]])
+            )
         )
     ):
         markdown = (
@@ -1661,7 +1897,10 @@ def create_personal_company_report(
         as_of=as_of,
         markdown=markdown,
         content_hash=_sha256(markdown),
-        source_event_ids=[str(event.id) for event in events],
+        source_event_ids=[
+            *[str(event.id) for event in events],
+            *[{"id": str(lead.id), "kind": "unconfirmed_lead"} for lead in leads],
+        ],
         created_at=as_of,
     )
     session.add(report)

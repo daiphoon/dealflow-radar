@@ -18,8 +18,11 @@ const labels: Record<string, string> = {
   failed: "处理失败",
 };
 
-export function requestState(request: Pick<PersonalCompanyRequest, "status" | "last_error_code" | "research_job_status">) {
+export function requestState(request: Pick<PersonalCompanyRequest, "status" | "last_error_code" | "research_job_status">
+  & Partial<Pick<PersonalCompanyRequest, "research_result">>) {
   let label = labels[request.status] ?? request.status;
+  if (request.research_result?.completion?.status === "partial") label = "研究部分完成";
+  if (request.last_error_code === "network_environment_blocked") label = "研究未开始（环境预检失败）";
   if (request.status === "in_review") {
     if (request.last_error_code === "identity_evidence_missing") label = "待补充主体资料";
     if (request.last_error_code === "curator_identity_confirmed") label = "主体已确认，待安排更新";

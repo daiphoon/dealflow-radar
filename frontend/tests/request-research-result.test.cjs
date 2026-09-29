@@ -168,3 +168,36 @@ test("真实申请页接入当前摘要，保留取消操作，不额外逐公�
   assert.match(html, /取消查询/);
   assert.equal(calls, 1);
 });
+
+test("部分完成的八类状态在默认展开区可见，失败不刷新成功时间", () => {
+  const data = request({ status: "failed" });
+  data.research_result.completion = {
+    scope: "bounded_full_scope_refresh", status: "partial", network_preflight_failed: false,
+    categories: ["financing_cap_table", "exit_liquidity", "legal_compliance", "financial_operation",
+      "contract_commercial", "product_technology", "governance_people", "capacity_assets"].map((category, index) => ({
+      category, planned: true, status: index < 2 ? "completed" : "budget_deferred",
+      failure_class: index < 2 ? null : "budget_deferred",
+      last_successful_check_at: index < 2 ? "2026-09-01T01:02:03Z" : null,
+    })),
+  };
+  const html = visible(render(data));
+  assert.match(html, /本次研究状态与范围：部分完成/);
+  assert.match(html, /本次计划覆盖八类/);
+  assert.match(html, /本次研究未完成/);
+  assert.match(html, /产能与资产：预算暂缓/);
+  assert.match(html, /最近成功检查：未记录/);
+  assert.match(html, /最近成功检查：2026年9月1日 09:02/);
+});
+
+test("环境预检失败保持既有资料可读，未知错误与类别不回显", () => {
+  const data = request({ status: "failed" });
+  data.research_result.completion = {
+    scope: "bounded_full_scope_refresh", status: "not_run", network_preflight_failed: true,
+    categories: [{ category: "private-path", planned: true, status: "internal-state",
+      failure_class: "198.18.0.1", last_successful_check_at: null }],
+  };
+  const html = visible(render(data));
+  assert.match(html, /联网研究未开始；已有资料仍可读取/);
+  assert.match(html, /本次研究未完成/);
+  assert.doesNotMatch(html, /198\.18|private-path|internal-state/);
+});

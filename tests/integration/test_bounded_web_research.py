@@ -371,7 +371,7 @@ def test_group_completion_uses_provider_outcomes_instead_of_existing_events(migr
     assert fetcher.requests == []
     with migrated_app.state.session_factory() as session:
         job = session.scalar(select(CompanyResearchJob))
-        assert job.status == "completed"
+        assert job.status == ("failed" if failure else "completed")
         result = research_result(job)
         rows = [item for item in result.category_coverage if item.category != "information_quality"]
         assert all(item.status == ("failed" if failure else "no_records") for item in rows)

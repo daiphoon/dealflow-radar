@@ -23,6 +23,14 @@
 
 ## 2. 有效执行检查点
 
+- **当前唯一里程碑：M2-R 受限研究结果与未完成状态如实交付，工程候选送审**。基线 main `7a61807dc284d22252d2f7dfcbf351f26fa90d6c` / tree `bbfb9b6f55c0c121eaef871bd5728bc25cf8104a`。M1 已依据最终恢复回执关闭；上一轮 M2 保持 `PARTIAL / FAIL`、严格召回 `0/8`，旧九家不再作为新留出。本轮不重做 M2-A/B0/B/C/D，不重新研究。
+- **已验证**：计量前固定免费 HTTPS 预检、八类独立完成状态、有限 Watchlist 投影、v4 如实报告与 lead 撤回保护；十四类报告及正式 curated 维护在 SQLite/非 owner PostgreSQL 验证。完整后端 1386 通过/48 条件跳过，前端 35 通过及类型/构建；迁移仍 `0036`，历史迁移无变更。完整命令、渲染示例、跳过原因、PR/head/CI 与限制以统一私有交付包为准，公开交付说明见 [24 M2-R](24-m2-r-truthful-delivery.md)。
+- **网络与旧材料证据**：当前 Mac/Docker 非公网 DNS 继续拒绝、HTTP 0；香港隔离候选正式 Fetcher 6 次 HTTPS/60,188 字节，TLS/peer 全部通过，Provider/模型/生产数据库 0。具体宿主组件为推断，上一轮实际 DNS 仍未知。旧九家只在封存 C 副本上离线回归，42 张表恢复内容一致，报告期间其余 39 张业务表摘要不变；原实验回执与分数不改。
+- **下一闸门及停止边界**：独立 PR 和实际 Verify 复核后停止；未合并、未部署、未开启生产研究/Watchlist/MCP/隧道。网络与如实交付通过不等于真实召回通过。负责人复核统一包后，另行决定下一批全新严格留出复测；不自动选样、扩到 109 家或进入 M3。
+- 更新日期：2026-09-29；依据：[ADR-0028](DECISIONS/ADR-0028-bounded-research-completion.md)。
+
+### 封存的前一检查点（以下旧“当前”不作为待办）
+
 - **当前唯一里程碑：M1-Ops-Recovery 真实 Compose 执行契约收口**。开发基线main `f5a5a09908d8c3334204c4a6a6e365635c51c8d4` / tree `27b2ebacecb9f8bce03749090b0b33e0d5e1c677`；#106已合并，随后阶段B在compose-frozen安全停止。本轮只修复运维规格/适配器和正式测试，提交独立PR；不重做业务。
 - **生产状态及保护**：业务固定47c4a5c，三个不可变镜像不重建；0036、equity_app只读、API/frontend/Worker停止、公网静态维护、current仍指向ff174998。已结束attempt `m1-b-20260927T045333Z-51784ccc` 的锁、首错、证据和备份保留。第二次历史原始异常仍unknown；M1未关闭。
 - **本轮验收**：正式CLI真实Compose2.40.3配置回归进入普通CI；正常/控制视图与实际动作共用有限构造，归档/SSH适配器纳入审查；冻结镜像本机同路径隔离演练及最终候选目标主机纯观察证据按统一 `M1 Operations Execution Contract & Resume Readiness` 记录。[运行说明](operations-release-recovery.md)解释权限与证据边界；没有把未来生产恢复项目记为通过。

@@ -641,7 +641,8 @@ class PersonalCompanyReport(Base):
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     markdown: Mapped[str] = mapped_column(Text)
     content_hash: Mapped[str] = mapped_column(String(64))
-    source_event_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # v4 线索引用附带种类；旧事实 UUID 字符串和历史报告保持原样。
+    source_event_ids: Mapped[list[str | dict[str, str]]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

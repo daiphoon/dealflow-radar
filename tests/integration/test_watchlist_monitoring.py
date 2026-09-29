@@ -426,6 +426,42 @@ def test_failure_does_not_refresh_success_and_retries_after_due_time(database, m
     assert enqueue(database)["queued_count"] == 1
 
 
+def test_unfinished_required_fallback_does_not_refresh_watch_freshness(database):
+    setup_watch(database)
+    enqueue(database)
+    old = utc_now() - timedelta(days=30)
+    with Session(database.owner) as session:
+        state = session.get(CompanyWatchSchedule, SHARED_COMPANY_ID)
+        state.last_successful_check_at = old
+        job = session.scalar(select(CompanyResearchJob))
+        job.status, job.heartbeat_at = "completed", utc_now()
+        coverage = dict(job.coverage)
+        coverage["search_groups"] = {
+            monitor.GROUP: {
+                "status": "completed",
+                "checked_at": utc_now().isoformat(),
+                "subject_results": 0,
+                "providers": {
+                    "baidu": {"status": "completed"},
+                    "bocha": {
+                        "status": "failed",
+                        "reason": "insufficient_qualified_subject_results",
+                    },
+                },
+            }
+        }
+        job.coverage = coverage
+        session.commit()
+    session, user = _session(database)
+    with session:
+        job = session.scalar(select(CompanyResearchJob))
+        monitor.record_outcome(session, user, job, policy().watchlist)
+    with Session(database.owner) as session:
+        state = session.get(CompanyWatchSchedule, SHARED_COMPANY_ID)
+        assert monitor.aware(state.last_successful_check_at) == old
+        assert state.last_outcome == "partial"
+
+
 def test_batch_limit_and_no_access_without_own_follow(database):
     from uuid import uuid4
 

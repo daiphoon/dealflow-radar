@@ -59,6 +59,8 @@ export function RequestResearchResult({ request }: { request: PersonalCompanyReq
         </section>
       ) : null}
 
+      {result?.completion ? <ResearchCoverage completion={result.completion} /> : null}
+
       {terminal ? (
         <>
           {result ? <p className="muted">本次资料覆盖有限，不代表公司没有重要变化。</p> : null}

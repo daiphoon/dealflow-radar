@@ -495,7 +495,31 @@ def _is_public_address(value: str) -> bool:
     address = ipaddress.ip_address(value)
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
         address = address.ipv4_mapped
-    return address.is_global
+    return address.is_global and not address.is_multicast
+
+
+def dns_classification(addresses) -> dict[str, object]:
+    """只保留类型、计数和摘要；运维失败记录无需暴露实际地址。"""
+    normalized = sorted(str(ipaddress.ip_address(value)) for value in addresses)
+    types = set()
+    for value in normalized:
+        address = ipaddress.ip_address(value)
+        types.add(f"ipv{address.version}")
+        for name in ("loopback", "private", "link_local", "multicast", "reserved"):
+            if getattr(address, f"is_{name}"):
+                types.add(name)
+        if address.version == 4 and address in ipaddress.ip_network("198.18.0.0/15"):
+            types.add("benchmark_fake_ip")
+        if not _is_public_address(value):
+            types.add("non_public")
+    public = sum(_is_public_address(value) for value in normalized)
+    return {
+        "address_count": len(normalized),
+        "public_count": public,
+        "non_public_count": len(normalized) - public,
+        "classes": sorted(types),
+        "address_hash": _sha256("|".join(normalized).encode()),
+    }
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -816,6 +840,7 @@ class TrustedSourceFetcher:
         self._last_request_at: dict[str, float] = {}
         self._robots: RobotsRuleCache = {}
         self._request_guard: Callable[[], bool] | None = None
+        self._last_dns: dict[str, object] = {}
 
     def bind_request_guard(self, guard: Callable[[], bool]) -> None:
         if self.request_count:
@@ -865,6 +890,12 @@ class TrustedSourceFetcher:
         if host is None:
             raise UrlSafetyError("missing_host", "URL hostname is required")
         addresses = self.resolver(host, parsed.port or 443)
+        try:
+            self._last_dns = dns_classification(addresses)
+        except ValueError as error:
+            raise UrlSafetyError(
+                "dns_resolution_failed", "DNS returned an invalid address"
+            ) from error
         if not addresses:
             raise UrlSafetyError("dns_resolution_failed", "hostname returned no addresses")
         if any(not _is_public_address(address) for address in addresses):
@@ -908,7 +939,19 @@ class TrustedSourceFetcher:
     ) -> _FetchedResponse:
         if self.request_count >= self.policy.max_requests_per_run:
             raise SourceFetchError("request_limit_exceeded", "run request limit reached")
-        allowed_addresses = self._check_dns(url)
+        audit = {
+            "hostname": urlsplit(url).hostname,
+            "canonical_url_hash": _sha256(url.encode()),
+            "checked_at": datetime.now(UTC).isoformat(),
+            "http_dispatched": False,
+        }
+        self._last_dns = {}
+        try:
+            allowed_addresses = self._check_dns(url)
+        except SourceFetchError as error:
+            self.request_log.append({**audit, "dns": self._last_dns, "error_code": error.code})
+            raise
+        audit["dns"] = self._last_dns
         self._rate_limit(url)
         if self._request_guard is not None and not self._request_guard():
             raise SourceFetchError("research_cancelled", "research stopped before HTTP dispatch")
@@ -928,6 +971,7 @@ class TrustedSourceFetcher:
             **headers,
         }
         started = self.monotonic()
+        audit["http_dispatched"] = True
         try:
             request = client.build_request("GET", url, headers=request_headers)
             response = client.send(request, stream=True, follow_redirects=False)
@@ -935,6 +979,7 @@ class TrustedSourceFetcher:
             self.request_count += 1
             self.request_log.append(
                 {
+                    **audit,
                     "url": url,
                     "status": None,
                     "bytes": 0,
@@ -948,10 +993,20 @@ class TrustedSourceFetcher:
             )
             raise SourceFetchError("timeout", "source request timed out") from error
         except httpx.TransportError as error:
-            error_code = "tls_ecpoint_error" if _is_bad_ecpoint(error) else "network_error"
+            cause = error
+            while cause.__cause__ is not None:
+                cause = cause.__cause__
+            error_code = (
+                "tls_verification_failed"
+                if isinstance(cause, ssl.SSLCertVerificationError)
+                else "tls_ecpoint_error"
+                if _is_bad_ecpoint(error)
+                else "network_error"
+            )
             self.request_count += 1
             self.request_log.append(
                 {
+                    **audit,
                     "url": url,
                     "status": None,
                     "bytes": 0,
@@ -974,6 +1029,8 @@ class TrustedSourceFetcher:
         response_bytes = 0
         try:
             self._check_peer_address(response, allowed_addresses)
+            if self._owns_client and not self.allow_private_test_hosts:
+                audit.update(peer_verified=True, peer_class="public", tls_hostname_verified=True)
             is_redirect = status_code in {301, 302, 303, 307, 308}
             if status_code not in {304} and not is_redirect and status_code < 400:
                 allowed_types = set(ALLOWED_DOCUMENT_MIME_TYPES)
@@ -1025,10 +1082,18 @@ class TrustedSourceFetcher:
                         )
                     chunks.append(chunk)
                 body = b"".join(chunks)
-            self._check_dns(url)
+            try:
+                self._check_dns(url)
+            except UrlSafetyError as error:
+                if error.code == "blocked_network":
+                    raise UrlSafetyError(
+                        "dns_rebinding_detected", "DNS changed to a non-public address"
+                    ) from error
+                raise
             elapsed_ms = max(0, round((self.monotonic() - started) * 1000))
             self.request_log.append(
                 {
+                    **audit,
                     "url": url,
                     "status": status_code,
                     "bytes": response_bytes,
@@ -1050,6 +1115,7 @@ class TrustedSourceFetcher:
             code = "timeout" if isinstance(error, httpx.TimeoutException) else "network_error"
             self.request_log.append(
                 {
+                    **audit,
                     "url": url,
                     "status": status_code,
                     "bytes": response_bytes,
@@ -1067,6 +1133,7 @@ class TrustedSourceFetcher:
         except SourceFetchError as error:
             self.request_log.append(
                 {
+                    **audit,
                     "url": url,
                     "status": status_code,
                     "bytes": response_bytes,
@@ -1243,6 +1310,18 @@ class TrustedSourceFetcher:
         if state.get("last_modified"):
             headers["If-Modified-Since"] = str(state["last_modified"])
         return headers
+
+    def probe(self, url: str) -> dict[str, object]:
+        """正式安全链探针：检查 robots、每跳 DNS/peer/TLS；正文仅临时限量读取。"""
+        host = urlsplit(url).hostname or ""
+        response, robots = self._fetch_document_url(url, host)
+        self._response_or_error(response)
+        return {
+            "hostname": host,
+            "status": "research_network_ready",
+            "robots_status": robots,
+            "http_status": response.status_code,
+        }
 
     def _response_or_error(self, response: _FetchedResponse) -> None:
         if response.status_code == 404:

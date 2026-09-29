@@ -370,7 +370,7 @@ def test_professional_fetch_failure_is_settled_without_transport_log(database, t
     from backend.app.config import PersonalEntitlementPolicy, WebResearchCostPolicy
     from backend.app.models import utc_now
     from backend.app.personal_features import create_refresh_request
-    from backend.app.research_plan import TOPICS, topic_terms
+    from backend.app.research_plan import TOPICS
     from backend.app.research_subject import short_business_query
     from backend.app.source_fetcher import SourceFetchError
     from backend.app.web_research_service import run_web_research_worker_once
@@ -401,10 +401,7 @@ def test_professional_fetch_failure_is_settled_without_transport_log(database, t
         )
         primary = MockSearchProvider(
             "tavily",
-            {
-                short_business_query(subject, topic_terms(t, POLICY)): [row]
-                for t in list(TOPICS)[:2]
-            },
+            {short_business_query(subject, TOPICS[t]): [row] for t in list(TOPICS)[:2]},
         )
         policy = replace(
             POLICY,
