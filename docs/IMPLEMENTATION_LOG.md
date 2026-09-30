@@ -4,7 +4,7 @@
 
 - 任务/关键文件：`source_fetcher`/policy/network 与 ADR-0029；`research_matters`/validation/comparison/storage；`research_evaluation`、`research_validation_contract`、参考参数及共享 completion/API/组件。公开说明见 [25 M2-F](25-m2-f-engineering-closure.md)，旧封存输入不回写，根目录已有用户文档修改保留。
 - 实际命令：真实入口失败 pytest → 最小修复 → 定向回归；非 owner PostgreSQL 封存片段双版本回放和完整内容摘要；完整 `pytest -q -ra -p no:cacheprovider`；Ruff/format、SQLite/PostgreSQL migration check、前端 test/typecheck/build、Compose/Docker、公开候选树 Gitleaks 及 `git diff --check`。准确 PR head/远端 Verify 以统一交付包实际证据为准。
-- 测试结果：最终完整后端 1464 通过/48 条件跳过（767.76 秒），前端 37 通过及类型/构建；最初完整回归的 5 项 IPO/获取失败枚举问题已修正并保留失败日志。合成关系 macro-F1 0.97494、逐类 recall 最低 0.90、ROUNDUP 10/10、严重错误合并 0；实施者生成的合成集不冒充独立业务留出。schema 0036、历史 migration 无变化。
+- 测试结果：首轮完整后端 1464 通过/48 条件跳过（767.76 秒），前端 37 通过及类型/构建；最初完整回归的 5 项 IPO/获取失败枚举问题已修正并保留失败日志。最后审查发现有效空/注释/Sitemap robots 的 enforce 兼容性退化，失败回归后最小修正，Fetcher 定向 63 通过；最终全套和准确 head Verify 见统一包。合成关系 macro-F1 0.97494、逐类 recall 最低 0.90、ROUNDUP 10/10、严重错误合并 0；实施者生成的合成集不冒充独立业务留出。schema 0036、历史 migration 无变化。
 - 未解决阻断：`M2_F_HOLD`，困难历史关系 macro-F1 0.24411；编号轮次得到原文支持，但同一事项正式回放仍为四个候选，概念去重尚未闭合。真实新 prompt 收益和旧 URL 恢复未验证。无真实项目研究/模型/Jina、生产操作、合并、部署或新留出。
 
 ## 2026-09-29：M2-R 网络能力与如实交付候选

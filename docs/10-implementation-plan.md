@@ -24,7 +24,7 @@
 ## 2. 有效执行检查点
 
 - **当前唯一里程碑：M2-F 工程候选送审，`M2_F_HOLD`**。正式基线 main `c8d693c3facff59ecb7e607bd8dc2c9482dc0fc7` / tree `1504c7a12302b91b70238f8aef863bf16c325894`，schema 保持 `0036`。仅合成测试与封存片段离线回放；完整范围、PR/准确 head/远端 Verify 及附件 hash 以统一私有交付包为准，公开说明见 [25 M2-F](25-m2-f-engineering-closure.md)。
-- **已验证与复用**：公开 HTTP advisory robots 显式策略、访问控制和预算硬停、编号融资轮次和通用合同/产品动作、主体/阶段关系保护、固定参考参数、逐输出四层裁决和隔离状态投影。九种同库情境在 SQLite/非 owner PostgreSQL 验证；本地完整后端 1464 通过/48 条件跳过，前端 37 项及类型/构建通过。已有 completion、许可/撤权和历史血缘保护复用；没有新 migration。
+- **已验证与复用**：公开 HTTP advisory robots 显式策略、访问控制和预算硬停、编号融资轮次和通用合同/产品动作、主体/阶段关系保护、固定参考参数、逐输出四层裁决和隔离状态投影。九种同库情境在 SQLite/非 owner PostgreSQL 验证；首轮完整后端 1464 通过/48 条件跳过，前端 37 项及类型/构建通过。最终审查追加有效空/注释/Sitemap robots 兼容性红例→修正，Fetcher 定向 63 通过；最终完整回归/准确 head CI 以统一包为准。已有 completion、许可/撤权和历史血缘保护复用；没有新 migration。
 - **首要阻断**：困难历史概念归并未闭合；实际 PostgreSQL 回放同一事项仍为四个候选，development 关系 macro-F1 为 0.24411。合成关系 0.97494、ROUNDUP 10/10、严重错误合并 0 不能掩盖这一缺口。旧实验原件及原回执保持，原业务评分当前为 `FORMAL_BUSINESS_SCORE_NOT_VALIDATED`；旧公司永久 `REGRESSION ONLY`，不构成新留出。
 - **下一 Gate 与边界**：负责人审查统一包和 PR 后，先收口概念身份/缺字段/阶段冲突的归并，再决定新的独立留出。候选不自动合并/部署；真实搜索/fetch/model/Jina 和生产操作 0，不开启 Worker、Watchlist、MCP/隧道，不自动进入 M2-V3。
 - 更新日期：2026-09-30；依据：[ADR-0029](DECISIONS/ADR-0029-public-source-acquisition-policy.md)。

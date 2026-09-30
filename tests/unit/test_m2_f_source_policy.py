@@ -371,3 +371,25 @@ def test_advisory_requires_explicit_route_and_budget_for_body_request():
         assert caught.value.code == "request_limit_exceeded"
         assert fetcher.request_count == 1
         assert paths == ["/robots.txt"]
+
+
+@pytest.mark.parametrize(
+    "rules", ["\n \n", "# No crawler restrictions\n", "Sitemap: https://example.com/map.xml\n"]
+)
+def test_empty_robots_keeps_existing_enforce_public_read_behavior(rules):
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, headers={"content-type": "text/plain"}, text=rules)
+        return httpx.Response(
+            200, headers={"content-type": "text/html"}, text="<main>示例公司公开产品资料。</main>"
+        )
+
+    with TrustedSourceFetcher(
+        SourceMonitoringPolicy(min_request_interval_ms=0),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        resolver=lambda _host, _port: PUBLIC_IP,
+    ) as fetcher:
+        result = _check(fetcher)
+        assert len(result.documents) == 1
+        assert fetcher.robots_observations[-1]["status"] == "allowed_observed"
+        assert fetcher.robots_observations[-1]["decision"] == "allow"

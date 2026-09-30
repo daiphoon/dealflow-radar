@@ -31,8 +31,10 @@
 
 ## 当前结果与阻断
 
-本地完整后端 `1464 passed, 48 skipped`，前端 37 项及 typecheck/build 通过；
+首轮完整后端 `1464 passed, 48 skipped`，前端 37 项及 typecheck/build 通过；
 条件跳过包括 SQLite 不能验证的并发/RLS，以及单独启用的 Compose/Docker/固定镜像分支，不冒充已执行。
+最终审查另用失败回归修正空、注释和仅 Sitemap robots 文件的 enforce 兼容性，
+Fetcher 定向 63 项通过；修正后的完整回归及准确 head Verify 以统一私有包为准。
 合成关系 macro-F1 为 0.97494，逐类 recall 最低 0.90；ROUNDUP 10/10，严重错误合并 0。
 合成集由实施者生成，评测后因正式回归修复重新核验；不是独立盲法或新业务留出。
 

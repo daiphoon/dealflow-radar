@@ -1348,9 +1348,13 @@ class TrustedSourceFetcher:
                 }
             elif response is not None:
                 rules = _decode_body(response.body, response.content_type)
+                records = [line.split("#", 1)[0].strip() for line in rules.splitlines()]
+                has_only_extensions = all(
+                    not line or re.match(r"(?i)(?:sitemap|host)\s*:", line) for line in records
+                )
                 cached = {
                     "status": "checked"
-                    if re.search(r"(?im)^\s*user-agent\s*:", rules)
+                    if has_only_extensions or re.search(r"(?im)^\s*user-agent\s*:", rules)
                     else "invalid_format_deny",
                     "user_agent": self.policy.user_agent,
                     "checked_at": checked_at,
