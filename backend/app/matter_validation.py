@@ -3,7 +3,7 @@
 import re
 from decimal import Decimal, InvalidOperation
 
-VALIDATION_VERSION = "matter-field-validation-v2"
+VALIDATION_VERSION = "matter-field-validation-v3"
 
 
 def normalize_amount(value):
@@ -121,7 +121,11 @@ def validate_field(role, value, quote, action, subtype):
         ok = value.endswith("股")
     elif role == "round":
         ok = bool(
-            re.fullmatch(r"(?:Pre[- ]?)?[A-F](?:\+{1,2})?轮|天使轮|种子轮|战略融资", value, re.I)
+            re.fullmatch(
+                r"(?:Pre[- ]?)?[A-F](?:[1-9][0-9]?)?(?:\+{1,2})?轮|天使轮|种子轮|战略融资",
+                value,
+                re.I,
+            )
         )
     elif role == "investors":
         ok = all(
@@ -296,8 +300,8 @@ def action_supported(action, subtype):
         "ipo_listed": r"(?:正式|成功|已).{0,15}上市|挂牌上市",
         "ipo_listing_plan": r"(?:拟|计划|将|启动|否认).{0,30}(?:上市|IPO)",
         "ipo_withdrawn": r"(?:撤回|终止).{0,15}(?:上市|IPO)",
-        "contract_award": r"中标|(?:合同|合作协议)",
-        "product_milestone": r"发布|认证|注册证|获批",
+        "contract_award": r"中标|合同|合作协议|租赁协议|框架协议|战略协议|首次商业运输",
+        "product_milestone": r"发布|推出|认证|注册证|获批|准入|装机批准|技术审核|适航",
         "operating_disclosure": r"营收|营业收入|净利润|出货量|停产|欠薪",
         "management_change": r"(?:董事长|总经理|高管|创始人).{0,20}(?:离职|辞任|变更)|任命",
         "legal_development": r"起诉|处罚|立案|执行|破产|补充协议|(?:义务|条款).{0,20}终止",

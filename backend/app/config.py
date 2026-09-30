@@ -106,6 +106,7 @@ class IdentityPolicy:
 @dataclass(frozen=True)
 class SourceMonitoringPolicy:
     version: str = "trusted-source-v1"
+    robots_mode: str = "enforce"
     max_requests_per_run: int = 10
     max_download_bytes_per_run: int = 5_000_000
     max_response_bytes: int = 1_000_000
@@ -146,6 +147,8 @@ class SourceMonitoringPolicy:
             raise ValueError("SOURCE_MONITOR_MIN_REQUEST_INTERVAL_MS must be non-negative")
         if not self.version.strip():
             raise ValueError("SOURCE_MONITOR_POLICY_VERSION must not be empty")
+        if self.robots_mode not in {"enforce", "advisory_public_http"}:
+            raise ValueError("SOURCE_MONITOR_ROBOTS_MODE must be enforce or advisory_public_http")
         if not self.user_agent.strip():
             raise ValueError("SOURCE_MONITOR_USER_AGENT must not be empty")
 
@@ -234,6 +237,7 @@ class WebResearchPolicy:
     company_cooldown_hours: int = 24
     company_check_ttl_days: int = 14
     version: str = "bounded-web-v3"
+    robots_mode: str = "enforce"
     primary_provider: str = "baidu"
     fallback_provider: str = "bocha"
     search_cache_ttl_days: int = 14
@@ -265,6 +269,8 @@ class WebResearchPolicy:
     def __post_init__(self) -> None:
         if not self.version.strip():
             raise ValueError("WEB_RESEARCH_POLICY_VERSION must not be empty")
+        if self.robots_mode not in {"enforce", "advisory_public_http"}:
+            raise ValueError("WEB_RESEARCH_ROBOTS_MODE must be enforce or advisory_public_http")
         if self.primary_provider not in {"baidu", "bocha", "tavily"}:
             raise ValueError("WEB_RESEARCH_PRIMARY_PROVIDER must be baidu, bocha or tavily")
         if self.fallback_provider not in {"baidu", "bocha", "tavily"}:
@@ -557,6 +563,7 @@ class Settings:
                 ),
             ),
             web_research_policy=WebResearchPolicy(
+                robots_mode=os.getenv("WEB_RESEARCH_ROBOTS_MODE", "enforce").strip().lower(),
                 matter_processing_enabled=_as_bool(
                     os.getenv("WEB_RESEARCH_MATTERS_ENABLED", "false")
                 ),

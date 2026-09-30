@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from backend.app.matter_dates import occurrence
 from backend.app.matter_validation import equivalent_value
 
-COMPARISON_VERSION = "matter-comparison-v3"
+COMPARISON_VERSION = "matter-comparison-v4"
 
 
 @dataclass(frozen=True)
@@ -18,7 +18,15 @@ class MergeDecision:
     version: str = COMPARISON_VERSION
 
 
-def compare_matters(left, right):
+def compare_matters(left, right, *, subject=None):
+    left_subject, right_subject = (re.sub(r"\s+", "", m.subject) for m in (left, right))
+    verified_names = (
+        {re.sub(r"\s+", "", name) for name in (subject.legal_name, *subject.aliases)}
+        if subject is not None
+        else set()
+    )
+    if left_subject != right_subject and not {left_subject, right_subject} <= verified_names:
+        return MergeDecision("new_matter", False, "subject_differs")
     if (left.category, left.scope) != (right.category, right.scope):
         return MergeDecision("new_matter", False, "category_or_scope_differs")
     a, b = left.fields, right.fields
@@ -53,6 +61,8 @@ def compare_matters(left, right):
     if any(differs(k) for k in ("transaction_id", "project_id")):
         return MergeDecision("new_matter", False, "explicit_identity_differs")
     anchor = equal("transaction_id") or equal("project_id")
+    if anchor and left.status != right.status and "denied" not in {left.status, right.status}:
+        return MergeDecision("related_stage", False, "same_identity_separate_status_milestone")
     if left.subtype != right.subtype:
         if anchor and left.subtype.startswith("ipo_") and right.subtype.startswith("ipo_"):
             return MergeDecision("related_stage", False, "same_project_new_stage")
@@ -64,6 +74,8 @@ def compare_matters(left, right):
         ):
             return MergeDecision("related_stage", False, "same_issuer_market_possible_process")
         return MergeDecision("new_matter", False, "different_stage_or_action")
+    if not anchor and (differs("round") or differs("date")):
+        return MergeDecision("new_matter", False, "event_date_or_round_differs")
     if differs("application_cycle") or differs("acquisition_stage"):
         return MergeDecision(
             "related_stage", False, "separate_application_or_acquisition_milestone"

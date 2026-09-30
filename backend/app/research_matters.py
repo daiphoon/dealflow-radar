@@ -21,8 +21,8 @@ from backend.app.matter_contract import (
 from backend.app.matter_dates import date_fields, normalize_date, occurrence
 
 VERSION = "matter-v1"
-PROMPT_VERSION = "research-matter-extraction-v4"
-EXTRACTION_VERSION = "matter-extraction-v4"
+PROMPT_VERSION = "research-matter-extraction-v5"
+EXTRACTION_VERSION = "matter-extraction-v5"
 # 每类均有实际动作契约；不把整篇文章标题当作事件动作。
 ACTIONS = (
     (
@@ -83,11 +83,17 @@ ACTIONS = (
         r"(?:启动|计划|拟|将).{0,25}?(?:赴港上市|港股IPO|A股上市|挂牌上市)|(?:否认|不属实).{0,20}?上市|上市.{0,20}?(?:否认|不属实)",
     ),
     ("exit_liquidity", "ipo_withdrawn", r"(?:撤回|终止).{0,15}?(?:IPO|上市申请)"),
-    ("contract_commercial", "contract_award", r"中标|签订.{0,30}?合同|签署.{0,30}?合作协议"),
+    (
+        "contract_commercial",
+        "contract_award",
+        r"中标|(?:签订|签署).{0,30}?(?:合同|合作协议|租赁协议|框架协议|战略协议)"
+        r"|(?:完成|开展|实现).{0,12}?首次商业运输",
+    ),
     (
         "product_technology",
         "product_milestone",
-        r"发布.{1,30}?(?:产品|机器人|系统)|(?:获得|通过).{0,25}?(?:认证|注册证)|获批",
+        r"(?:发布|推出).{1,30}?(?:产品|机器人|系统)"
+        r"|(?:获得|取得|通过).{0,25}?(?:认证|注册证|准入|装机批准|技术审核|适航)|获批",
     ),
     (
         "financial_operation",
@@ -297,7 +303,9 @@ def infer_fields(action, subtype):
             }
         else:
             fields.setdefault(role, {"value": raw, "quote": action, "role": role})
-    round_match = re.search(r"(?:Pre[-‑ ]?)?[A-F](?:\+)?\s*轮|天使轮|种子轮", action, re.I)
+    round_match = re.search(
+        r"(?:Pre[-‑ ]?)?[A-F](?:[1-9][0-9]?)?(?:\+)?\s*轮|天使轮|种子轮", action, re.I
+    )
     if round_match and subtype == "company_financing":
         fields["round"] = {"value": round_match.group(), "quote": action, "role": "round"}
     if subtype == "company_financing":

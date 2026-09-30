@@ -43,6 +43,22 @@ const request = (overrides = {}) => ({
 const render = (data) => renderToStaticMarkup(React.createElement(component.RequestResearchResult, { request: data }));
 const visible = (html) => html.replace(/<details>.*?<\/details>/gs, "");
 
+for (const [failure, label] of [
+  ["access_controlled", "来源要求登录、授权或交互验证"],
+  ["rate_limited", "来源限流，本次未完成"],
+]) {
+  test(`公开来源失败原因 ${failure} 不伪装为无事件`, () => {
+    const data = request({ status: "failed" });
+    data.research_result.completion = {
+      scope: "bounded_full_scope_refresh", status: "failed", network_preflight_failed: false,
+      categories: [{ category: "product_technology", planned: true, status: "failed",
+        failure_class: failure, last_successful_check_at: null }],
+    };
+    assert.match(visible(render(data)), new RegExp(label));
+    assert.match(visible(render(data)), /不能据此判断公司经营正常或没有风险/);
+  });
+}
+
 test("类别检查区分五类结果，明确缓存时间与事实边界", () => {
   const data = request();
   data.research_result.category_coverage = [

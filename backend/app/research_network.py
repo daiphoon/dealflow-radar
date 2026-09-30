@@ -42,6 +42,10 @@ def public_failure_class(code):
         return "network_environment_blocked"
     if code == "robots_disallowed":
         return "robots_denied"
+    if code in {"authentication_required", "access_controlled", "captcha_required"}:
+        return "access_controlled"
+    if code == "rate_limited":
+        return "rate_limited"
     if code in {"dynamic_rendering_required", "static_body_missing"}:
         return "dynamic_content_unavailable"
     if code in {
@@ -51,18 +55,26 @@ def public_failure_class(code):
         "document_limit_reached",
         "max_elapsed_seconds_reached",
         "model_budget_exhausted",
+        "request_limit_exceeded",
+        "run_byte_limit_exceeded",
+        "execution_time_limit_reached",
     }:
         return "budget_deferred"
     return "source_unreachable" if code else None
 
 
 def fetch_failure_metadata(url, category, code, log, request_count, http_status):
+    target_hash = hashlib.sha256(url.encode()).hexdigest()
     return {
         "hostname": urlsplit(url).hostname,
         "category": category,
-        "canonical_url_hash": hashlib.sha256(url.encode()).hexdigest(),
+        "canonical_url_hash": target_hash,
         "dns": next((row["dns"] for row in reversed(log) if row.get("dns")), None),
         "http_dispatched": any(row.get("http_dispatched") for row in log),
+        "target_http_dispatched": any(
+            row.get("http_dispatched") and row.get("canonical_url_hash") == target_hash
+            for row in log
+        ),
         "actual_http_requests": request_count,
         "http_status": http_status,
         "failure_class": public_failure_class(code),
@@ -81,6 +93,7 @@ def fetch_failure_metadata(url, category, code, log, request_count, http_status)
                     "status",
                     "error_code",
                     "checked_at",
+                    "acquisition_phase",
                 )
                 if k in row
             }

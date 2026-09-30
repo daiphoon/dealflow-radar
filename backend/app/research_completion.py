@@ -30,6 +30,8 @@ FAILURE_LABELS = {
     "dynamic_content_unavailable": "正文不可获取",
     "budget_deferred": "预算不足，未完成",
     "not_checked": "未检查",
+    "access_controlled": "来源要求登录、授权或交互验证",
+    "rate_limited": "来源限流，本次未完成",
 }
 
 

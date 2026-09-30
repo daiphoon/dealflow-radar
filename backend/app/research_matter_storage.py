@@ -251,7 +251,9 @@ def persist_matters(
         for event in existing:
             if event.event_type != matter.category:
                 continue
-            comparisons = [compare_matters(old, matter) for old in previous.get(event.id, [])]
+            comparisons = [
+                compare_matters(old, matter, subject=subject) for old in previous.get(event.id, [])
+            ]
             for compared in comparisons:
                 if compared.decision == "related_stage":
                     relations.append(

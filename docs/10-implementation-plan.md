@@ -23,6 +23,14 @@
 
 ## 2. 有效执行检查点
 
+- **当前唯一里程碑：M2-F 工程候选送审，`M2_F_HOLD`**。正式基线 main `c8d693c3facff59ecb7e607bd8dc2c9482dc0fc7` / tree `1504c7a12302b91b70238f8aef863bf16c325894`，schema 保持 `0036`。仅合成测试与封存片段离线回放；完整范围、PR/准确 head/远端 Verify 及附件 hash 以统一私有交付包为准，公开说明见 [25 M2-F](25-m2-f-engineering-closure.md)。
+- **已验证与复用**：公开 HTTP advisory robots 显式策略、访问控制和预算硬停、编号融资轮次和通用合同/产品动作、主体/阶段关系保护、固定参考参数、逐输出四层裁决和隔离状态投影。九种同库情境在 SQLite/非 owner PostgreSQL 验证；本地完整后端 1464 通过/48 条件跳过，前端 37 项及类型/构建通过。已有 completion、许可/撤权和历史血缘保护复用；没有新 migration。
+- **首要阻断**：困难历史概念归并未闭合；实际 PostgreSQL 回放同一事项仍为四个候选，development 关系 macro-F1 为 0.24411。合成关系 0.97494、ROUNDUP 10/10、严重错误合并 0 不能掩盖这一缺口。旧实验原件及原回执保持，原业务评分当前为 `FORMAL_BUSINESS_SCORE_NOT_VALIDATED`；旧公司永久 `REGRESSION ONLY`，不构成新留出。
+- **下一 Gate 与边界**：负责人审查统一包和 PR 后，先收口概念身份/缺字段/阶段冲突的归并，再决定新的独立留出。候选不自动合并/部署；真实搜索/fetch/model/Jina 和生产操作 0，不开启 Worker、Watchlist、MCP/隧道，不自动进入 M2-V3。
+- 更新日期：2026-09-30；依据：[ADR-0029](DECISIONS/ADR-0029-public-source-acquisition-policy.md)。
+
+### 封存的 M2-R 检查点（以下旧“当前”不作为待办）
+
 - **当前唯一里程碑：M2-R 受限研究结果与未完成状态如实交付，工程候选送审**。基线 main `7a61807dc284d22252d2f7dfcbf351f26fa90d6c` / tree `bbfb9b6f55c0c121eaef871bd5728bc25cf8104a`。M1 已依据最终恢复回执关闭；上一轮 M2 保持 `PARTIAL / FAIL`、严格召回 `0/8`，旧九家不再作为新留出。本轮不重做 M2-A/B0/B/C/D，不重新研究。
 - **已验证**：计量前固定免费 HTTPS 预检、八类独立完成状态、有限 Watchlist 投影、v4 如实报告与 lead 撤回保护；十四类报告及正式 curated 维护在 SQLite/非 owner PostgreSQL 验证。完整后端 1386 通过/48 条件跳过，前端 35 通过及类型/构建；迁移仍 `0036`，历史迁移无变更。完整命令、渲染示例、跳过原因、PR/head/CI 与限制以统一私有交付包为准，公开交付说明见 [24 M2-R](24-m2-r-truthful-delivery.md)。
 - **网络与旧材料证据**：当前 Mac/Docker 非公网 DNS 继续拒绝、HTTP 0；香港隔离候选正式 Fetcher 6 次 HTTPS/60,188 字节，TLS/peer 全部通过，Provider/模型/生产数据库 0。具体宿主组件为推断，上一轮实际 DNS 仍未知。旧九家只在封存 C 副本上离线回归，42 张表恢复内容一致，报告期间其余 39 张业务表摘要不变；原实验回执与分数不改。

@@ -33,6 +33,8 @@ const failureLabels: Record<string, string> = {
   source_unreachable: "来源不可达", network_environment_blocked: "环境预检失败",
   robots_denied: "网站读取规则受阻", dynamic_content_unavailable: "正文不可获取",
   budget_deferred: "预算暂缓", not_checked: "未检查",
+  access_controlled: "来源要求登录、授权或交互验证",
+  rate_limited: "来源限流，本次未完成",
 };
 
 export function ResearchCoverage({ items, completion }: {
