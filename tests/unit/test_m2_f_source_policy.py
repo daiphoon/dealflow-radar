@@ -1,5 +1,7 @@
 """M2-F public HTTP policy cases use the actual bounded source fetcher."""
 
+from datetime import UTC, datetime, timedelta
+
 import httpx
 import pytest
 
@@ -34,6 +36,109 @@ def _check(fetcher):
         conditional_state={},
         acquisition_route="PUBLIC_STANDARD_HTTP",
     )
+
+
+@pytest.mark.parametrize("retry_after", [None, "invalid", "90", "Fri, 01 Oct 2027 00:00:00 GMT"])
+@pytest.mark.parametrize("phase", ["robots", "body", "redirect"])
+def test_rate_limit_survives_cache_and_stops_same_origin_dispatch(phase, retry_after):
+    paths, cache = [], {}
+
+    def handler(request):
+        paths.append(request.url.path)
+        if request.url.path == "/robots.txt" and phase != "robots":
+            return httpx.Response(404)
+        if phase == "redirect" and request.url.path == "/news/1":
+            return httpx.Response(302, headers={"location": "/limited"})
+        return httpx.Response(429, headers={"retry-after": retry_after} if retry_after else {})
+
+    with _fetcher(handler, max_requests=10) as fetcher:
+        fetcher.bind_job_robots_cache(cache)
+        with pytest.raises(SourceFetchError) as error:
+            _check(fetcher)
+        assert error.value.code == "rate_limited"
+        first_requests = len(paths)
+        with pytest.raises(SourceFetchError) as error:
+            _check(fetcher)
+        assert error.value.code == "rate_limited" and len(paths) == first_requests
+        assert cache["https://example.com"]["http_status"] == "429"
+        assert cache["https://example.com"].get("retry_after") == retry_after
+    with _fetcher(lambda _: pytest.fail("Cached origin must not dispatch")) as fresh:
+        fresh.bind_job_robots_cache(cache)
+        with pytest.raises(SourceFetchError) as error:
+            _check(fresh)
+        assert error.value.code == "rate_limited" and fresh.request_count == 0
+
+
+def test_legacy_rate_limit_cache_does_not_expire_as_ordinary_robots():
+    cache = {
+        "https://example.com": {
+            "status": "unavailable_deny",
+            "http_status": "429",
+            "user_agent": "",
+            "checked_at": (datetime.now(UTC) - timedelta(hours=2)).isoformat(),
+        }
+    }
+    with _fetcher(lambda _: pytest.fail("Unknown recovery must stay blocked")) as fetcher:
+        cache["https://example.com"]["user_agent"] = fetcher.policy.user_agent
+        fetcher.bind_job_robots_cache(cache)
+        with pytest.raises(SourceFetchError) as error:
+            _check(fetcher)
+        assert error.value.code == "rate_limited" and fetcher.request_count == 0
+
+
+def test_expired_valid_retry_after_permits_new_check_and_other_origin_is_not_blocked():
+    paths = []
+    cache = {
+        "https://example.com": {
+            "status": "rate_limited",
+            "http_status": "429",
+            "user_agent": "old-UA",
+            "checked_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+            "retry_after": "60",
+            "retry_at": (datetime.now(UTC) - timedelta(minutes=59)).isoformat(),
+        }
+    }
+
+    def handler(request):
+        paths.append(str(request.url))
+        return (
+            httpx.Response(404)
+            if request.url.path == "/robots.txt"
+            else httpx.Response(
+                200, headers={"content-type": "text/html"}, text="<main>公开公司事项</main>"
+            )
+        )
+
+    with _fetcher(handler) as fetcher:
+        fetcher.bind_job_robots_cache(cache)
+        assert len(_check(fetcher).documents) == 1
+        assert paths == ["https://example.com/robots.txt", "https://example.com/news/1"]
+        cache["https://www.example.com"] = {
+            "status": "rate_limited",
+            "http_status": "429",
+            "user_agent": "other-UA",
+            "checked_at": datetime.now(UTC).isoformat(),
+            "retry_after": "invalid",
+        }
+        assert len(_check(fetcher).documents) == 1
+        assert fetcher.request_count == 3
+
+
+def test_rate_limit_gate_survives_changed_user_agent():
+    with _fetcher(lambda _: pytest.fail("UA change cannot bypass origin rate limit")) as fetcher:
+        fetcher.bind_job_robots_cache(
+            {
+                "https://example.com": {
+                    "status": "rate_limited",
+                    "http_status": "429",
+                    "user_agent": "different-UA",
+                    "checked_at": datetime.now(UTC).isoformat(),
+                }
+            }
+        )
+        with pytest.raises(SourceFetchError) as error:
+            _check(fetcher)
+        assert error.value.code == "rate_limited" and fetcher.request_count == 0
 
 
 @pytest.mark.parametrize(

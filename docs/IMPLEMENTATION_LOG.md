@@ -1096,3 +1096,10 @@
 - 关键文件：`release_ops/compose.py`、`actions.py`、`metadata.py`、归档/SSH `bridge.py`、只读 `host.py`、正式配置回归、同路径隔离测试、必要CI及运行说明；业务/migration/冻结部署配置不变。
 - 实际命令：官方Compose2.40.3校验安装；正式CLI失败回归；`pytest tests/unit/test_ops_release.py tests/unit/test_ops_bridge.py tests/integration/test_ops_compose_contract.py`；显式本机冻结镜像 `test_ops_release_compose.py`；Ruff/format、diff/private/Secret核对。完整Verify和最终候选现场只读证据见统一私有交付。
 - 结果/阻塞：修前真实KeyError被复现，普通CI额外归档冻结基线并调用旧正式CLI复现默认profile事故；本机最终12项真实Compose回归通过；修后配置回归通过，拒绝缺服务/错镜像/开启开关及检查器故障，SSH成功不覆盖检查器失败。同路径演练和最终head证据分别留存，不把模拟browser标记当生产认证。生产仍0036/只读/停应用/静态维护；旧attempt和unknown保留；新PR不合并，新的集中恢复另批。
+
+## 2026-10-01 — M2-F / PR #109 概念身份续作
+
+- 关键文件：新增文内 `matter_identity`；抽取、比较/存储、四层评测和 Fetcher 429；直接单元/正式身份导入与 non-owner PG/报告回归、25号工程说明及看板。schema 0036和模型prompt不变，未修改历史migration。
+- 实际命令：正文/正式身份失败回归；隔离PG下完整 `pytest -q -p no:cacheprovider --tb=short -ra`；定向 CLI/429/并发/撤证和保留原件双顺序回放；SQLite/PostgreSQL `alembic check`；前端 `npm test/typecheck/build`；production/Safe Degrade/diagnostic Compose config、API/frontend本地Docker build；Ruff/check format、Gitleaks及 `git diff --check`。
+- 结果：最终新虚构基库完整后端1519通过/49条件跳过；前端37通过、类型和构建通过；RLS定向21通过。完整首次失败是UTC/上海跨月夹具，测试固定边界前后时点，业务额度规则未改；复用基库造成4项重复记录失败，保留日志后换新基库验证，未弱化断言。四候选正式入库为1事项/4原观测，全部来源/未知日期保留，顺序/重试/正式报告读取通过。准确新head的远端Verify以统一私有包为准，不复用历史CI。
+- 阻塞：保持 `M2_F_HOLD`。冻结gold正例13/15，另两对未闭合；独立挑战5通过/1失败/3未完整覆盖，后置融资完成表达漏抽、计划否认口径及未覆盖契约均如实保留。旧0/13/0/5未建立业务评分有效性，不改原回执或调gold救分。真实项目搜索/获取/模型和生产操作0，同PR普通提交后不合并、不部署、不启动新留出。

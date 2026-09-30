@@ -23,10 +23,10 @@
 
 ## 2. 有效执行检查点
 
-- **当前唯一里程碑：M2-F 工程候选送审，`M2_F_HOLD`**。正式基线 main `c8d693c3facff59ecb7e607bd8dc2c9482dc0fc7` / tree `1504c7a12302b91b70238f8aef863bf16c325894`，schema 保持 `0036`。仅合成测试与封存片段离线回放；完整范围、PR/准确 head/远端 Verify 及附件 hash 以统一私有交付包为准，公开说明见 [25 M2-F](25-m2-f-engineering-closure.md)。
-- **已验证与复用**：公开 HTTP advisory robots 显式策略、访问控制和预算硬停、编号融资轮次和通用合同/产品动作、主体/阶段关系保护、固定参考参数、逐输出四层裁决和隔离状态投影。九种同库情境在 SQLite/非 owner PostgreSQL 验证；首轮完整后端 1464 通过/48 条件跳过，前端 37 项及类型/构建通过。最终审查追加有效空/注释/Sitemap robots 兼容性红例→修正，Fetcher 定向 63 通过；最终完整回归/准确 head CI 以统一包为准。已有 completion、许可/撤权和历史血缘保护复用；没有新 migration。
-- **首要阻断**：困难历史概念归并未闭合；实际 PostgreSQL 回放同一事项仍为四个候选，development 关系 macro-F1 为 0.24411。合成关系 0.97494、ROUNDUP 10/10、严重错误合并 0 不能掩盖这一缺口。旧实验原件及原回执保持，原业务评分当前为 `FORMAL_BUSINESS_SCORE_NOT_VALIDATED`；旧公司永久 `REGRESSION ONLY`，不构成新留出。
-- **下一 Gate 与边界**：负责人审查统一包和 PR 后，先收口概念身份/缺字段/阶段冲突的归并，再决定新的独立留出。候选不自动合并/部署；真实搜索/fetch/model/Jina 和生产操作 0，不开启 Worker、Watchlist、MCP/隧道，不自动进入 M2-V3。
+- **当前唯一里程碑：M2-F / PR #109 概念身份续作交付，`M2_F_HOLD`**。正式基线 main `c8d693c3facff59ecb7e607bd8dc2c9482dc0fc7` / tree `1504c7a12302b91b70238f8aef863bf16c325894`，schema 保持 `0036`。原四候选的文内主体、共同披露、正式入库和报告读取已闭合；独立挑战仍发现后置融资完成表达的抽取缺口及未覆盖项，不能标 READY 或业务 PASS。仅离线/Mock/本机隔离验证，准确新 head/Verify/限制和附件 hash 以本轮统一私有包为准，见 [25 M2-F](25-m2-f-engineering-closure.md)。
+- **已验证与复用**：文内法定共指、原四候选六对共同披露及非 owner PostgreSQL 入库/报告读取闭合；顺序、幂等、并发、许可/撤证、版本化未评价和真实 Fetcher Mock 429 闸门通过。默认 enforce、访问控制/预算、既有 completion 和历史血缘保护保留；schema 0036、无新 migration。最终完整回归、前端和准确 head Verify 以本轮统一包为准，首轮数量和限制只保留为历史。
+- **首要阻断**：冻结 development 正例仍有 2/15 未闭合；独立挑战发现“B轮融资交割完成”漏抽，计划中“尚未交割”被校正为 denied；集团 typed scope、同簇否认及 duplicate_rate 契约未完整覆盖。四候选已归并，不能继续写成当前仍拆四条；宏平均 F1 只作诊断。旧实验/回执保持，原业务评分为 `FORMAL_BUSINESS_SCORE_NOT_VALIDATED`，旧公司及已见合成例永久 `REGRESSION ONLY`。
+- **下一 Gate 与边界**：负责人审查统一包和 PR 后，决定有界的冻结病例主体/融资阶段语义修复；当前不建议按 READY 合并或启动新留出。真实搜索/fetch/model/Jina 和生产操作 0，不自动合并/部署，不开启 Worker、Watchlist、MCP/隧道，不自动进入 M2-V3。
 - 更新日期：2026-09-30；依据：[ADR-0029](DECISIONS/ADR-0029-public-source-acquisition-policy.md)。
 
 ### 封存的 M2-R 检查点（以下旧“当前”不作为待办）

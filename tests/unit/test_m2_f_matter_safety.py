@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.app.matter_comparison import compare_matters
+from backend.app.matter_identity import context_for
 from backend.app.research_matters import Matter, extract_matters
 
 SUBJECT = SimpleNamespace(legal_name="示例远澜科技有限公司", aliases=(), legal_aliases=())
@@ -124,3 +125,38 @@ def test_numbered_round_remains_grounded_and_does_not_collapse_to_letter_round(r
     assert row.fields["round"]["quote"] in row.action
     other = extract_matters(SUBJECT, SUBJECT.legal_name + "完成A轮融资。")[0]
     assert not compare_matters(row, other).same_matter
+
+
+@pytest.mark.parametrize("anchored", [False, True])
+def test_month_and_day_need_independent_occurrence_anchor(anchored):
+    suffix = "，交易编号D-2026" if anchored else ""
+    bodies = [
+        SUBJECT.legal_name + "于" + day + "完成A轮融资" + suffix + "。"
+        for day in ("2026年9月", "2026年9月15日")
+    ]
+    rows = [extract_matters(SUBJECT, body)[0] for body in bodies]
+    decision = compare_matters(
+        *rows,
+        subject=SUBJECT,
+        left_context=context_for(SUBJECT, bodies[0]),
+        right_context=context_for(SUBJECT, bodies[1]),
+    )
+    assert decision.same_matter is anchored
+    assert "iso" not in rows[0].fields["occurred"]
+    assert rows[1].fields["occurred"]["iso"] == "2026-09-15"
+
+
+def test_shared_background_is_not_an_occurrence_anchor():
+    shared = "企业坚持提供高质量服务，持续推动技术进步及产业协作，扩大行业应用范围。"
+    bodies = [
+        SUBJECT.legal_name + claim + "。\n" + shared
+        for claim in ("发布甲型机器人产品", "发布乙型机器人产品")
+    ]
+    rows = [extract_matters(SUBJECT, body)[0] for body in bodies]
+    decision = compare_matters(
+        *rows,
+        subject=SUBJECT,
+        left_context=context_for(SUBJECT, bodies[0]),
+        right_context=context_for(SUBJECT, bodies[1]),
+    )
+    assert not decision.same_matter and decision.context_basis is None

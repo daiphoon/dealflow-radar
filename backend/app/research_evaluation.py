@@ -146,11 +146,22 @@ QUALITY_COUNTS = (
     "unknown_time",
     "manual_reviews",
 )
+LAYERS = ("extracted_correct", "evidence_supported", "confirmed", "delivered")
+LINKED_V2 = "linked-four-layer-v2"
 
 
-def linked_judgment(expected_ids, output_ids, decisions, *, absence_reason=None):
+def linked_judgment(
+    expected_ids,
+    output_ids,
+    decisions,
+    *,
+    absence_reason=None,
+    schema_version="linked-four-layer-v1",
+):
     """逐输出的可追溯四层裁决；不从发布数量反推抽取正确性。"""
     expected, outputs = set(expected_ids), set(output_ids)
+    if schema_version not in {"linked-four-layer-v1", LINKED_V2}:
+        raise ValueError("unsupported_judgment_version")
     if len(expected) != len(expected_ids) or len(outputs) != len(output_ids):
         raise ValueError("duplicate_evaluation_identity")
     if {d.get("output_id") for d in decisions} != outputs or len(decisions) != len(outputs):
@@ -159,9 +170,23 @@ def linked_judgment(expected_ids, output_ids, decisions, *, absence_reason=None)
         raise ValueError("explicit_absence_reason_required")
     matched = set()
     counts = dict.fromkeys(QUALITY_COUNTS, 0)
-    layers = dict.fromkeys(("extracted_correct", "evidence_supported", "confirmed", "delivered"), 0)
+    layers = dict.fromkeys(LAYERS, 0)
+    layer_matches = {key: set() for key in LAYERS}
     for decision in decisions:
-        if not decision.get("reason") or any(type(decision.get(k)) is not bool for k in layers):
+        if not decision.get("reason") or any(
+            key not in decision
+            or not (
+                type(decision[key]) is bool
+                or (
+                    schema_version == LINKED_V2
+                    and decision[key] is None
+                    and isinstance(decision.get("not_evaluated_reasons"), dict)
+                    and isinstance(decision["not_evaluated_reasons"].get(key), str)
+                    and decision["not_evaluated_reasons"][key].strip()
+                )
+            )
+            for key in layers
+        ):
             raise ValueError("explicit_four_layer_judgment_required")
         if decision["evidence_supported"] and (
             not decision.get("evidence_id") or not decision.get("quote")
@@ -175,17 +200,52 @@ def linked_judgment(expected_ids, output_ids, decisions, *, absence_reason=None)
                 counts["duplicate_split"] += 1
             matched.add(benchmark_id)
         for key in layers:
-            layers[key] += decision[key]
+            layers[key] += int(decision[key] is True)
+            prerequisites = (
+                ("extracted_correct",)
+                if key == "extracted_correct"
+                else ("extracted_correct", "evidence_supported")
+                if key == "evidence_supported"
+                else ("extracted_correct", "evidence_supported", key)
+            )
+            if benchmark_id and all(decision[p] is True for p in prerequisites):
+                layer_matches[key].add(benchmark_id)
         for key in counts:
             if key != "duplicate_split":
                 counts[key] += int(key in decision.get("errors", []))
     return {
+        "schema_version": schema_version,
+        "expected_ids": list(expected_ids),
+        "output_ids": list(output_ids),
         "expected": len(expected),
         "output": len(outputs),
         "correct_output": layers["extracted_correct"],
         "matched_expected": len(matched),
         **counts,
         "layers": layers,
+        "layer_assessments": {
+            key: {
+                "evaluated": sum(type(d[key]) is bool for d in decisions),
+                "passed": layers[key],
+                "failed": sum(d[key] is False for d in decisions),
+                "not_evaluated": sum(d[key] is None for d in decisions),
+                "matched_expected": len(layer_matches[key]),
+                "expected_evaluated": len(expected)
+                if all(
+                    type(d[p]) is bool
+                    for d in decisions
+                    for p in (
+                        ("extracted_correct",)
+                        if key == "extracted_correct"
+                        else ("extracted_correct", "evidence_supported")
+                        if key == "evidence_supported"
+                        else ("extracted_correct", "evidence_supported", key)
+                    )
+                )
+                else 0,
+            }
+            for key in LAYERS
+        },
         "decisions": decisions,
         "absence_reason": absence_reason,
     }
@@ -212,6 +272,18 @@ def scorecard(judgments, *, benchmark=None):
     required = ("expected", "output", "correct_output", "matched_expected", *QUALITY_COUNTS)
     totals = dict.fromkeys(required, 0)
     for j in reviewed:
+        if j.get("schema_version") == LINKED_V2:
+            if any(key not in j for key in ("expected_ids", "output_ids", "decisions")):
+                raise ValueError("linked_judgment_identities_required")
+            canonical = linked_judgment(
+                j["expected_ids"],
+                j["output_ids"],
+                j["decisions"],
+                absence_reason=j.get("absence_reason"),
+                schema_version=LINKED_V2,
+            )
+            if any(j.get(k) != canonical[k] for k in (*required, "layer_assessments")):
+                raise ValueError("judgment_counts_must_match_linked_decisions")
         for field in ("cost", "seconds"):
             value = j.get(field)
             if value is not None and (
@@ -245,6 +317,57 @@ def scorecard(judgments, *, benchmark=None):
         if benchmark is not None
         else None
     )
+    layer_totals = {}
+    for key in LAYERS:
+        rows = [j.get("layer_assessments", {}).get(key) for j in reviewed]
+        available = complete and all(
+            row is not None and row["expected_evaluated"] == j["expected"]
+            for row, j in zip(rows, reviewed, strict=True)
+        )
+        assessed_expected = sum(row["expected_evaluated"] for row in rows if row)
+        layer_totals[key] = {
+            **{
+                field: sum(row[field] for row in rows if row)
+                for field in ("evaluated", "passed", "failed", "not_evaluated", "matched_expected")
+            },
+            "unlinked_output_count": sum(
+                j["output"] for row, j in zip(rows, reviewed, strict=True) if row is None
+            ),
+            "fixed_expected": expected_total,
+            "assessed_expected": assessed_expected,
+            "expected_coverage": assessed_expected / expected_total if expected_total else None,
+            "complete": available,
+            "recall": sum(row["matched_expected"] for row in rows if row) / expected_total
+            if formal and available and expected_total
+            else None,
+        }
+    versioned = any(j.get("schema_version") == LINKED_V2 for j in reviewed)
+    all_layers = all(row["complete"] for row in layer_totals.values())
+    candidate_available = formal and (
+        not versioned or layer_totals["evidence_supported"]["complete"]
+    )
+    delivery_recall = layer_totals["delivered"]["recall"]
+    extraction_complete = not versioned or layer_totals["extracted_correct"]["complete"]
+    candidate_complete = not versioned or layer_totals["evidence_supported"]["complete"]
+    if not extraction_complete:
+        subset["precision"] = None
+    if not candidate_complete:
+        subset["known_set_recall"] = None
+    unknown_expected = missing_expected
+    if versioned and benchmark is not None:
+        unknown_expected = sum(
+            b["expected"]
+            for j, b in zip(judgments, benchmark, strict=True)
+            if j is None
+            or j.get("layer_assessments", {})
+            .get("evidence_supported", {})
+            .get("expected_evaluated")
+            != b["expected"]
+        )
+    qualified = (
+        layer_totals["delivered"]["matched_expected"] if versioned else totals["matched_expected"]
+    )
+    qualified_available = not versioned or (formal and layer_totals["delivered"]["complete"])
     return {
         "status": "not_recorded"
         if not reviewed
@@ -253,7 +376,14 @@ def scorecard(judgments, *, benchmark=None):
         else "frozen_benchmark_judgments"
         if formal
         else "complete_judgments_unfrozen",
-        "formal_metrics_available": formal,
+        "formal_metrics_available": formal and (not versioned or all_layers),
+        "evaluation_status": "complete"
+        if complete and (not versioned or all_layers)
+        else "not_evaluated_layers_remain",
+        "metric_basis": "layered_evaluation" if versioned else "legacy_candidate_counts",
+        "layer_assessments": layer_totals,
+        "candidate_supported_recall": subset["known_set_recall"] if candidate_available else None,
+        "business_delivery_recall": delivery_recall,
         "sample_count": len(judgments),
         "reviewed_count": len(reviewed),
         "missing_judgments": len(judgments) - len(reviewed),
@@ -261,19 +391,21 @@ def scorecard(judgments, *, benchmark=None):
         "expected_total": expected_total,
         "recall_bounds": [
             totals["matched_expected"] / expected_total,
-            (totals["matched_expected"] + missing_expected) / expected_total,
+            min(1, (totals["matched_expected"] + unknown_expected) / expected_total),
         ]
         if expected_total
         else None,
+        "recall_bounds_basis": "candidate_supported" if versioned else "legacy_candidate_counts",
         "reviewed_subset": subset,
         "counts_basis": "reviewed_subset",
         "counts": totals,
-        "precision": subset["precision"] if formal else None,
-        "known_set_recall": subset["known_set_recall"] if formal else None,
+        "precision": subset["precision"] if formal and extraction_complete else None,
+        "known_set_recall": subset["known_set_recall"] if formal and not versioned else None,
         "cost": cost,
         "resource_basis": "reviewed_subset",
-        "cost_per_qualified": cost / totals["matched_expected"]
-        if cost is not None and totals["matched_expected"]
+        "cost_per_qualified": cost / qualified
+        if qualified_available and cost is not None and qualified
         else None,
+        "qualified_basis": "business_delivery" if versioned else "legacy_candidate_counts",
         "seconds": sum(durations) if durations and all(t is not None for t in durations) else None,
     }

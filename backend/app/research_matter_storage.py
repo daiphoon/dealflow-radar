@@ -8,9 +8,10 @@ from sqlalchemy import select, text
 
 from backend.app.evidence_integrity import EXCERPT_HASH_VERSION, hash_excerpt_bytes
 from backend.app.financing_storage import authorized_research_evidence
-from backend.app.matter_comparison import compare_matters
+from backend.app.matter_comparison import COMPARISON_VERSION, compare_matters
 from backend.app.matter_dates import occurrence
 from backend.app.matter_dispositions import record
+from backend.app.matter_identity import IDENTITY_VERSION, context_for, resolved_identity
 from backend.app.matter_retention import RETENTION_VERSION, source_channel, temporal_status
 from backend.app.matter_validation import (
     VALIDATION_VERSION,
@@ -18,7 +19,7 @@ from backend.app.matter_validation import (
     actor_supported,
     validate_field,
 )
-from backend.app.models import Event, EventEvidence, EventObservation
+from backend.app.models import Event, EventEvidence, EventObservation, RawDocument
 from backend.app.research_matters import (
     EXTRACTION_VERSION,
     LABELS,
@@ -31,7 +32,9 @@ from backend.app.research_matters import (
 from backend.app.research_subject import load_subject
 
 
-def previous_matters(session, event, subject, *, evidence=None, observations=None):
+def previous_matters(
+    session, event, subject, *, evidence=None, observations=None, with_context=False
+):
     if evidence is None:
         evidence = list(
             session.scalars(select(EventEvidence).where(EventEvidence.event_id == event.id))
@@ -73,14 +76,26 @@ def previous_matters(session, event, subject, *, evidence=None, observations=Non
         )
         in active
     ]
-    candidates = [Matter(**r.candidate_payload["matter"]) for r in rows]
+    candidates = []
+    for row in rows:
+        matter = Matter(**row.candidate_payload["matter"])
+        document = session.get(RawDocument, row.raw_document_id) if with_context else None
+        context = (
+            context_for(
+                subject, str(document.payload.get("excerpt") or ""), document_id=document.id
+            )
+            if document is not None
+            else None
+        )
+        candidates.append((matter, context) if with_context else matter)
     if event.fingerprint_version == "curated-v1":
         for e in evidence:
             data = (e.display_detail_payload or {}).get("version", {})
             if e.display_allowed and data.get("facts") == event.facts:
                 from backend.app.matter_baseline import curated_matters
 
-                candidates += curated_matters(event, data, subject)
+                baselines = curated_matters(event, data, subject)
+                candidates += [(m, None) for m in baselines] if with_context else baselines
                 break
     if event.fingerprint_version in {"financing-v1", "financing-v2"}:
         from backend.app.financing_events import financing_observations
@@ -88,14 +103,21 @@ def previous_matters(session, event, subject, *, evidence=None, observations=Non
         for old in financing_observations(evidence, {e.id for e in evidence if e.display_allowed}):
             from backend.app.matter_baseline import financing_matter
 
-            candidates.append(financing_matter(old))
+            baseline = financing_matter(old)
+            candidates.append((baseline, None) if with_context else baseline)
     return candidates
 
 
 def persist_matters(
     session, company, document, source, actor, matters, policy, *, processing_version=None
 ):
-    processing_version = processing_version or f"{EXTRACTION_VERSION}/{VALIDATION_VERSION}"
+    processing_components = {
+        "extraction": EXTRACTION_VERSION,
+        "validation": VALIDATION_VERSION,
+        "comparison": COMPARISON_VERSION,
+        "identity": IDENTITY_VERSION,
+    }
+    processing_version = processing_version or digest(processing_components)
     checked = authorized_research_evidence(session, company, document, source, actor)
     if checked is None:
         record(document, "admission", "rejected", "research_evidence_not_authorized")
@@ -137,12 +159,14 @@ def persist_matters(
             subject,
             evidence=evidence_by_event.get(e.id, []),
             observations=observations_by_event.get(e.id, []),
+            with_context=True,
         )
         for e in existing
     }
     output, created, attached = [], 0, 0
     for matter in matters:
         body = str(document.payload.get("excerpt") or "")
+        context = context_for(subject, body, document_id=document.id)
         from backend.app.matter_fragments import continuous_quote
 
         mentions = {
@@ -252,7 +276,10 @@ def persist_matters(
             if event.event_type != matter.category:
                 continue
             comparisons = [
-                compare_matters(old, matter, subject=subject) for old in previous.get(event.id, [])
+                compare_matters(
+                    old, matter, subject=subject, left_context=old_context, right_context=context
+                )
+                for old, old_context in previous.get(event.id, [])
             ]
             for compared in comparisons:
                 if compared.decision == "related_stage":
@@ -264,7 +291,28 @@ def persist_matters(
                         }
                     )
             matching = [d for d in comparisons if d.same_matter]
-            if matching:
+            incompatible = [
+                d
+                for d in comparisons
+                if d.decision == "related_stage"
+                or d.reason
+                in {
+                    "subject_differs",
+                    "explicit_identity_differs",
+                    "event_date_or_round_differs",
+                    "different_stage_or_action",
+                    "context_company_binding_differs",
+                }
+            ]
+            if matching and incompatible:
+                relations.append(
+                    {
+                        "event_id": str(event.id),
+                        "type": "cluster_identity_conflict",
+                        "reason": incompatible[0].reason,
+                    }
+                )
+            if matching and not incompatible:
                 matches.append(event)
                 decisions[event.id] = next(
                     (d for d in matching if d.decision == "field_conflict"), matching[0]
@@ -379,6 +427,7 @@ def persist_matters(
                 if decision
                 else {"decision": "ambiguous" if len(matches) > 1 else "new_matter"},
                 "processing_version": processing_version,
+                "processing_components": processing_components,
                 "retention": retention,
                 "baseline_kind": "curated"
                 if event.fingerprint_version == "curated-v1"
@@ -386,6 +435,7 @@ def persist_matters(
                 if event.fingerprint_version in {"financing-v1", "financing-v2"}
                 else "research",
                 "relations": relations,
+                "identity_context": resolved_identity(subject, matter, context),
                 "dispositions": list(getattr(document, "_matter_dispositions", [])),
             },
             created_by=actor.id,
@@ -398,6 +448,7 @@ def persist_matters(
             "matter_observation": {
                 "kind": kind,
                 "processing_version": processing_version,
+                "processing_components": processing_components,
                 "temporal_status": retention,
                 "retention_version": RETENTION_VERSION,
                 "recent_window_days": policy.recent_change_window_days,
@@ -472,7 +523,7 @@ def persist_matters(
         session.flush()
         session.add(observation)
         session.flush()
-        previous.setdefault(event.id, []).append(matter)
+        previous.setdefault(event.id, []).append((matter, context))
         if event.fingerprint_version == VERSION:
             from backend.app.fact_support import materialize_event_fact_ledger
 

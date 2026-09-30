@@ -22,7 +22,7 @@ from backend.app.matter_dates import date_fields, normalize_date, occurrence
 
 VERSION = "matter-v1"
 PROMPT_VERSION = "research-matter-extraction-v5"
-EXTRACTION_VERSION = "matter-extraction-v5"
+EXTRACTION_VERSION = "matter-extraction-v6"
 # 每类均有实际动作契约；不把整篇文章标题当作事件动作。
 ACTIONS = (
     (
@@ -222,15 +222,9 @@ class TypedProposedMatters(BaseModel):
 
 
 def names_in_document(subject, text):
-    names = [subject.legal_name, *subject.aliases]
-    # 文内“工商全称（以下简称 X）”只在该文有效，不写回公司身份。
-    for name in list(names):
-        for m in re.finditer(
-            re.escape(name)
-            + r"[（(](?:以下简称|简称)[：:、\s]*[“\"「]?([^”\"」）)]{2,30})[”\"」]?[）)]",
-            text,
-        ):
-            names.append(m.group(1).strip())
+    from backend.app.matter_identity import legal_declarations
+
+    names = [subject.legal_name, *subject.aliases, *legal_declarations(subject, text)]
     return tuple(sorted(set(names), key=len, reverse=True))
 
 
@@ -382,7 +376,9 @@ def extract_matters(subject, text):
     body = clean_body(text)
     names = names_in_document(subject, body)
     matters = []
-    local_names = set(names) - {subject.legal_name, *subject.aliases}
+    from backend.app.matter_identity import context_for, legal_declarations
+
+    local_names = set(legal_declarations(subject, body))
     from backend.app.matter_validation import actor_supported, scoped_status
 
     for block in body.splitlines():
@@ -498,16 +494,7 @@ def extract_matters(subject, text):
             (
                 m
                 for m in distinct
-                if compatible(m, matter)
-                or (
-                    m.scope == matter.scope
-                    and m.subtype == matter.subtype
-                    and m.status == matter.status
-                    and (
-                        comparison_text(m.action) in comparison_text(matter.action)
-                        or comparison_text(matter.action) in comparison_text(m.action)
-                    )
-                )
+                if compatible(m, matter, subject=subject, context=context_for(subject, body))
             ),
             None,
         )
@@ -595,7 +582,9 @@ def validate_proposals(subject, text, proposals, *, legacy_compat=True):
         }:
             rejected.append({"index": index, "reason": "subject_role_mismatch"})
             continue
-        local_names = set(names) - {subject.legal_name, *subject.aliases}
+        from backend.app.matter_identity import legal_declarations
+
+        local_names = set(legal_declarations(subject, body))
         scope = (
             "legal_entity"
             if proposal.subject
@@ -692,7 +681,9 @@ def validate_proposals(subject, text, proposals, *, legacy_compat=True):
     return accepted, rejected
 
 
-def compatible(left, right):
+def compatible(left, right, *, subject=None, context=None):
     from backend.app.matter_comparison import compare_matters
 
-    return compare_matters(left, right).same_matter
+    return compare_matters(
+        left, right, subject=subject, left_context=context, right_context=context
+    ).same_matter

@@ -58,6 +58,7 @@ ROBOTS_CACHE_STATUSES = {
     "invalid_format_deny",
     "not_found_allow",
     "unavailable_deny",
+    "rate_limited",
 }
 MAX_ROBOTS_CACHE_ORIGINS = 32
 MAX_PERSISTED_ROBOTS_RULE_CHARS = 64_000
@@ -117,9 +118,13 @@ def normalized_robots_rule_cache(value: object, user_agent: str) -> dict[str, di
             or parsed.fragment
         ):
             continue
-        status = raw_entry.get("status")
+        status = (
+            "rate_limited" if raw_entry.get("http_status") == "429" else raw_entry.get("status")
+        )
         cached_user_agent = raw_entry.get("user_agent")
-        if status not in ROBOTS_CACHE_STATUSES or cached_user_agent != user_agent:
+        if status not in ROBOTS_CACHE_STATUSES or (
+            status != "rate_limited" and cached_user_agent != user_agent
+        ):
             continue
         checked_at = raw_entry.get("checked_at")
         if not isinstance(checked_at, str):
@@ -131,14 +136,14 @@ def normalized_robots_rule_cache(value: object, user_agent: str) -> dict[str, di
         if checked_at_value.tzinfo is None:
             continue
         age = datetime.now(UTC) - checked_at_value.astimezone(UTC)
-        if age < timedelta(0) or age > ROBOTS_CACHE_TTL:
+        if age < timedelta(0) or (status != "rate_limited" and age > ROBOTS_CACHE_TTL):
             continue
         entry = {
             "status": status,
             "user_agent": user_agent,
             "checked_at": checked_at_value.astimezone(UTC).isoformat(),
         }
-        for optional in ("http_status", "fetch_error_code"):
+        for optional in ("http_status", "fetch_error_code", "retry_after", "retry_at"):
             if isinstance(raw_entry.get(optional), str):
                 entry[optional] = raw_entry[optional][:80]
         if status == "checked":
@@ -261,6 +266,7 @@ class _FetchedResponse:
     body: bytes
     etag: str | None
     last_modified: str | None
+    retry_after: str | None = None
 
 
 class _HtmlMetadataParser(HTMLParser):
@@ -980,6 +986,20 @@ class TrustedSourceFetcher:
         *,
         allow_plain_text: bool,
     ) -> _FetchedResponse:
+        origin = self._origin(url)
+        limited = self._active_rate_limit(origin)
+        if limited:
+            self.request_log.append(
+                {
+                    "hostname": urlsplit(url).hostname,
+                    "http_dispatched": False,
+                    "error_code": "rate_limited",
+                    "retry_after": limited.get("retry_after"),
+                    "retry_at": limited.get("retry_at"),
+                    "phase": "origin_rate_gate",
+                }
+            )
+            raise SourceFetchError("rate_limited", "origin remains rate limited", http_status=429)
         if self.request_count >= self.policy.max_requests_per_run:
             raise SourceFetchError("request_limit_exceeded", "run request limit reached")
         audit = {
@@ -1072,6 +1092,8 @@ class TrustedSourceFetcher:
         response_bytes = 0
         try:
             self._check_peer_address(response, allowed_addresses)
+            if status_code == 429:
+                self._remember_rate_limit(url, response.headers.get("retry-after"))
             if self._owns_client and not self.allow_private_test_hosts:
                 audit.update(peer_verified=True, peer_class="public", tls_hostname_verified=True)
             is_redirect = status_code in {301, 302, 303, 307, 308}
@@ -1143,6 +1165,12 @@ class TrustedSourceFetcher:
                     "elapsed_ms": elapsed_ms,
                     "content_type": content_type,
                     "location": response.headers.get("location"),
+                    "retry_after": response.headers.get("retry-after")
+                    if status_code == 429
+                    else None,
+                    "retry_at": self._robots.get(origin, {}).get("retry_at")
+                    if status_code == 429
+                    else None,
                 }
             )
             return _FetchedResponse(
@@ -1153,6 +1181,7 @@ class TrustedSourceFetcher:
                 body=body,
                 etag=response.headers.get("etag"),
                 last_modified=response.headers.get("last-modified"),
+                retry_after=response.headers.get("retry-after"),
             )
         except (httpx.TransportError, httpx.DecodingError) as error:
             code = "timeout" if isinstance(error, httpx.TimeoutException) else "network_error"
@@ -1272,6 +1301,48 @@ class TrustedSourceFetcher:
                 allow_private_test_hosts=self.allow_private_test_hosts,
             )
 
+    @staticmethod
+    def _origin(url):
+        parsed = urlsplit(url)
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    def _remember_rate_limit(self, url, retry_after):
+        now = datetime.now(UTC)
+        entry = {
+            "status": "rate_limited",
+            "http_status": "429",
+            "checked_at": now.isoformat(),
+            "user_agent": self.policy.user_agent,
+        }
+        if retry_after is not None:
+            entry["retry_after"] = retry_after[:80]
+            try:
+                if re.fullmatch(r"\d+", retry_after.strip()):
+                    retry_at = now + timedelta(seconds=int(retry_after.strip()))
+                else:
+                    retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is not None:
+                    entry["retry_at"] = retry_at.astimezone(UTC).isoformat()
+            except (ValueError, TypeError, OverflowError, AttributeError):
+                pass
+        self._robots[self._origin(url)] = entry
+        return entry
+
+    def _active_rate_limit(self, origin):
+        entry = self._robots.get(origin)
+        if not entry or not (
+            entry.get("status") == "rate_limited" or entry.get("http_status") == "429"
+        ):
+            return None
+        try:
+            retry_at = datetime.fromisoformat(entry["retry_at"])
+            if retry_at.tzinfo is not None and datetime.now(UTC) >= retry_at:
+                self._robots.pop(origin, None)
+                return None
+        except (KeyError, TypeError, ValueError):
+            pass
+        return entry
+
     def _robots_check(
         self, target_url: str, root_domain: str, *, acquisition_route: str | None = None
     ) -> str:
@@ -1282,6 +1353,10 @@ class TrustedSourceFetcher:
             and acquisition_route == "PUBLIC_STANDARD_HTTP"
         )
         cached = self._robots.get(origin)
+        if cached and (
+            cached.get("status") == "rate_limited" or cached.get("http_status") == "429"
+        ):
+            cached = self._active_rate_limit(origin)
         if cached is not None and cached.get("user_agent") != self.policy.user_agent:
             cached = None
         from_cache = cached is not None
@@ -1325,6 +1400,8 @@ class TrustedSourceFetcher:
                     "user_agent": self.policy.user_agent,
                     "checked_at": checked_at,
                 }
+            elif response is not None and response.status_code == 429:
+                cached = self._remember_rate_limit(target_url, response.retry_after)
             elif response is not None and response.status_code in {401, 403}:
                 cached = {
                     "status": "denied",
@@ -1365,7 +1442,10 @@ class TrustedSourceFetcher:
             self._robots[origin] = cached
         status = cached["status"]
         allowed = robots_rule_allows(cached, target_url, self.policy.user_agent)
-        if status == "checked":
+        limited = status == "rate_limited" or cached.get("http_status") == "429"
+        if limited:
+            observed = "rate_limited"
+        elif status == "checked":
             observed = "allowed_observed" if allowed else "disallowed_observed"
         elif status == "not_found_allow":
             observed = "missing"
@@ -1384,15 +1464,27 @@ class TrustedSourceFetcher:
                 "status": observed,
                 "http_status": cached.get("http_status"),
                 "fetch_error_code": cached.get("fetch_error_code"),
+                "retry_after": cached.get("retry_after"),
+                "retry_at": cached.get("retry_at"),
                 "matched_rule": robots_matching_rule(cached, target_url, self.policy.user_agent),
                 "rules_hash": _sha256(cached.get("rules", "")) if status == "checked" else None,
                 "from_cache": from_cache,
-                "decision": "advisory_continue" if advisory else "allow" if allowed else "stop",
+                "decision": "stop_rate_limited"
+                if limited
+                else "advisory_continue"
+                if advisory
+                else "allow"
+                if allowed
+                else "stop",
                 "policy_version": PUBLIC_HTTP_ROBOTS_POLICY_VERSION
                 if advisory
                 else self.policy.version,
             }
         )
+        if limited:
+            raise SourceFetchError(
+                "rate_limited", "robots/origin rate limit must stop dispatch", http_status=429
+            )
         if not allowed and not advisory:
             raise SourceFetchError("robots_disallowed", "robots.txt does not allow this request")
         return observed if advisory else status
