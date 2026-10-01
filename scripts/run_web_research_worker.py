@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from backend.app.config import Settings
-from backend.app.database import build_engine, build_session_factory, set_request_context
+from backend.app.database import build_engine, build_session_factory, request_session
 from backend.app.models import User
 from backend.app.web_research_service import (
     inspect_web_research_queue,
@@ -73,8 +73,9 @@ def _with_worker_session(
 ) -> dict[str, object]:
     engine = build_engine(settings.database_url)
     try:
-        with build_session_factory(engine)() as session:
-            set_request_context(session, worker_user_id, worker_tenant_id)
+        with request_session(
+            build_session_factory(engine), worker_user_id, worker_tenant_id
+        ) as session:
             user = session.get(User, worker_user_id)
             if user is None or user.status != "active" or user.tenant_id != worker_tenant_id:
                 raise RuntimeError("web research worker user must be active in WORKER_TENANT_ID")

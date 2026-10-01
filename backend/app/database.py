@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import create_engine, event, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 
@@ -29,6 +30,9 @@ def build_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 
 def set_request_context(session: Session, user_id: UUID, tenant_id: UUID) -> None:
+    bound = session.info.get("transaction_identity")
+    if bound is not None and bound != (user_id, tenant_id):
+        raise ValueError("session_identity_cannot_change")
     if session.get_bind().dialect.name != "postgresql":
         return
     session.execute(
@@ -39,6 +43,33 @@ def set_request_context(session: Session, user_id: UUID, tenant_id: UUID) -> Non
         ),
         {"user_id": str(user_id), "tenant_id": str(tenant_id)},
     )
+
+
+@contextmanager
+def request_session(
+    factory: sessionmaker[Session], user_id: UUID, tenant_id: UUID
+) -> Iterator[Session]:
+    """Worker 跨提交使用同一身份；权限仍只作用于当前事务。"""
+    session = factory()
+    try:
+        if session.expire_on_commit:
+            raise ValueError("formal_session_factory_required")
+        session.info["transaction_identity"] = (user_id, tenant_id)
+
+        def begin_identity(_session, _transaction, connection: Connection):
+            if connection.dialect.name == "postgresql":
+                connection.execute(
+                    text(
+                        "SELECT set_config('app.current_user_id', :user_id, true), "
+                        "set_config('app.current_tenant_id', :tenant_id, true)"
+                    ),
+                    {"user_id": str(user_id), "tenant_id": str(tenant_id)},
+                )
+
+        event.listen(session, "after_begin", begin_identity)
+        yield session
+    finally:
+        session.close()
 
 
 def session_scope(factory: sessionmaker[Session]) -> Iterator[Session]:

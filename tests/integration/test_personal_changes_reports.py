@@ -381,7 +381,7 @@ def test_fixed_report_is_idempotent_private_and_server_limited(
     assert "投资金额" not in markdown
     assert "不包含投资建议或机构私有数据" in markdown
     assert "线索不构成事实" in markdown
-    assert created.json()["report_version"] == "personal-company-v4"
+    assert created.json()["report_version"] == "personal-company-v5"
     assert "- 分类：产品与技术" in markdown
     assert "- 方向：积极" in markdown
     assert "- 风险级别：低风险" in markdown

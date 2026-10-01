@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
+from backend.app.business_dates import business_date, reference_fields, report_reference
 from backend.app.config import PersonalEntitlementPolicy, RefreshPolicy
 from backend.app.models import (
     PLATFORM_SHARED_SCOPE,
@@ -49,7 +50,8 @@ from backend.app.services import (
 )
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_REPORT_VERSION = "personal-company-v4"
+_REPORT_VERSION = "personal-company-v5"
+_LEAD_REPORT_VERSIONS = {"personal-company-v4", "personal-company-v5"}
 _FIRST_VIEW_LOOKBACK_DAYS = 90
 
 _EVENT_TYPE_LABELS = {
@@ -1354,8 +1356,9 @@ def _report_markdown(
     *,
     completion: dict | None = None,
     leads: list[EventOut] = (),
-    reference_at: datetime | None = None,
+    reference_at: date | datetime | None = None,
     event_window_days: int = 365,
+    reference_source: str = "研究记录",
 ) -> str:
     from backend.app.research_completion import (
         CATEGORY_LABELS,
@@ -1366,7 +1369,9 @@ def _report_markdown(
 
     completion = completion or completion_projection({})
     reference_at = reference_at or as_of
-    start = (reference_at - timedelta(days=event_window_days)).date()
+    fields = reference_fields(reference_at, event_window_days)
+    start = date.fromisoformat(fields["event_window_start"])
+    end = date.fromisoformat(fields["event_window_end"])
     lines = [
         f"# {_single_line(company.legal_name)}",
         "",
@@ -1410,8 +1415,8 @@ def _report_markdown(
             if completion["status"] != "complete"
             else ["- 完成的是固定预算内的有限检查，不能保证公开信息穷尽。"]
         ),
-        f"- 资料窗口：{start.isoformat()} 至 {reference_at.date().isoformat()}；"
-        "窗口外资料另列为历史。",
+        f"- 资料窗口：{start.isoformat()} 至 {end.isoformat()}；窗口外资料另列为历史。",
+        f"- 参考日期口径：Asia/Shanghai；{reference_source}。",
         *[
             f"- {CATEGORY_LABELS[r['category']]}：{STATUS_LABELS[r['status']]}；"
             f"{FAILURE_LABELS.get(r['failure_class'], '本轮来源检查完成')}；"
@@ -1428,7 +1433,9 @@ def _report_markdown(
     def section(event):
         if event.temporal_status in {"historical", "historical_only"}:
             return "历史资料（窗口外，不代表近期变化）"
-        when = event.occurred_on or (event.occurred_at.date() if event.occurred_at else None)
+        when = event.occurred_on or (
+            business_date(_aware_utc(event.occurred_at)) if event.occurred_at else None
+        )
         latest = when
         if when is None and event.curated_versions:
             current = next((v for v in event.curated_versions if v.is_current), None)
@@ -1450,7 +1457,7 @@ def _report_markdown(
             return "历史资料（窗口外，不代表近期变化）"
         return (
             "近期已确认资料"
-            if start <= when <= latest <= reference_at.date()
+            if start <= when <= latest <= end
             else "已确认资料（发生日期未能确定，不冒充近期变化）"
         )
 
@@ -1638,7 +1645,7 @@ def _report_reference_ids(report):
             if isinstance(value, str):
                 identifier = UUID(value)
             elif (
-                report.report_version == "personal-company-v4"
+                report.report_version in _LEAD_REPORT_VERSIONS
                 and isinstance(value, dict)
                 and set(value) == {"id", "kind"}
                 and value["kind"] == "unconfirmed_lead"
@@ -1696,7 +1703,7 @@ def _safe_report_out(session, user, report, *, reused=False):
         or any(
             e.visibility_scope != PLATFORM_SHARED_SCOPE
             and not (
-                report.report_version == "personal-company-v4"
+                report.report_version in _LEAD_REPORT_VERSIONS
                 and e.id in lead_ids
                 and e.visibility_scope == "personal_private"
                 and e.owner_user_id == user.id
@@ -1864,10 +1871,7 @@ def create_personal_company_report(
     from backend.app.evidence_integrity import hash_canonical_object
 
     as_of = utc_now()
-    try:
-        reference_at = _aware_utc(datetime.fromisoformat(coverage.get("reference_at", "")))
-    except (TypeError, ValueError):
-        reference_at = as_of
+    reference_at, reference_source, event_window_days = report_reference(coverage, as_of)
     markdown = _report_markdown(
         company,
         snapshot,
@@ -1877,7 +1881,8 @@ def create_personal_company_report(
         completion=completion,
         leads=leads,
         reference_at=reference_at,
-        event_window_days=coverage.get("event_window_days", 365),
+        event_window_days=event_window_days,
+        reference_source=reference_source,
     )
     from backend.app.models import EventEvidence
     from backend.app.report_permissions import report_evidence_is_demo
