@@ -410,12 +410,18 @@ function ReviewCard({ review }: { review: ReviewWorkbenchItem }) {
         </>
       ) : (
         <div className="identity-review-note">
+          {review.source_context ? <div>
+            <p>关联主体：{review.source_context.related_entity}；{review.source_context.relation}。</p>
+            <p>保留为关联来源待核，不作为目标公司的融资事实；此处不能通过工商绑定将其改归目标。</p>
+            <blockquote>{review.source_context.excerpt}</blockquote>
+            <p>来源：{review.source_context.canonical_url}</p>
+          </div> : null}
           <p>
             匹配规则：{review.match_rule ?? "未知"} · 匹配置信度：
             {review.match_confidence ? `${Math.round(Number(review.match_confidence) * 100)}%` : "未知"}
           </p>
           <p>
-            本条资料公司归属：{review.resolution_status ?? "unresolved"}。只有存在身份歧义的工商候选需要人工选择；选定后系统会自动重建事件并按现行策略路由。
+            本条资料公司归属：{review.resolution_status ?? "unresolved"}。{review.source_context ? "关联主体材料不改变目标公司身份或事实。" : "只有存在身份歧义的工商候选需要人工选择；选定后系统会自动重建事件并按现行策略路由。"}
           </p>
           {review.status === "pending" && review.identity_candidates.length ? (
             <form action={submitIdentityResolution} className="review-form">

@@ -124,6 +124,8 @@ def persist_matters(
         return [], 0, 0
     company, document, source, actor = checked
     subject = load_subject(session, company)
+    if not matters:
+        _retain_related_entity_source(session, company, document, actor)
     from backend.app.web_research_service import _source_quality
 
     channel, source_quality = source_channel(
@@ -189,6 +191,18 @@ def persist_matters(
             )
             continue
         valid_fields = {}
+        from backend.app.matter_validation import scoped_status
+
+        expected_status = scoped_status(matter.action, matter.subtype)
+        if matter.status != expected_status:
+            record(document, "candidate_validation", "corrected", "status_revalidated_at_storage")
+            matter.status = expected_status
+        if matter.subtype == "company_financing":
+            from backend.app.financing_semantics import claim_reference
+
+            matter.claim_reference = claim_reference(matter.action)
+            if matter.status == "denied":
+                matter.fields = {}
         for key, item in matter.fields.items():
             supported, reason = validate_field(
                 item.get("role"),
@@ -290,6 +304,15 @@ def persist_matters(
                             "reason": compared.reason,
                         }
                     )
+                elif compared.decision == "ambiguous":
+                    # 不够合并时保存可定位的关联，不把待核作为自动 SAME。
+                    relations.append(
+                        {
+                            "event_id": str(event.id),
+                            "type": "review_required",
+                            "reason": compared.reason,
+                        }
+                    )
             matching = [d for d in comparisons if d.same_matter]
             incompatible = [
                 d
@@ -319,6 +342,8 @@ def persist_matters(
                 )
         event = matches[0] if len(matches) == 1 else None
         decision = decisions.get(event.id) if event else None
+        if event is not None:
+            relations = [r for r in relations if r["type"] != "review_required"]
         if event is None:
             # 有具体主体、动作和原文即保留线索；近期资格单独表达。
             occurred = occurrence(matter.fields).get("iso")
@@ -470,6 +495,7 @@ def persist_matters(
                 "scope": matter.scope,
                 "field_labels": FIELD_LABELS,
                 "fields": fields,
+                "claim_reference": matter.claim_reference,
                 "issues": matter.issues,
                 "excerpt": matter.action,
                 "source_url": document.canonical_url,
@@ -552,7 +578,66 @@ def persist_matters(
     return output, created, attached
 
 
-def visible_observations(evidence, visible_ids):
+def _retain_related_entity_source(session, company, document, actor):
+    """集团关系只进原文待核，不制造目标融资或全局集团身份。"""
+    import re
+
+    from backend.app.models import EntityMention, ReviewQueue
+
+    body = str(document.payload.get("excerpt") or "")
+    group = re.search(
+        r"([^，,。；;\n]{2,80}集团)(?:于[^，,。；;]{0,25})?(?:完成|获得)[^。；;]{0,35}融资", body
+    )
+    if not group or not re.search(
+        re.escape(company.legal_name) + r"是[^。；;]{0,100}旗下子公司", body
+    ):
+        return
+    group_name = group.group(1)
+    if group_name not in body.split(company.legal_name, 1)[1]:
+        return
+    mention = session.scalar(
+        select(EntityMention).where(
+            EntityMention.raw_document_id == document.id,
+            EntityMention.candidate_company_id == company.id,
+            EntityMention.mention_text == group_name,
+        )
+    )
+    if mention is None:
+        mention = EntityMention(
+            raw_document_id=document.id,
+            candidate_company_id=company.id,
+            mention_text=group_name,
+            match_rule="related_entity_not_target",
+            match_confidence=Decimal("0"),
+            resolution_status="unresolved",
+            # 待核判断归执行者私有；原文仍保持 system_restricted，不扩大原文共享。
+            visibility_scope="personal_private",
+            owner_user_id=actor.id,
+            owner_tenant_id=None,
+        )
+        session.add(mention)
+        session.flush()
+    if (
+        session.scalar(select(ReviewQueue.id).where(ReviewQueue.entity_mention_id == mention.id))
+        is None
+    ):
+        session.add(
+            ReviewQueue(
+                tenant_id=actor.tenant_id,
+                entity_mention_id=mention.id,
+                trigger_rules=["related_entity_not_target", "not_target_financing"],
+            )
+        )
+    record(
+        document,
+        "subject_scope",
+        "review_required",
+        "related_entity_not_target",
+        related_entity=group_name,
+    )
+
+
+def visible_observations(evidence, visible_ids, *, session=None):
     result = []
     for row in evidence:
         if row.id not in visible_ids or not row.display_allowed:
@@ -583,5 +668,45 @@ def visible_observations(evidence, visible_ids):
                     rejected.append(f"rejected_field:{key}:{reason}")
             item["fields"] = valid
             item["issues"] = list(dict.fromkeys([*item.get("issues", []), *rejected]))
+            if session is not None:
+                item["relations"] = _visible_relations(session, row, item.get("relations", []))
             result.append({**item, "evidence_id": row.id})
     return result
+
+
+def _visible_relations(session, evidence, relations):
+    from uuid import UUID
+
+    from backend.app.evidence_integrity import usable_matter_evidence
+
+    event = session.get(Event, evidence.event_id)
+    output = []
+    for relation in relations:
+        try:
+            target = session.get(Event, UUID(relation["event_id"]))
+        except (ValueError, KeyError, TypeError):
+            continue
+        if (
+            target is None
+            or event is None
+            or target.company_id != event.company_id
+            or target.visibility_scope != "platform_shared"
+        ):
+            continue
+        candidates = session.scalars(
+            select(EventEvidence).where(
+                EventEvidence.event_id == target.id,
+                EventEvidence.visibility_scope == "platform_shared",
+            )
+        )
+        permitted = next((e for e in candidates if usable_matter_evidence(session, e)), None)
+        if permitted is None:
+            continue
+        output.append(
+            {
+                **relation,
+                "candidate_evidence_id": str(permitted.id),
+                "candidate_source_url": permitted.display_canonical_url or "",
+            }
+        )
+    return output

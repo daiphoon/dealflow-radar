@@ -57,6 +57,12 @@ def date_role(action, match, subtype):
         return "disclosed"
     if re.search(r"拟|计划|预计|将于|将", before):
         return "planned"
+    if (
+        subtype == "company_financing"
+        and match.start() == 0
+        and re.match(r"[，,]\s*[^。；;]{1,100}(?:融资|增资款)", action[match.end() :])
+    ):
+        return "occurred"
     # 后置时间须明确回指发生动作，不能把后来签署的协议日归给先前融资。
     if action_supported(local, subtype) or (
         re.search(r"完成时间|发生时间|完成于|发生于", before)

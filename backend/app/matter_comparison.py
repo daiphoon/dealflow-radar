@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from backend.app.matter_dates import occurrence
 from backend.app.matter_validation import equivalent_value
 
-COMPARISON_VERSION = "matter-comparison-v5"
+COMPARISON_VERSION = "matter-comparison-v6"
 
 
 @dataclass(frozen=True)
@@ -61,7 +61,9 @@ def compare_matters(left, right, *, subject=None, left_context=None, right_conte
         if left_context is not None or right_context is not None:
             return MergeDecision("ambiguous", False, "document_subject_equivalence_unproven")
         return MergeDecision("new_matter", False, "category_or_scope_differs")
-    a, b = left.fields, right.fields
+    # 反证只使用被否认主张的定位键，不把引用金额/日期发布为事实。
+    a = {**left.fields, **(left.claim_reference if left.status == "denied" else {})}
+    b = {**right.fields, **(right.claim_reference if right.status == "denied" else {})}
     identity_proven = bool(claim_anchor)
 
     def value(fields, key):
@@ -146,6 +148,19 @@ def compare_matters(left, right, *, subject=None, left_context=None, right_conte
             )
         if not anchor:
             return MergeDecision("ambiguous", False, "insufficient_matter_identity")
+    if left.subtype == right.subtype == "company_financing" and "denied" not in {
+        left.status,
+        right.status,
+    }:
+        from backend.app.financing_semantics import statement
+
+        phases = [statement(m.action)[1] for m in (left, right)]
+        if phases[0] != phases[1] and "completion_unknown" not in phases:
+            return MergeDecision("related_stage", False, "separate_financing_milestone")
+    if right.status == "denied" and left.status != "denied":
+        return MergeDecision(
+            "correction_candidate", True, "explicit_denial_same_matter", context_basis=claim_anchor
+        )
     differences = {
         k: {"before": value(a, k), "after": value(b, k)}
         for k in (set(a) & set(b)) - {"disclosed", "planned"}
@@ -158,10 +173,6 @@ def compare_matters(left, right, *, subject=None, left_context=None, right_conte
             "same_identity_different_values",
             differences,
             context_basis=claim_anchor,
-        )
-    if right.status == "denied" and left.status != "denied":
-        return MergeDecision(
-            "correction_candidate", True, "explicit_denial_same_matter", context_basis=claim_anchor
         )
     if right.status != left.status:
         return MergeDecision(

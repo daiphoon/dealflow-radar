@@ -1,5 +1,12 @@
 # 实施记录
 
+## 2026-10-01：PR #109 核心事项生命周期与安全放行
+
+- 任务/关键文件：Next `package.json`/lock；`financing_semantics`、`research_matters`、validation/comparison/storage；当前 API/报告、待核工作台和真实渲染测试。仅延续现有 PR，原四候选、历史 gold/回执、schema 0036 保留；根工作区已有用户修改未触碰。
+- 实际命令：真实入口失败回归→定向修复；虚构正式 identity/approve/Mock request→Worker→API/report，SQLite/非 owner PostgreSQL；四候选与 40 对及两条 SAME 正逆序/重试回放；`pytest -q -ra -p no:cacheprovider`；Ruff/format、迁移 check、frontend test/typecheck/build/audit、Compose config、Docker build、Gitleaks、`git diff --check`。准确 head 的完整 CI 与实际数量在统一私有交付包留证。
+- 验证/限制：完成与未交割、反证当前投影、旧报告过时和再批准拒绝分别测试；历史内容摘要不变。13/15 自动 SAME 保持，另外两条正式待核不计成功。有限挑战保留初始失败、后续只为已见回归；真实模型泛化/业务召回与生产漏洞暴露未验证。旧哈希兼容及新版规则覆盖原 Mock-gap 文案造成的回归分别定位，不削弱篡改或许可断言。
+- 边界：无新 migration、真实研究/模型/Provider、生产操作、自动合并或部署；不启动新留出、Worker/Watchlist/MCP/隧道。最终 READY/HOLD 严格按 G1—G4 实际门槛决定。
+
 ## 2026-09-30：M2-F 证据、事项、获取与真实状态工程收口
 
 - 任务/关键文件：`source_fetcher`/policy/network 与 ADR-0029；`research_matters`/validation/comparison/storage；`research_evaluation`、`research_validation_contract`、参考参数及共享 completion/API/组件。公开说明见 [25 M2-F](25-m2-f-engineering-closure.md)，旧封存输入不回写，根目录已有用户文档修改保留。

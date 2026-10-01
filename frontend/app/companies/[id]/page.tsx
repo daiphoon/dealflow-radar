@@ -445,7 +445,11 @@ function EventCard({
                 <li key={key}>{item.field_labels[key] ?? key}：{value.value}{key === "date" ? `（${({ occurred: "发生日期", disclosed: "披露日期", planned: "计划日期" } as Record<string, string>)[value.role] ?? "日期口径待核"}）` : ""}</li>
               ))}</ul>
               <p>实际发生时间：{item.fields.occurred?.value ?? item.fields.date?.value ?? "未披露"}；来源发布日期：{item.source_published_on ?? "未知"}。未披露或未通过校验的字段保持未知，单纯缺少日期无需补填。</p>
-              {item.relations?.length ? <p>与其他上市过程阶段存在关联；各阶段分别保留，不互相替代。</p> : null}
+              {item.relations?.map((relation, index) => <p key={index}>
+                {relation.type === "review_required" ? "疑似同一事项待核，双方材料分别保留，未自动归并或确认。" : "与其他事项阶段存在关联；各阶段分别保留，不互相替代。"}
+                候选事项：{relation.event_id}；依据/缺口：{relation.reason}。
+                {relation.candidate_evidence_id ? <Link href={`/evidence/${relation.candidate_evidence_id}`}>查看候选证据</Link> : null}
+              </p>)}
               {item.issues.includes("ambiguous_existing_matter") ? <p>疑似同一事项，尚未完成归并。</p> : null}
               <p>材料类型：{({ official_publication: "官方公开材料", staff_report: "署名报道", syndicated: "转载材料", user_post: "用户发布内容", generated_commentary: "AI 生成或解读内容", unclassified_public_page: "公开页面，发布类型待识别" } as Record<string,string>)[item.source_channel ?? ""] ?? "来源类型待识别"}。引文支持不等于事实已确认。</p>
               {item.issues.some((issue) => issue.startsWith("rejected_field:")) ? <p>部分提议字段未通过原文与语义校验，已剔除。</p> : null}

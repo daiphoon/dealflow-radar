@@ -22,7 +22,7 @@ from backend.app.matter_dates import date_fields, normalize_date, occurrence
 
 VERSION = "matter-v1"
 PROMPT_VERSION = "research-matter-extraction-v5"
-EXTRACTION_VERSION = "matter-extraction-v6"
+EXTRACTION_VERSION = "matter-extraction-v7"
 # 每类均有实际动作契约；不把整篇文章标题当作事件动作。
 ACTIONS = (
     (
@@ -41,7 +41,7 @@ ACTIONS = (
         "financing_cap_table",
         "company_financing",
         r"(?:完成|获得|获).{0,35}?(?:融资|[A-F]轮)|完成[A-F](?:\+)?轮"
-        r"|(?:获得|获).{0,35}?(?:战略投资|股权投资)",
+        r"|(?:获得|获).{0,35}?(?:战略投资|股权投资)|融资|增资款",
     ),
     ("exit_liquidity", "ipo_guidance_agreement", r"(?:签署|签订).{0,25}?辅导协议"),
     (
@@ -143,9 +143,14 @@ class Matter:
     status: str
     fields: dict = field(default_factory=dict)
     issues: list[str] = field(default_factory=list)
+    claim_reference: dict = field(default_factory=dict)
 
     def payload(self):
-        return asdict(self)
+        result = asdict(self)
+        # 无反证定位键时保留既有对象编码，避免改变旧格式的只读哈希校验。
+        if not self.claim_reference:
+            result.pop("claim_reference")
+        return result
 
     def facts(self):
         return [
@@ -276,6 +281,8 @@ def infer_fields(action, subtype):
             if subtype == "fund_commitment"
             else "investment"
             if subtype == "outbound_investment"
+            else "proposed_proceeds"
+            if subtype == "company_financing" and re.search(r"拟|计划", before) and "募" in before
             else "financing"
             if subtype == "company_financing"
             else "proposed_proceeds"
@@ -305,7 +312,7 @@ def infer_fields(action, subtype):
     if subtype == "company_financing":
         investors = []
         for match in re.finditer(
-            r"(?:由|[，,])([^。；;，,]{1,100}?)(?:联合领投|领投|跟投|参与投资)", action
+            r"(?:由|[，,。]|^)([^。；;，,]{1,100}?)(?:联合领投|领投|跟投|参与投资)", action
         ):
             investors.extend(
                 re.sub(r"^(?:由)?(?:老股东|新股东|现有股东)?\s*", "", v.strip())
@@ -318,6 +325,9 @@ def infer_fields(action, subtype):
                 "quote": action,
                 "role": "investors",
             }
+        declared = re.search(r"(?:投资方(?:为|包括)|领投方为)([^。；;，,]+)", action)
+        if declared and "investors" not in fields:
+            fields["investors"] = {"value": declared.group(1), "quote": action, "role": "investors"}
     for role, label in (
         ("transaction_id", "交易编号|交易标识"),
         ("project_id", "项目编号|项目代码"),
@@ -401,7 +411,9 @@ def extract_matters(subject, text):
             name = valid_mentions[0][1] if valid_mentions else None
             # 只允许明确代词延续上一句主体，不能把整页其他公司的动作归入目标。
             pronoun = re.match(
-                r"(?:(?:通知书|公告|报告)显示[，,]?)?(?:该公司|公司|其|本轮)", paragraph
+                r"(?:(?:通知书|公告|报告)显示[，,]?)?(?:该公司|本公司|公司|其|本轮|"
+                r"截至20\d{2}年\d{1,2}月\d{1,2}日[，,]?(?:本轮|该轮)融资)",
+                paragraph,
             )
             if name is None and pronoun and last_name:
                 name = last_name
@@ -415,11 +427,31 @@ def extract_matters(subject, text):
                 )
             ):
                 name = last_name
+            elif (
+                name is None
+                and last_name
+                and matters
+                and re.match(r"[^。；;]{1,60}(?:领投|跟投|参与投资|参投)[，,].*融资金额", paragraph)
+                and not re.search(
+                    r"此前|去年|旧轮|[A-F][1-9]?轮|(?:公司|有限公司).{0,12}(?:融资|完成)", paragraph
+                )
+            ):
+                name = last_name
+                pronoun = True
             elif name is None:
                 last_name = None
                 continue
             last_name = name
             classified = classification(paragraph)
+            financing_continuation = (
+                pronoun
+                and matters
+                and matters[-1].subject == name
+                and matters[-1].subtype == "company_financing"
+                and re.match(r"截至20\d{2}年\d{1,2}月\d{1,2}日[，,]?(?:本轮|该轮)融资", paragraph)
+            )
+            if financing_continuation:
+                classified = None
             if not classified or len(paragraph) > 1500:
                 if (
                     pronoun
@@ -432,10 +464,28 @@ def extract_matters(subject, text):
                     if begin >= 0 and 0 < end - begin <= 1500:
                         old.action = block[begin:end]
                         old.fields = infer_fields(old.action, old.subtype)
+                        from backend.app.financing_semantics import claim_reference, statement
+
+                        old.status, phase = statement(old.action)
+                        old.claim_reference = claim_reference(old.action)
+                        if old.status == "denied":
+                            old.fields = {}
+                        if old.status in {"planned", "denied"}:
+                            old.fields.pop("occurred", None)
+                            old.fields.pop("date", None)
+                        old.issues = [i for i in old.issues if not i.startswith("financing_stage:")]
+                        old.issues.append("financing_stage:" + phase)
                 continue
             category, subtype = classified
             if name not in paragraph:
                 begin, end = block.find(name), block.find(paragraph) + len(paragraph)
+                if (
+                    matters
+                    and matters[-1].subject == name
+                    and matters[-1].subtype == "company_financing"
+                    and pronoun
+                ):
+                    begin = block.find(matters[-1].action)
                 if begin < 0 or end - begin > 1500:
                     continue
                 paragraph = block[begin:end]
@@ -475,6 +525,13 @@ def extract_matters(subject, text):
             )
             status = scoped_status(paragraph, subtype)
             fields = infer_fields(paragraph, subtype)
+            reference = {}
+            if subtype == "company_financing":
+                from backend.app.financing_semantics import claim_reference, statement
+
+                reference = claim_reference(paragraph)
+                if status == "denied":
+                    fields = {}
             if status in {"planned", "denied", "conditional", "committed"}:
                 fields.pop("occurred", None)
                 fields.pop("date", None)
@@ -483,10 +540,12 @@ def extract_matters(subject, text):
                 issues.append("generated_source_not_fact")
             if status == "denied":
                 issues.append("denial_or_correction_requires_review")
+            if subtype == "company_financing":
+                issues.append("financing_stage:" + statement(paragraph)[1])
             if not occurrence(fields).get("iso"):
                 issues.append("occurrence_date_unknown")
             matters.append(
-                Matter(category, subtype, name, scope, paragraph, status, fields, issues)
+                Matter(category, subtype, name, scope, paragraph, status, fields, issues, reference)
             )
     distinct = []
     for matter in matters:
@@ -675,8 +734,26 @@ def validate_proposals(subject, text, proposals, *, legacy_compat=True):
             verified["date"] = dict(verified["occurred"])  # v1 readers only see the occurrence
         if not occurrence(verified).get("iso"):
             issues.append("occurrence_date_unknown")
+        reference = {}
+        if subtype == "company_financing":
+            from backend.app.financing_semantics import claim_reference, statement
+
+            reference = claim_reference(quote)
+            if status == "denied":
+                verified = {}
+            issues.append("financing_stage:" + statement(quote)[1])
         accepted.append(
-            Matter(category, subtype, proposal.subject, scope, quote, status, verified, issues)
+            Matter(
+                category,
+                subtype,
+                proposal.subject,
+                scope,
+                quote,
+                status,
+                verified,
+                issues,
+                reference,
+            )
         )
     return accepted, rejected
 

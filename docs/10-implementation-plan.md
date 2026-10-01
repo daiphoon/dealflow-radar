@@ -23,11 +23,11 @@
 
 ## 2. 有效执行检查点
 
-- **当前唯一里程碑：M2-F / PR #109 概念身份续作交付，`M2_F_HOLD`**。正式基线 main `c8d693c3facff59ecb7e607bd8dc2c9482dc0fc7` / tree `1504c7a12302b91b70238f8aef863bf16c325894`，schema 保持 `0036`。原四候选的文内主体、共同披露、正式入库和报告读取已闭合；独立挑战仍发现后置融资完成表达的抽取缺口及未覆盖项，不能标 READY 或业务 PASS。仅离线/Mock/本机隔离验证，准确新 head/Verify/限制和附件 hash 以本轮统一私有包为准，见 [25 M2-F](25-m2-f-engineering-closure.md)。
-- **已验证与复用**：文内法定共指、原四候选六对共同披露及非 owner PostgreSQL 入库/报告读取闭合；顺序、幂等、并发、许可/撤证、版本化未评价和真实 Fetcher Mock 429 闸门通过。默认 enforce、访问控制/预算、既有 completion 和历史血缘保护保留；schema 0036、无新 migration。最终完整回归、前端和准确 head Verify 以本轮统一包为准，首轮数量和限制只保留为历史。
-- **首要阻断**：冻结 development 正例仍有 2/15 未闭合；独立挑战发现“B轮融资交割完成”漏抽，计划中“尚未交割”被校正为 denied；集团 typed scope、同簇否认及 duplicate_rate 契约未完整覆盖。四候选已归并，不能继续写成当前仍拆四条；宏平均 F1 只作诊断。旧实验/回执保持，原业务评分为 `FORMAL_BUSINESS_SCORE_NOT_VALIDATED`，旧公司及已见合成例永久 `REGRESSION ONLY`。
-- **下一 Gate 与边界**：负责人审查统一包和 PR 后，决定有界的冻结病例主体/融资阶段语义修复；当前不建议按 READY 合并或启动新留出。真实搜索/fetch/model/Jina 和生产操作 0，不自动合并/部署，不开启 Worker、Watchlist、MCP/隧道，不自动进入 M2-V3。
-- 更新日期：2026-09-30；依据：[ADR-0029](DECISIONS/ADR-0029-public-source-acquisition-policy.md)。
+- **当前唯一里程碑：M2-F / PR #109 核心事项生命周期与安全放行，工程候选送审**。审查起点 `6aa45972f70999aaeaecb6a32ff810c5bc501d51`；正式 main/tree 不变，schema `0036`。G1—G4 的最终状态只由准确 head 的完整验证与 Verify 决定，统一私有交付包记录实际结果；工程就绪不等于业务 PASS、合并或部署。见 [25 M2-F](25-m2-f-engineering-closure.md)。
+- **本轮收口**：Next.js 固定同维护线安全 patch；融资完成、未交割和明确否认分开处理，当前 API/新报告使用有效反证，历史正文与观测不改写。rules 与独立 Mock 提议均通过正式身份、存储、读取和报告路径；真实 Mock request→Worker→终态另验。许可、撤证、非 owner RLS、并发及获取限流保护保留，无新 migration。
+- **历史关系与待核**：原四候选保持一个事项，40 对冻结关系仍为 38/40，原 13/15 自动正例保留。另两条历史 SAME 用双方授权证据、候选 ID 与理由正式呈现待核；不是自动归并成功。集团材料只进原文待核，不创建子公司融资或集团实体。旧 gold、回执和成绩不修改；旧 0/13、0/5 仍为未建立正式业务裁决，旧样本永久 `REGRESSION ONLY`。
+- **下一 Gate 与边界**：负责人复审统一报告、精简附件与 PR 的准确 head/Verify 后，决定是否合并和授权 1—2 个已见对象受控 smoke。当前真实 Provider/模型/生产操作 0；不自动合并、部署、开启 Worker/Watchlist/MCP/隧道或启动新留出。真实模型泛化和既有受阻来源的现场可读性仍未知。
+- 更新日期：2026-10-01；依据：[ADR-0025](DECISIONS/ADR-0025-matter-reliability-contract.md)、[ADR-0029](DECISIONS/ADR-0029-public-source-acquisition-policy.md)。
 
 ### 封存的 M2-R 检查点（以下旧“当前”不作为待办）
 

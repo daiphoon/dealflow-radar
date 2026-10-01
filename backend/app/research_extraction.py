@@ -370,7 +370,9 @@ def document_matters(session, actor, job, subject, document, policy, provider=No
 
 
 def model_selection_reason(body, rules):
-    if any(m.issues or not m.fields for m in rules):
+    if any(
+        any(not i.startswith("financing_stage:") for i in m.issues) or not m.fields for m in rules
+    ):
         return "rule_fields_or_semantics_gap"
     if re.search(r"认缴|投资方|收购|控股|间接|拟|计划|否认|更正|但|未完成", body):
         return "complex_roles_or_stage"

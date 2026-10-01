@@ -42,7 +42,7 @@ export default async function PersonalReportDetailPage({
           </p>
         ) : report.history_status === "stale" ? (
           <p className="feedback">
-            这份历史报告已过时，相关事项已纠正或撤回；以下保留生成时记录，请查看公司最新资料。
+            这份历史报告已过时，相关事项已纠正、撤回或出现反证/待核；以下保留生成时记录，请查看公司最新资料。
           </p>
         ) : result === "report_generated" || result === "report_reused" ? (
           <p className="feedback feedback-success">

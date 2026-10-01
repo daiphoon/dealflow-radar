@@ -37,6 +37,7 @@ from backend.app.models import (
     ORGANIZATION_PRIVATE_SCOPE,
     PERSONAL_PRIVATE_SCOPE,
     PLATFORM_SHARED_SCOPE,
+    SYSTEM_RESTRICTED_SCOPE,
     CandidateDocument,
     Company,
     CompanyAlias,
@@ -1944,7 +1945,9 @@ def _event_out(
     from backend.app.financing_events import financing_observations
     from backend.app.research_matter_storage import visible_observations
 
-    matters = visible_observations(evidence_rows, {item.id for item in evidence_items})
+    matters = visible_observations(
+        evidence_rows, {item.id for item in evidence_items}, session=session
+    )
     financing = financing_observations(evidence_rows, {item.id for item in evidence_items})
     curated = curated_versions(session, event, {item.id for item in evidence_items})
     if curated and event.visibility_scope == PLATFORM_SHARED_SCOPE:
@@ -2246,6 +2249,17 @@ def _event_out(
     # 有反证但无正向事实，不等于证据已经撤回；仍应展示冲突账本及原文。
     withdrawn_matter = is_matter and not matters
     withdrawn_financing = is_financing and not financing
+    disputed_matter = is_matter and any(f.support_status == "conflicting" for f in fact_ledger)
+    unresolved_association = is_matter and any(
+        r.get("type") == "review_required" for m in matters for r in m.get("relations", [])
+    )
+    if disputed_matter:
+        display_kind = "unconfirmed"
+        effective_summary = (
+            "当前事项有有效反证或冲突，须重新复核；旧确认与原始资料保留，不作为无争议结论。"
+        )
+    if unresolved_association:
+        display_kind = "unconfirmed"
     return EventOut(
         information_status="curator_confirmed"
         if curated
@@ -2286,7 +2300,15 @@ def _event_out(
         facts=[]
         if withdrawn_tender or withdrawn_financing or withdrawn_matter
         else effective_facts,
-        uncertainties=event.uncertainties,
+        uncertainties=[
+            *event.uncertainties,
+            *(["有效反证或字段冲突；再次确认须先解决当前证据差异。"] if disputed_matter else []),
+            *(
+                ["疑似同一事项待核：主体或发生身份尚无充分依据；候选事项及双方材料分别保留。"]
+                if unresolved_association
+                else []
+            ),
+        ],
         status=event.status,
         publication_route=event.publication_route,
         publication_policy_version=event.publication_policy_version,
@@ -2577,6 +2599,7 @@ def list_review_workbench(
         match_confidence: Decimal | None = None
         resolution_status: str | None = None
         identity_candidates: list[IdentityCandidateOut] = []
+        source_context = None
         if review.event_id is not None:
             event = session.get(Event, review.event_id)
             if event is not None:
@@ -2594,9 +2617,13 @@ def list_review_workbench(
                 match_rule = mention.match_rule
                 match_confidence = mention.match_confidence
                 resolution_status = mention.resolution_status
+                if mention.match_rule == "related_entity_not_target":
+                    if not _scope_is_readable(mention, user, allow_organization_private=True):
+                        continue
+                    source_context = _review_source_context(session, user, mention)
                 if mention.candidate_company_id is not None:
                     company = session.get(Company, mention.candidate_company_id)
-                if review.status == "pending":
+                if review.status == "pending" and mention.match_rule != "related_entity_not_target":
                     identity_candidates = _identity_candidates_for_mention(
                         session,
                         user.tenant_id,
@@ -2622,9 +2649,49 @@ def list_review_workbench(
                 match_confidence=match_confidence,
                 resolution_status=resolution_status,
                 identity_candidates=identity_candidates,
+                source_context=source_context,
             )
         )
     return items
+
+
+def _review_source_context(session, user, mention):
+    from backend.app.evidence_integrity import hash_excerpt_bytes
+
+    document = session.get(RawDocument, mention.raw_document_id)
+    source = session.get(Source, document.source_id) if document else None
+    excerpt = str((document.payload or {}).get("excerpt") or "")[:1500] if document else ""
+    if not (
+        document
+        and source
+        and isinstance(excerpt, str)
+        and excerpt
+        and document.license_status in {"public", "permission_confirmed"}
+        and source.license_status in {"public", "permission_confirmed"}
+        and (
+            _scope_is_readable(document, user, allow_organization_private=True)
+            or (
+                document.visibility_scope == SYSTEM_RESTRICTED_SCOPE
+                and document.owner_user_id is None
+                and document.owner_tenant_id is None
+                and user_has_role(session, user.id, "platform_admin")
+                and (document.payload or {}).get("_source_verification", {}).get("status")
+                == "healthy"
+            )
+        )
+        and excerpt in str(document.payload.get("excerpt", ""))
+        and mention.mention_text in excerpt
+    ):
+        return None
+    return {
+        "kind": "related_entity_not_target",
+        "related_entity": mention.mention_text,
+        "relation": "来源称目标为集团旗下子公司；融资主体为集团，未归到目标法人",
+        "excerpt": excerpt,
+        "excerpt_sha256": hash_excerpt_bytes(excerpt),
+        "canonical_url": document.canonical_url,
+        "document_id": str(document.id),
+    }
 
 
 def _require_platform_admin(session: Session, user: User) -> None:
@@ -3785,6 +3852,10 @@ def resolve_identity_review(
         mention = session.get(EntityMention, review.entity_mention_id)
         if mention is None:
             raise NotFoundError("entity mention not found")
+        if mention.match_rule == "related_entity_not_target":
+            raise AccessDeniedError(
+                "related entity source cannot resolve into target company facts"
+            )
         candidates = _identity_candidates_for_mention(
             session,
             user.tenant_id,
@@ -3923,13 +3994,15 @@ def decide_review(
     review = session.get(ReviewQueue, review_id)
     if review is None or review.tenant_id != user.tenant_id:
         raise NotFoundError("review not found")
-    if review.status != "pending":
-        raise AccessDeniedError("review already decided")
     if review.event_id is None:
         raise AccessDeniedError("entity mention review requires identity resolution workflow")
     event = session.get(Event, review.event_id)
     if event is None:
         raise NotFoundError("event not found")
+    if decision == "approve":
+        _assert_current_matter_reviewable(session, event, user)
+    if review.status != "pending":
+        raise AccessDeniedError("review already decided")
     review.status = "approved" if decision == "approve" else "rejected"
     review.decision = decision
     review.decision_reason = reason
@@ -3955,6 +4028,25 @@ def decide_review(
     )
     session.commit()
     return review
+
+
+def _assert_current_matter_reviewable(session, event, user):
+    if event.fingerprint_version != "matter-v1":
+        return
+    # 从当前许可投影核验，不能挑选旧正向证据绕过同簇反证或待核主体。
+    current = _event_out(session, event, user, allow_organization_private=True)
+    if any(f.support_status == "conflicting" for f in current.fact_ledger):
+        raise AccessDeniedError("current counter evidence or conflict requires explicit resolution")
+    if any(
+        r.get("type") == "review_required" for m in current.matter_observations for r in m.relations
+    ):
+        raise AccessDeniedError(
+            "matter association review is unresolved; automatic approval forbidden"
+        )
+    if not current.fact_ledger or not any(
+        f.support_status == "supported" for f in current.fact_ledger
+    ):
+        raise AccessDeniedError("current matter has no permitted supported evidence")
 
 
 def _refresh_merge_candidate(

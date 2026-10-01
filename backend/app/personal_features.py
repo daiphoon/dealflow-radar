@@ -1588,6 +1588,30 @@ def _report_evidence_lines(event, *, current_only=True):
             )
         else:
             lines.append(f"- {name}（链接不开放；状态：{status}）")
+    stages = {
+        "completion_reported": "来源称融资完成",
+        "fundraising_in_progress": "融资计划/进行中，未完成",
+        "registration_completed": "工商变更完成，不代表增资款到账",
+        "funds_received": "来源称收到增资款",
+        "agreement_signed": "投资协议已签署，不代表融资交割",
+        "completion_unknown": "融资完成阶段未知",
+        "completion_claim_disputed": "对融资完成主张的否认/反证，须复核",
+    }
+    for matter in event.matter_observations:
+        for issue in matter.issues:
+            if issue.startswith("financing_stage:"):
+                lines.append("- 融资陈述口径：" + stages.get(issue.split(":", 1)[1], "阶段待核"))
+        for relation in matter.relations:
+            if relation.get("type") == "review_required":
+                lines.append(
+                    "- 疑似同一事项待核；候选事项："
+                    + relation["event_id"]
+                    + "；缺失依据："
+                    + relation.get("reason", "主体或发生身份待核")
+                    + "；双方材料分别保留，未自动归并或确认。"
+                )
+                if relation.get("candidate_source_url"):
+                    lines.append("- 待核候选来源：<" + relation["candidate_source_url"] + ">")
     return lines or ["- 暂无允许展示的证据引用。"]
 
 
@@ -1655,7 +1679,7 @@ def _safe_report_out(session, user, report, *, reused=False):
 
     def permission_lost(e):
         row = next((row for row in rows if row.id == e.event_id), None)
-        if e.event_id in lead_ids and row:
+        if e.event_id in lead_ids and row and row.status != "published":
             from backend.app.report_permissions import report_lead_permission
 
             return not report_lead_permission(session, user, row, e)
@@ -1686,6 +1710,10 @@ def _safe_report_out(session, user, report, *, reused=False):
     if not restricted:
         from backend.app.services import _event_out
 
+        current_events = [
+            _event_out(session, event, user, allow_organization_private=False) for event in rows
+        ]
+
         # RLS 可能只隐藏多来源中的一条，不能用“该事项仍有证据”证明旧引用仍可发出。
         # 旧报告无逐证据 ID 快照，保守要求保存的引用行仍在当前合法投影中。
         saved_citations = Counter(
@@ -1695,17 +1723,17 @@ def _safe_report_out(session, user, report, *, reused=False):
         )
         current_citations = Counter(
             line
-            for event in rows
-            for line in _report_evidence_lines(
-                _event_out(session, event, user, allow_organization_private=False),
-                current_only=False,
-            )
+            for event in current_events
+            for line in _report_evidence_lines(event, current_only=False)
         )
         restricted = bool(saved_citations - current_citations)
     if restricted:
         output.markdown = "报告来源权限或状态已变化，历史正文停止在线提供，请查看公司最新资料。"
         output.history_status = "restricted"
     elif any(e.status in {"rejected", "retracted", "corrected"} for e in rows):
+        output.history_status = "stale"
+    elif any(e.id not in lead_ids and e.display_kind == "unconfirmed" for e in current_events):
+        # 保存的已确认报告不改写；当前反证/关联待核使它成为过时历史。
         output.history_status = "stale"
     return output
 
@@ -1764,10 +1792,11 @@ def create_personal_company_report(
     from backend.app.services import _company_event_outputs
 
     events = _company_event_outputs(session, event_rows, user, allow_organization_private=False)
+    disputed = [event for event in events if event.display_kind == "unconfirmed"]
     events = [event for event in events if event.display_kind != "unconfirmed"]
     from backend.app.curated_publication import has_pending_curated_record
     from backend.app.models import EventEvidence
-    from backend.app.report_permissions import report_lead_permission
+    from backend.app.report_permissions import report_evidence_permission, report_lead_permission
     from backend.app.research_completion import completion_projection
 
     lead_rows = session.scalars(
@@ -1800,6 +1829,13 @@ def create_personal_company_report(
         ):
             allowed_leads.append(row)
     leads = _company_event_outputs(session, allowed_leads, user, allow_organization_private=False)
+    # 已确认事项出现当前反证后转入报告待核区；逐证据许可仍按正常共享报告检查。
+    for event in disputed:
+        evidence = session.scalars(
+            select(EventEvidence).where(EventEvidence.event_id == event.id)
+        ).all()
+        if evidence and all(report_evidence_permission(session, e) for e in evidence):
+            leads.append(event)
     leads = [lead for lead in leads if lead.evidence]
     latest_job = session.scalar(
         select(CompanyResearchJob)
