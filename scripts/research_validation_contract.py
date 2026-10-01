@@ -6,9 +6,10 @@ import json
 import re
 import subprocess
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
+from backend.app.business_dates import business_date, reference_fields
 from backend.app.evidence_integrity import hash_canonical_object
 from backend.app.research_completion import stored_completion
 from backend.app.research_plan import TOPICS
@@ -25,6 +26,8 @@ IDENTITY_KEYS = {
     "reference_at",
     "event_window",
     "research_categories",
+    "business_reference_date",
+    "business_timezone",
 }
 
 
@@ -36,21 +39,20 @@ def runtime_binding(module_root, identity_path, policy, reference_at):
         raise ValueError("identity_contains_unapproved_fields")
     if reference_at.tzinfo is None:
         raise ValueError("reference_timezone_required")
-    window = [
-        (reference_at - timedelta(days=policy.recent_change_window_days)).date().isoformat(),
-        reference_at.date().isoformat(),
-    ]
+    fields = reference_fields(reference_at, policy.recent_change_window_days)
+    window = [fields["event_window_start"], fields["event_window_end"]]
     for company in order:
-        if company.get("reference_at") not in {
-            None,
-            reference_at.date().isoformat(),
-            reference_at.isoformat(),
-        }:
+        if company.get("reference_at") is not None and business_date(
+            company["reference_at"]
+        ) != business_date(reference_at):
             raise ValueError("identity_reference_differs_from_execution")
         if company.get("event_window", window) != window:
             raise ValueError("identity_window_differs_from_execution")
         if set(company.get("research_categories", TOPICS)) != set(TOPICS):
             raise ValueError("identity_category_scope_differs_from_execution")
+        for key in ("business_reference_date", "business_timezone"):
+            if company.get(key, fields[key]) != fields[key]:
+                raise ValueError("identity_business_date_differs_from_execution")
 
     def git(ref):
         return subprocess.check_output(["git", "rev-parse", ref], cwd=root, text=True).strip()
@@ -59,6 +61,9 @@ def runtime_binding(module_root, identity_path, policy, reference_at):
         "backend/app/" + name + ".py"
         for name in (
             "config",
+            "database",
+            "business_dates",
+            "personal_features",
             "web_research_service",
             "research_extraction",
             "research_matters",
@@ -93,6 +98,7 @@ def runtime_binding(module_root, identity_path, policy, reference_at):
         ).hexdigest(),
         "reference_at": reference_at.isoformat(),
         "event_window_days": policy.recent_change_window_days,
+        **fields,
     }
 
 

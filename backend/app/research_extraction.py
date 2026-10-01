@@ -3,6 +3,7 @@
 import json
 import re
 import time
+from dataclasses import replace
 from decimal import ROUND_UP, Decimal
 from typing import Protocol
 
@@ -10,6 +11,7 @@ import httpx
 from sqlalchemy import func, select, text
 
 from backend.app import web_research_budget as budget
+from backend.app.business_dates import reference_fields
 from backend.app.matter_contract import MAX_PROPOSED_MATTERS, model_contract
 from backend.app.matter_dispositions import record, relevant_windows
 from backend.app.matter_validation import VALIDATION_VERSION
@@ -67,6 +69,11 @@ def extraction_payload(subject, text, policy, *, max_chars=4000):
                         "legal_aliases": list(getattr(subject, "legal_aliases", ())),
                         "reference_at": getattr(subject, "reference_at", None),
                         "event_window_days": getattr(subject, "event_window_days", None),
+                        **(
+                            reference_fields(subject.reference_at, subject.event_window_days)
+                            if getattr(subject, "reference_at", None)
+                            else {}
+                        ),
                         "source_windows": windows,
                         "input_truncated": truncated,
                         "schema": TypedProposedMatters.model_json_schema(),
@@ -145,6 +152,15 @@ class DeepSeekMatterProvider:
 
 
 def document_matters(session, actor, job, subject, document, policy, provider=None):
+    if job is not None and job.coverage.get("reference_at"):
+        subject = replace(
+            subject,
+            reference_at=job.coverage["reference_at"],
+            event_window_days=job.coverage.get(
+                "event_window_days", policy.recent_change_window_days
+            ),
+            research_intent=job.coverage.get("research_intent", "discovery"),
+        )
     document._matter_job = job
     body = str(document.payload.get("excerpt") or "")
     record(

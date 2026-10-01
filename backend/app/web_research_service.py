@@ -512,22 +512,27 @@ def _identity_fingerprint(company: Company) -> str:
     )
 
 
+def _subject_reference_fields(subject) -> dict:
+    from backend.app.business_dates import reference_fields
+
+    reference = getattr(subject, "reference_at", None)
+    return reference_fields(reference, subject.event_window_days) if reference else {}
+
+
 def _initial_coverage(
     policy: WebResearchPolicy, *, watchlist: bool = False, reference_at: datetime | None = None
 ) -> dict[str, object]:
     reference = reference_at or utc_now()
     if reference.tzinfo is None:
         raise ValueError("research reference must include timezone")
+    from backend.app.business_dates import reference_fields
+
     short_topics = policy.incremental_research_enabled and not watchlist
     return {
         "research_intent": "discovery",
         "research_scope": "limited_scope_check",
         "reference_at": reference.isoformat(),
-        "event_window_start": (reference - timedelta(days=policy.recent_change_window_days))
-        .date()
-        .isoformat(),
-        "event_window_end": reference.date().isoformat(),
-        "event_window_days": policy.recent_change_window_days,
+        **reference_fields(reference, policy.recent_change_window_days),
         "policy_version": policy.version,
         "query_strategy_version": SHORT_QUERY_STRATEGY_VERSION
         if short_topics
@@ -984,10 +989,22 @@ def _search_date_status(
     policy: WebResearchPolicy,
     *,
     observed_at: datetime | None = None,
+    reference_at: str | None = None,
 ) -> str:
     published_at = _search_result_datetime(result.published_at)
     if published_at is None:
         return "unknown"
+    if reference_at:
+        from backend.app.business_dates import business_date, reference_fields
+
+        fields = reference_fields(reference_at, policy.recent_change_window_days)
+        try:
+            published_day = business_date(result.published_at).isoformat()
+        except (ValueError, TypeError):
+            published_day = business_date(published_at).isoformat()
+        if published_day > fields["event_window_end"]:
+            return "future"
+        return "old" if published_day < fields["event_window_start"] else "recent"
     observed = _aware(observed_at or utc_now())
     if published_at > observed + timedelta(days=1):
         return "future"
@@ -1017,7 +1034,9 @@ def _qualification_reason(
         return "blocked_or_unsafe_url"
     if _source_rank(company, result).tier == "profile_or_listing":
         return "profile_or_listing"
-    date_status = _search_date_status(result, policy)
+    date_status = _search_date_status(
+        result, policy, reference_at=getattr(company, "reference_at", None)
+    )
     if (
         date_status == "old"
         and (intent or getattr(company, "research_intent", "discovery")) != "maintenance"
@@ -1085,7 +1104,9 @@ def _result_score(
     if any(keyword in result_text for _, terms in EVENT_KEYWORDS for keyword in terms):
         score += 10
     published_at = _search_result_datetime(result.published_at)
-    date_status = _search_date_status(result, policy)
+    date_status = _search_date_status(
+        result, policy, reference_at=getattr(company, "reference_at", None)
+    )
     if date_status == "recent":
         score += 25
     elif date_status in {"old", "future"}:
@@ -1147,7 +1168,9 @@ def _candidate_payload(
         "coverage_category": _event_classification(result.title, result.snippet),
         "source_tier": source_rank.tier,
         "source_rank_reasons": list(source_rank.reasons),
-        "search_date_status": _search_date_status(result, policy),
+        "search_date_status": _search_date_status(
+            result, policy, reference_at=getattr(company, "reference_at", None)
+        ),
         "source_access_status": SOURCE_ACCESS_API_METADATA_ONLY,
         "source_access_reason": "search_discovery_metadata_only",
     }
@@ -1858,6 +1881,7 @@ def _process_readability_fallback(session, user, job, company, policy, providers
                 "category": group["topic_category"],
                 "syntax": "quoted_name_plain_terms",
                 "reference_at": company.reference_at,
+                **_subject_reference_fields(company),
             },
         )
         coverage["search_groups"] = groups
@@ -2184,11 +2208,22 @@ def _content_quality_decision(
     observed = _aware(observed_at)
     published = _aware(published_at) if published_at is not None else None
     recency_cutoff = observed - timedelta(days=policy.recent_change_window_days)
+    fixed_window = _subject_reference_fields(company)
+    if fixed_window:
+        from backend.app.business_dates import SHANGHAI, business_date
+
+        recency_cutoff = datetime.fromisoformat(fixed_window["event_window_start"]).replace(
+            tzinfo=SHANGHAI
+        )
     if not excerpt:
         reasons.append("missing_clean_body")
     if published is None:
         reasons.append("missing_reliable_published_at")
-    elif published > observed + timedelta(days=1):
+    elif (
+        business_date(published).isoformat() > fixed_window["event_window_end"]
+        if fixed_window
+        else published > observed + timedelta(days=1)
+    ):
         reasons.append("published_at_in_future")
     elif published < recency_cutoff:
         reasons.append("published_before_recent_window")
@@ -2211,7 +2246,11 @@ def _content_quality_decision(
         matched_type = event_type
         supporting_excerpt = f"{title}。{passage}"[:1000]
         occurred_at, event_date_status = _explicit_event_date(company, passage)
-        if occurred_at is not None and occurred_at > observed:
+        if occurred_at is not None and (
+            business_date(occurred_at).isoformat() > fixed_window["event_window_end"]
+            if fixed_window
+            else occurred_at > observed
+        ):
             occurred_at = None
             event_date_status = "future_body_date"
             reasons.append("event_date_in_future")
@@ -3931,7 +3970,7 @@ def _run_web_research_worker_once(
                         "reason": "verified_public_name_and_rotating_topic",
                         "syntax": "single_quoted_name_plain_terms",
                         "reference_at": company.reference_at,
-                        "event_window_days": company.event_window_days,
+                        **_subject_reference_fields(company),
                     },
                 )
             coverage["search_groups"] = groups
@@ -3948,6 +3987,11 @@ def _run_web_research_worker_once(
             "legal_name": company.legal_name,
             "aliases": list(company.aliases),
         }
+        for state in coverage["search_groups"].values():
+            if state.get("query_text"):
+                state.setdefault("query_plan", {}).update(
+                    {"reference_at": company.reference_at, **_subject_reference_fields(company)}
+                )
         job.coverage = coverage
     if budget.recover(session, task_key=f"web-research:{job.id}"):
         return _defer_budget(
