@@ -1,5 +1,11 @@
 # 实施记录
 
+## 2026-10-01：PR #109 融资情态与否定对象定点修复
+
+- 任务/关键文件：`financing_semantics`、`matter_validation`、`research_matters` 及正式生命周期回归；融资语义 v2、字段校验 v5、提取 v8，prompt 不变。保护其他工作区和原封存材料，无新 migration、依赖或 UI 修改。
+- 实际命令：SQLite/非 owner PostgreSQL 的 rules、正确 Mock 及过度确定 Mock 失败回归；正式 identity→存储→API→报告 GET/reload/复用/权限；核心回归、四候选与冻结 40 对回放；Ruff/format、npm audit、秘密扫描及 `git diff --check`。准确 head 与合并后完整 Verify、实际数量及后续真实任务结果以本轮统一私有回执为准。
+- 验证/限制：预测、未完成和未到账不得成为完成、实际发生日或已取得金额；资金用途及无关否定按对象隔离。原 13/15 自动 SAME 和两条待核保持，历史回执/gold 不回写；只读自查不宣称独立盲验。单公司 B→A 仅在审查/CI/合并闸门后执行，不修改生产或补跑真实任务求通过。
+
 ## 2026-10-01：PR #109 核心事项生命周期与安全放行
 
 - 任务/关键文件：Next `package.json`/lock；`financing_semantics`、`research_matters`、validation/comparison/storage；当前 API/报告、待核工作台和真实渲染测试。仅延续现有 PR，原四候选、历史 gold/回执、schema 0036 保留；根工作区已有用户修改未触碰。

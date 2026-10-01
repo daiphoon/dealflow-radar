@@ -23,10 +23,10 @@
 
 ## 2. 有效执行检查点
 
-- **当前唯一里程碑：M2-F / PR #109 核心事项生命周期与安全放行，工程候选送审**。审查起点 `6aa45972f70999aaeaecb6a32ff810c5bc501d51`；正式 main/tree 不变，schema `0036`。G1—G4 的最终状态只由准确 head 的完整验证与 Verify 决定，统一私有交付包记录实际结果；工程就绪不等于业务 PASS、合并或部署。见 [25 M2-F](25-m2-f-engineering-closure.md)。
-- **本轮收口**：Next.js 固定同维护线安全 patch；融资完成、未交割和明确否认分开处理，当前 API/新报告使用有效反证，历史正文与观测不改写。rules 与独立 Mock 提议均通过正式身份、存储、读取和报告路径；真实 Mock request→Worker→终态另验。许可、撤证、非 owner RLS、并发及获取限流保护保留，无新 migration。
+- **当前唯一里程碑：M2-F / PR #109 融资情态定点修复、条件合并与单公司受控冒烟**。审查起点 `346cd806be0c1ff21651c690b548c79163953c66`；修复前 main/tree 不变，schema `0036`。只有新准确 head 的审查及完整 Verify 通过，才按负责人附条件授权正常合并；合并后准确 main 完整 Verify 通过才进入隔离冒烟。见 [25 M2-F](25-m2-f-engineering-closure.md)。
+- **本轮收口**：预计、未完成及未收到款项通过同一融资谓词契约限制 rules/Mock 状态和金额角色；无关业务或资金用途的否定不反转完成。正式身份、存储、API、报告独立读取与 non-owner PostgreSQL 回归留证。保留 Next.js 安全 patch、反证、历史正文、许可/RLS 与限流；无新 migration、prompt 或 UI 变化。
 - **历史关系与待核**：原四候选保持一个事项，40 对冻结关系仍为 38/40，原 13/15 自动正例保留。另两条历史 SAME 用双方授权证据、候选 ID 与理由正式呈现待核；不是自动归并成功。集团材料只进原文待核，不创建子公司融资或集团实体。旧 gold、回执和成绩不修改；旧 0/13、0/5 仍为未建立正式业务裁决，旧样本永久 `REGRESSION ONLY`。
-- **下一 Gate 与边界**：负责人复审统一报告、精简附件与 PR 的准确 head/Verify 后，决定是否合并和授权 1—2 个已见对象受控 smoke。当前真实 Provider/模型/生产操作 0；不自动合并、部署、开启 Worker/Watchlist/MCP/隧道或启动新留出。真实模型泛化和既有受阻来源的现场可读性仍未知。
+- **下一 Gate 与边界**：统一私有回执分别记录工程闸门、仅身份 B、给定来源 A 和用户读取，B 封存后才执行 A；每路径最多一次任务，预算不得互借。冒烟只使用一个已见开发对象，不作为新留出或业务 PASS。生产部署、生产研究、Watchlist/MCP/隧道未授权；真实阶段尚未执行时不预记通过。
 - 更新日期：2026-10-01；依据：[ADR-0025](DECISIONS/ADR-0025-matter-reliability-contract.md)、[ADR-0029](DECISIONS/ADR-0029-public-source-acquisition-policy.md)。
 
 ### 封存的 M2-R 检查点（以下旧“当前”不作为待办）

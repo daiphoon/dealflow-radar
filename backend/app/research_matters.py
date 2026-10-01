@@ -22,7 +22,7 @@ from backend.app.matter_dates import date_fields, normalize_date, occurrence
 
 VERSION = "matter-v1"
 PROMPT_VERSION = "research-matter-extraction-v5"
-EXTRACTION_VERSION = "matter-extraction-v7"
+EXTRACTION_VERSION = "matter-extraction-v8"
 # 每类均有实际动作契约；不把整篇文章标题当作事件动作。
 ACTIONS = (
     (
@@ -677,7 +677,15 @@ def validate_proposals(subject, text, proposals, *, legacy_compat=True):
             )
             or (
                 subtype == "company_financing"
-                and re.search(r"融资|该消息", targeted_denial.group(1))
+                and scoped_status(
+                    context[
+                        context.find(proposal.action_quote) : context.find(proposal.action_quote)
+                        + len(proposal.action_quote)
+                        + targeted_denial.end()
+                    ],
+                    subtype,
+                )
+                == "denied"
             )
         ):
             status = "denied"

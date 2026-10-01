@@ -3,7 +3,7 @@
 import re
 from decimal import Decimal, InvalidOperation
 
-VALIDATION_VERSION = "matter-field-validation-v4"
+VALIDATION_VERSION = "matter-field-validation-v5"
 
 
 def normalize_amount(value):
@@ -113,9 +113,11 @@ def validate_field(role, value, quote, action, subtype):
     before = quote[max(0, pos - 16) : pos]
     after = quote[pos + len(value) : pos + len(value) + 14]
     if role == "financing":
+        from backend.app.financing_semantics import realized_amount_supported
+
         ok = (
             subtype == "company_financing"
-            and scoped_status(action, subtype) != "planned"
+            and realized_amount_supported(action, value)
             and not re.search(r"估值|注册资本|累计|总计", before)
             and bool(re.search(r"融资|募集|筹得|募得", before + after))
         )
