@@ -3,6 +3,7 @@
 import json
 import re
 import time
+from dataclasses import replace
 from decimal import ROUND_UP, Decimal
 from typing import Protocol
 
@@ -151,6 +152,15 @@ class DeepSeekMatterProvider:
 
 
 def document_matters(session, actor, job, subject, document, policy, provider=None):
+    if job is not None and job.coverage.get("reference_at"):
+        subject = replace(
+            subject,
+            reference_at=job.coverage["reference_at"],
+            event_window_days=job.coverage.get(
+                "event_window_days", policy.recent_change_window_days
+            ),
+            research_intent=job.coverage.get("research_intent", "discovery"),
+        )
     document._matter_job = job
     body = str(document.payload.get("excerpt") or "")
     record(

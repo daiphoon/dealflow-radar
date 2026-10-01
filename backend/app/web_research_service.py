@@ -2438,15 +2438,6 @@ def _candidate_event(
             return None, False, replace(quality, eligible=False)
         verified_company, document, source, actor = authorized
         company = load_subject(session, verified_company)
-        if job is not None and job.coverage.get("reference_at"):
-            company = replace(
-                company,
-                reference_at=job.coverage["reference_at"],
-                event_window_days=job.coverage.get(
-                    "event_window_days", policy.recent_change_window_days
-                ),
-                research_intent=job.coverage.get("research_intent", "discovery"),
-            )
         matters = document_matters(
             session, actor, job, company, document, policy, session.info.get("matter_provider")
         )

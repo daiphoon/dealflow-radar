@@ -1120,6 +1120,6 @@
 ## 2026-10-01 — 研究运行契约、固定日期与 M3-A
 
 - 关键文件：`database.py`、正式Worker脚本、仓库内 `research_validation_runner.py`/`research_validation_contract.py`、共享业务日期、研究状态/抽取日期上下文、新v5报告及正式non-owner PG回归、26号说明和有效看板；不修改已合并融资语义、migration、依赖或MCP代码。
-- 实际命令：正式入口失败回归；隔离PostgreSQL `pytest -q tests/integration/test_runner_reference_contract.py tests/unit/test_business_dates.py tests/integration/test_m2_f_execution_delivery.py tests/unit/test_m2_f_evaluation_contract.py`；完整正式 `pytest -q -ra -p no:cacheprovider`；前端 `npm test/typecheck/build/audit`；SQLite/PostgreSQL迁移检查；production/Safe Degrade/diagnostic Compose config；本地amd64 API/frontend build；Ruff/format、Secret/private扫描与diff检查。完整计数、准确head远端Verify及封存索引见统一私有包。
-- 结果：定向85通过/13条件跳过、前端38通过及类型/构建/审计通过；Mock规则/模型/B搜索/A给定来源复用同一正式runner，提交、回滚、独立重读与错误账本留证。真实本地Next页面窗口正确、重载一致，读取前后11张业务表内容摘要相同；历史报告与旧PR109封存hash保持。独立平台文档及指定客户端只读检查，没有创建应用或隧道。
+- 实际命令：正式入口失败回归；隔离PostgreSQL `pytest -q tests/integration/test_runner_reference_contract.py tests/unit/test_business_dates.py tests/integration/test_research_matter_storage.py tests/integration/test_m2_f_execution_delivery.py tests/unit/test_m2_f_evaluation_contract.py`；完整正式 `pytest -q -ra -p no:cacheprovider`；前端 `npm test/typecheck/build/audit`；SQLite/PostgreSQL迁移检查；production/Safe Degrade/diagnostic Compose config；本地amd64 API/frontend build；Ruff/format、Secret/private扫描与diff检查。完整计数、准确head远端Verify及封存索引见统一私有包。
+- 结果：定向97通过/13条件跳过、前端38通过及类型/构建/审计通过；Mock规则/模型/B搜索/A给定来源复用同一正式runner，提交、回滚、独立重读与错误账本留证。真实本地Next页面窗口正确、重载一致，读取前后11张业务表内容摘要相同；历史报告与旧PR109封存hash保持。独立平台文档及指定客户端只读检查，没有创建应用或隧道。
 - 限制：旧B/A/报告失败结论不改；当前M3静态Bearer传递阻塞，Tunnel权限及组织关联未验证。生产安全版本未现场核验，生产安全补丁、合并、同公司新真实attempt及M3-B均另批；本轮项目真实搜索/抓取/模型与生产操作0。

@@ -30,7 +30,7 @@
 
 先用真实请求、非 owner PostgreSQL 和正式 Worker 复现跨提交身份丢失及 UTC 日期偏移，再修改。定向回归覆盖 commit/rollback/refresh/SELECT/连接复用/错租户、规则及 Mock 模型完整链、首错与次错、外层停止、重启拒绝、日期边界、旧报告与跨用户拒绝；实际 Next.js 页面显示正确窗口、正文 reload 一致，相关11张业务表完整内容摘要不变。
 
-本地定向85通过/13条件跳过，前端38通过、类型/构建及依赖审计通过；SQLite/PostgreSQL migration check、Ruff/format、生产/Safe Degrade/diagnostic Compose config 和 API/frontend amd64 本地构建通过。完整正式测试、准确 PR/head/tree、远端 Verify 及条件跳过说明以统一私有交付包为准，不以定向测试代替完整 CI。
+本地定向97通过/13条件跳过，前端38通过、类型/构建及依赖审计通过；SQLite/PostgreSQL migration check、Ruff/format、生产/Safe Degrade/diagnostic Compose config 和 API/frontend amd64 本地构建通过。完整正式测试、准确 PR/head/tree、远端 Verify 及条件跳过说明以统一私有交付包为准，不以定向测试代替完整 CI。
 
 旧 #109 ENGINEERING PASS、B INCONCLUSIVE/partial、A NOT_RUN、USER_READOUT 固定窗口 FAIL 保留。当前 Mock 工程通过不修订旧真实结果，也不构成召回或业务 PASS。真实项目搜索/抓取/模型调用、生产操作和 MCP/隧道启动均0。
 
