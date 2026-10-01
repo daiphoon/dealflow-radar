@@ -6,7 +6,7 @@ const ts = require('typescript');
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
 function load(relative,mocks={}) {
-  const code=ts.transpileModule(fs.readFileSync(path.join(__dirname,'..',relative),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
+  const code=ts.transpileModule(fs.readFileSync(path.join(__dirname,'..',relative),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2017,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
   const module={exports:{}};
   new Function('require','module','exports',code)((id)=>Object.hasOwn(mocks,id)?mocks[id]:require(id),module,module.exports);
   return module.exports;
@@ -28,6 +28,15 @@ test('真实报告页面展示正文与虚构性质；URL 只提示合法成功�
     assert.match(html,result==='report_reused'?/不会重复占用/:/报告已生成/);
   }
   assert.doesNotMatch(await render('historical_snapshot','forged'),/报告已生成/);
+});
+test('正式报告渲染器将恶意 HTML 和脚本链接当作文本',()=>{
+  const {ReportContent}=load('components/report-content.tsx');
+  const markdown='## 正常融资线索\n\n<img src=x onerror="alert(1)">\n\n[危险链接](javascript:alert(1))\n\n- 合法来源：<https://example.com/evidence>';
+  const html=renderToStaticMarkup(React.createElement(ReportContent,{markdown}));
+  assert.doesNotMatch(html,/<img|href="javascript:|<script/);
+  assert.match(html,/&lt;img/);
+  assert.match(html,/href="https:\/\/example.com\/evidence"/);
+  assert.match(html,/rel="noreferrer"/);
 });
 test('撤权和过时状态优先于伪造成功参数，也在无 query 时显示',async()=>{
   for(const result of ['report_generated','report_reused',undefined]){

@@ -3,7 +3,7 @@
 import re
 from decimal import Decimal, InvalidOperation
 
-VALIDATION_VERSION = "matter-field-validation-v2"
+VALIDATION_VERSION = "matter-field-validation-v5"
 
 
 def normalize_amount(value):
@@ -81,6 +81,17 @@ def actor_supported(subject, action, subtype):
             if re.search(r"(?:出席|参与会议|介绍|提及|投资的|参股的|子公司|合作伙伴)", prefix):
                 continue
             return True
+        if (
+            subtype == "company_financing"
+            and action.find(local) > pos
+            and re.match(
+                r"^(?:但|随后|此后)?(?:该公司|本公司|公司)"
+                r"(?:(?:已经|已|正式)|(?:于)?(?:20\d{2}年)?\d{1,2}月\d{1,2}日)*"
+                r"(?:[A-F][1-9]?轮(?:股权)?融资|完成|收到|获得|募得|募集)",
+                local,
+            )
+        ):
+            return True
         # 同一连续引用只允许日期、明确代词、并列谓词继承主体。
         if action.find(local) > pos and re.match(
             r"^(?:(?:于)?20\d{2}年\d*月?\d*日?|随后|此后|该公司|公司|其|并|同时|但)*(?:通过|完成|向|提交|递交|二次递表|再次递表|重新递交|获|中标|发布|否认|拟|计划)",
@@ -102,8 +113,11 @@ def validate_field(role, value, quote, action, subtype):
     before = quote[max(0, pos - 16) : pos]
     after = quote[pos + len(value) : pos + len(value) + 14]
     if role == "financing":
+        from backend.app.financing_semantics import realized_amount_supported
+
         ok = (
             subtype == "company_financing"
+            and realized_amount_supported(action, value)
             and not re.search(r"估值|注册资本|累计|总计", before)
             and bool(re.search(r"融资|募集|筹得|募得", before + after))
         )
@@ -121,11 +135,16 @@ def validate_field(role, value, quote, action, subtype):
         ok = value.endswith("股")
     elif role == "round":
         ok = bool(
-            re.fullmatch(r"(?:Pre[- ]?)?[A-F](?:\+{1,2})?轮|天使轮|种子轮|战略融资", value, re.I)
+            re.fullmatch(
+                r"(?:Pre[- ]?)?[A-F](?:[1-9][0-9]?)?(?:\+{1,2})?轮|天使轮|种子轮|战略融资",
+                value,
+                re.I,
+            )
         )
     elif role == "investors":
         ok = all(
             re.search(re.escape(v) + r"[^，,。；;]{0,100}(?:领投|跟投|参与投资|参投)", quote)
+            or re.search(r"(?:投资方(?:为|包括)|领投方为)[^。；;]{0,80}" + re.escape(v), quote)
             for v in investor_parts
         )
     elif role in {"registered_capital_before", "registered_capital_after"}:
@@ -260,7 +279,7 @@ def assess_matter_fact(fact, evidence, context):
             )
             if valid:
                 return "conflicting", checks, ["counter_evidence_field_conflict"]
-    if matter.get("status") == "denied" and (ok or fact.name == "动作状态"):
+    if scoped_status(action, matter.get("subtype")) == "denied":
         # 否认中的金额/轮次是在复述被否认主张，不能成为该主张的正向支持。
         return "conflicting", checks, ["counter_evidence_denial"]
     return (
@@ -296,8 +315,8 @@ def action_supported(action, subtype):
         "ipo_listed": r"(?:正式|成功|已).{0,15}上市|挂牌上市",
         "ipo_listing_plan": r"(?:拟|计划|将|启动|否认).{0,30}(?:上市|IPO)",
         "ipo_withdrawn": r"(?:撤回|终止).{0,15}(?:上市|IPO)",
-        "contract_award": r"中标|(?:合同|合作协议)",
-        "product_milestone": r"发布|认证|注册证|获批",
+        "contract_award": r"中标|合同|合作协议|租赁协议|框架协议|战略协议|首次商业运输",
+        "product_milestone": r"发布|推出|认证|注册证|获批|准入|装机批准|技术审核|适航",
         "operating_disclosure": r"营收|营业收入|净利润|出货量|停产|欠薪",
         "management_change": r"(?:董事长|总经理|高管|创始人).{0,20}(?:离职|辞任|变更)|任命",
         "legal_development": r"起诉|处罚|立案|执行|破产|补充协议|(?:义务|条款).{0,20}终止",
@@ -307,6 +326,10 @@ def action_supported(action, subtype):
 
 
 def scoped_status(action, subtype):
+    if subtype == "company_financing":
+        from backend.app.financing_semantics import statement
+
+        return statement(action)[0]
     # 并列的不同事项分别取局部动作语境；否认不跨事项传播。
     parts = re.split(r"[，,。；;]", action)
     supporting = [part for part in parts if action_supported(part, subtype)]

@@ -334,6 +334,8 @@ class ResearchCategoryCompletionOut(BaseModel):
             "network_environment_blocked",
             "robots_denied",
             "dynamic_content_unavailable",
+            "access_controlled",
+            "rate_limited",
             "budget_deferred",
             "not_checked",
         ]
@@ -663,6 +665,7 @@ class ReviewOut(BaseModel):
 
 
 class ReviewWorkbenchOut(BaseModel):
+    source_context: dict[str, str] | None = None
     id: UUID
     event_id: UUID | None
     entity_mention_id: UUID | None

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
-from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 from xml.etree import ElementTree
 
 import httpx
@@ -55,13 +55,16 @@ ROBOTS_CACHE_STATUSES = {
     "checked",
     "denied",
     "invalid_content_type_deny",
+    "invalid_format_deny",
     "not_found_allow",
     "unavailable_deny",
+    "rate_limited",
 }
 MAX_ROBOTS_CACHE_ORIGINS = 32
 MAX_PERSISTED_ROBOTS_RULE_CHARS = 64_000
 MAX_PERSISTED_ROBOTS_TOTAL_CHARS = 128_000
 ROBOTS_CACHE_TTL = timedelta(minutes=15)
+PUBLIC_HTTP_ROBOTS_POLICY_VERSION = "public-http-robots-advisory-v1"
 RobotsRuleCache = MutableMapping[str, dict[str, str]]
 
 
@@ -73,6 +76,25 @@ def robots_rule_allows(entry: dict[str, str], target_url: str, user_agent: str) 
     parser = urllib.robotparser.RobotFileParser()
     parser.parse(entry.get("rules", "").splitlines())
     return parser.can_fetch(user_agent, target_url)
+
+
+def robots_matching_rule(entry: dict[str, str], target_url: str, user_agent: str) -> str | None:
+    if entry["status"] != "checked":
+        return None
+    parser = urllib.robotparser.RobotFileParser()
+    parser.parse(entry.get("rules", "").splitlines())
+    parsed_url = urlsplit(unquote(target_url))
+    target_path = quote(
+        urlunsplit(("", "", parsed_url.path, parsed_url.query, parsed_url.fragment))
+    )
+    target_path = target_path or "/"
+    matched_entry = next((item for item in parser.entries if item.applies_to(user_agent)), None)
+    matched_entry = matched_entry or parser.default_entry
+    if matched_entry is None:
+        return None
+    return next(
+        (str(rule) for rule in matched_entry.rulelines if rule.applies_to(target_path)), None
+    )
 
 
 def normalized_robots_rule_cache(value: object, user_agent: str) -> dict[str, dict[str, str]]:
@@ -96,9 +118,13 @@ def normalized_robots_rule_cache(value: object, user_agent: str) -> dict[str, di
             or parsed.fragment
         ):
             continue
-        status = raw_entry.get("status")
+        status = (
+            "rate_limited" if raw_entry.get("http_status") == "429" else raw_entry.get("status")
+        )
         cached_user_agent = raw_entry.get("user_agent")
-        if status not in ROBOTS_CACHE_STATUSES or cached_user_agent != user_agent:
+        if status not in ROBOTS_CACHE_STATUSES or (
+            status != "rate_limited" and cached_user_agent != user_agent
+        ):
             continue
         checked_at = raw_entry.get("checked_at")
         if not isinstance(checked_at, str):
@@ -110,13 +136,16 @@ def normalized_robots_rule_cache(value: object, user_agent: str) -> dict[str, di
         if checked_at_value.tzinfo is None:
             continue
         age = datetime.now(UTC) - checked_at_value.astimezone(UTC)
-        if age < timedelta(0) or age > ROBOTS_CACHE_TTL:
+        if age < timedelta(0) or (status != "rate_limited" and age > ROBOTS_CACHE_TTL):
             continue
         entry = {
             "status": status,
             "user_agent": user_agent,
             "checked_at": checked_at_value.astimezone(UTC).isoformat(),
         }
+        for optional in ("http_status", "fetch_error_code", "retry_after", "retry_at"):
+            if isinstance(raw_entry.get(optional), str):
+                entry[optional] = raw_entry[optional][:80]
         if status == "checked":
             rules = raw_entry.get("rules")
             if not isinstance(rules, str) or len(rules) > MAX_PERSISTED_ROBOTS_RULE_CHARS:
@@ -237,6 +266,7 @@ class _FetchedResponse:
     body: bytes
     etag: str | None
     last_modified: str | None
+    retry_after: str | None = None
 
 
 class _HtmlMetadataParser(HTMLParser):
@@ -605,6 +635,29 @@ def _html_document(
         # in memory, persisting only the selector's minimal excerpt.
         visible_text = body_text
     title = _normalize_text(" ".join(parser.title_parts)) or response.final_url
+    access_heading = f"{title} {visible_text[:1500]}"
+    if re.fullmatch(
+        r"安全验证|人机验证|访问验证|verify you are human|just a moment[.!…]*", title, re.I
+    ) or re.search(
+        r"请(?:完成|输入|通过|进行).{0,15}(?:验证码|人机验证|安全验证)|verify you are human"
+        r"|complete the captcha|window\._cf_chl_opt|/cdn-cgi/challenge-platform",
+        access_heading + text[:2000],
+        re.I,
+    ):
+        raise SourceFetchError("captcha_required", "source requires an interactive challenge")
+    if re.search(
+        r"(?:请登录|登录账户|登录后|sign in to (?:read|view|continue)"
+        r"|log in to (?:read|view|continue))",
+        access_heading,
+        re.I,
+    ) or re.fullmatch(r"(?:登录|用户登录|会员登录|sign in|log in)", title, re.I):
+        raise SourceFetchError("authentication_required", "source requires authentication")
+    if re.search(
+        r"付费阅读|付费查看全文|开通会员(?:后)?查看|subscribe to (?:read|view)",
+        access_heading,
+        re.I,
+    ):
+        raise SourceFetchError("access_controlled", "source requires a paid entitlement")
     canonical_url = response.final_url
     if parser.canonical_href:
         try:
@@ -617,11 +670,6 @@ def _html_document(
         except UrlSafetyError:
             canonical_url = response.final_url
     if excerpt_selector is not None and not identity_mode:
-        if (
-            re.search(r"验证码|人机验证|安全验证|verify you are human|captcha", visible_text, re.I)
-            and len(visible_text) < 500
-        ):
-            raise SourceFetchError("captcha_required", "source requires an interactive challenge")
         if len(visible_text.strip()) < 20:
             dynamic = re.search(
                 r"__NEXT_DATA__|id=[\"'](?:root|app)[\"']|enable javascript", text, re.I
@@ -835,6 +883,7 @@ class TrustedSourceFetcher:
         self.allow_test_http = allow_test_http
         self.allow_private_test_hosts = allow_private_test_hosts
         self.request_log: list[dict[str, object]] = []
+        self.robots_observations: list[dict[str, object]] = []
         self.request_count = 0
         self.downloaded_bytes = 0
         self._last_request_at: dict[str, float] = {}
@@ -937,6 +986,20 @@ class TrustedSourceFetcher:
         *,
         allow_plain_text: bool,
     ) -> _FetchedResponse:
+        origin = self._origin(url)
+        limited = self._active_rate_limit(origin)
+        if limited:
+            self.request_log.append(
+                {
+                    "hostname": urlsplit(url).hostname,
+                    "http_dispatched": False,
+                    "error_code": "rate_limited",
+                    "retry_after": limited.get("retry_after"),
+                    "retry_at": limited.get("retry_at"),
+                    "phase": "origin_rate_gate",
+                }
+            )
+            raise SourceFetchError("rate_limited", "origin remains rate limited", http_status=429)
         if self.request_count >= self.policy.max_requests_per_run:
             raise SourceFetchError("request_limit_exceeded", "run request limit reached")
         audit = {
@@ -1029,6 +1092,8 @@ class TrustedSourceFetcher:
         response_bytes = 0
         try:
             self._check_peer_address(response, allowed_addresses)
+            if status_code == 429:
+                self._remember_rate_limit(url, response.headers.get("retry-after"))
             if self._owns_client and not self.allow_private_test_hosts:
                 audit.update(peer_verified=True, peer_class="public", tls_hostname_verified=True)
             is_redirect = status_code in {301, 302, 303, 307, 308}
@@ -1100,6 +1165,12 @@ class TrustedSourceFetcher:
                     "elapsed_ms": elapsed_ms,
                     "content_type": content_type,
                     "location": response.headers.get("location"),
+                    "retry_after": response.headers.get("retry-after")
+                    if status_code == 429
+                    else None,
+                    "retry_at": self._robots.get(origin, {}).get("retry_at")
+                    if status_code == 429
+                    else None,
                 }
             )
             return _FetchedResponse(
@@ -1110,6 +1181,7 @@ class TrustedSourceFetcher:
                 body=body,
                 etag=response.headers.get("etag"),
                 last_modified=response.headers.get("last-modified"),
+                retry_after=response.headers.get("retry-after"),
             )
         except (httpx.TransportError, httpx.DecodingError) as error:
             code = "timeout" if isinstance(error, httpx.TimeoutException) else "network_error"
@@ -1229,62 +1301,201 @@ class TrustedSourceFetcher:
                 allow_private_test_hosts=self.allow_private_test_hosts,
             )
 
-    def _robots_check(self, target_url: str, root_domain: str) -> str:
+    @staticmethod
+    def _origin(url):
+        parsed = urlsplit(url)
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    def _remember_rate_limit(self, url, retry_after):
+        now = datetime.now(UTC)
+        entry = {
+            "status": "rate_limited",
+            "http_status": "429",
+            "checked_at": now.isoformat(),
+            "user_agent": self.policy.user_agent,
+        }
+        if retry_after is not None:
+            entry["retry_after"] = retry_after[:80]
+            try:
+                if re.fullmatch(r"\d+", retry_after.strip()):
+                    retry_at = now + timedelta(seconds=int(retry_after.strip()))
+                else:
+                    retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is not None:
+                    entry["retry_at"] = retry_at.astimezone(UTC).isoformat()
+            except (ValueError, TypeError, OverflowError, AttributeError):
+                pass
+        self._robots[self._origin(url)] = entry
+        return entry
+
+    def _active_rate_limit(self, origin):
+        entry = self._robots.get(origin)
+        if not entry or not (
+            entry.get("status") == "rate_limited" or entry.get("http_status") == "429"
+        ):
+            return None
+        try:
+            retry_at = datetime.fromisoformat(entry["retry_at"])
+            if retry_at.tzinfo is not None and datetime.now(UTC) >= retry_at:
+                self._robots.pop(origin, None)
+                return None
+        except (KeyError, TypeError, ValueError):
+            pass
+        return entry
+
+    def _robots_check(
+        self, target_url: str, root_domain: str, *, acquisition_route: str | None = None
+    ) -> str:
         parsed = urlsplit(target_url)
         origin = f"{parsed.scheme}://{parsed.netloc}"
+        advisory = (
+            self.policy.robots_mode == "advisory_public_http"
+            and acquisition_route == "PUBLIC_STANDARD_HTTP"
+        )
         cached = self._robots.get(origin)
+        if cached and (
+            cached.get("status") == "rate_limited" or cached.get("http_status") == "429"
+        ):
+            cached = self._active_rate_limit(origin)
         if cached is not None and cached.get("user_agent") != self.policy.user_agent:
             cached = None
+        from_cache = cached is not None
         if cached is None:
             robots_url = f"{origin}/robots.txt"
             checked_at = datetime.now(UTC).isoformat()
-            response = self._fetch_following_redirects(
-                robots_url,
-                root_domain,
-                allow_plain_text=True,
-            )
-            if response.status_code == 404:
+            response = None
+            log_start = len(self.request_log)
+            try:
+                response = self._fetch_following_redirects(
+                    robots_url,
+                    root_domain,
+                    allow_plain_text=True,
+                )
+            except SourceFetchError as error:
+                # An unavailable robots endpoint is not proof that the public body is gated.
+                # Safety, cancellation and budget failures must still stop before body GET.
+                if not advisory or error.code not in {
+                    "timeout",
+                    "network_error",
+                    "invalid_redirect",
+                    "redirect_limit_exceeded",
+                    "unsupported_content_type",
+                    "response_too_large",
+                }:
+                    raise
+                cached = {
+                    "status": "invalid_content_type_deny"
+                    if error.code == "unsupported_content_type"
+                    else "unavailable_deny",
+                    "user_agent": self.policy.user_agent,
+                    "checked_at": checked_at,
+                    "fetch_error_code": error.code,
+                }
+            finally:
+                for row in self.request_log[log_start:]:
+                    row["acquisition_phase"] = "robots"
+            if response is not None and response.status_code == 404:
                 cached = {
                     "status": "not_found_allow",
                     "user_agent": self.policy.user_agent,
                     "checked_at": checked_at,
                 }
-            elif response.status_code in {401, 403}:
+            elif response is not None and response.status_code == 429:
+                cached = self._remember_rate_limit(target_url, response.retry_after)
+            elif response is not None and response.status_code in {401, 403}:
                 cached = {
                     "status": "denied",
                     "user_agent": self.policy.user_agent,
                     "checked_at": checked_at,
                 }
-            elif response.status_code >= 400:
+            elif response is not None and response.status_code >= 400:
                 cached = {
                     "status": "unavailable_deny",
                     "user_agent": self.policy.user_agent,
                     "checked_at": checked_at,
                 }
-            elif (response.content_type or "").split(";", 1)[0].strip().lower() != "text/plain":
+            elif (
+                response is not None
+                and (response.content_type or "").split(";", 1)[0].strip().lower() != "text/plain"
+            ):
                 cached = {
                     "status": "invalid_content_type_deny",
                     "user_agent": self.policy.user_agent,
                     "checked_at": checked_at,
                 }
-            else:
+            elif response is not None:
+                rules = _decode_body(response.body, response.content_type)
+                records = [line.split("#", 1)[0].strip() for line in rules.splitlines()]
+                has_only_extensions = all(
+                    not line or re.match(r"(?i)(?:sitemap|host)\s*:", line) for line in records
+                )
                 cached = {
-                    "status": "checked",
+                    "status": "checked"
+                    if has_only_extensions or re.search(r"(?im)^\s*user-agent\s*:", rules)
+                    else "invalid_format_deny",
                     "user_agent": self.policy.user_agent,
                     "checked_at": checked_at,
-                    "rules": _decode_body(response.body, response.content_type),
+                    "rules": rules,
                 }
+            if response is not None:
+                cached["http_status"] = str(response.status_code)
             self._robots[origin] = cached
         status = cached["status"]
-        if not robots_rule_allows(cached, target_url, self.policy.user_agent):
+        allowed = robots_rule_allows(cached, target_url, self.policy.user_agent)
+        limited = status == "rate_limited" or cached.get("http_status") == "429"
+        if limited:
+            observed = "rate_limited"
+        elif status == "checked":
+            observed = "allowed_observed" if allowed else "disallowed_observed"
+        elif status == "not_found_allow":
+            observed = "missing"
+        elif status in {"invalid_content_type_deny", "invalid_format_deny"}:
+            observed = "invalid"
+        else:
+            observed = "unavailable"
+        # The cache retains its previous status vocabulary for existing jobs.
+        # This separate observation records what the policy decided for this target.
+        self.robots_observations.append(
+            {
+                "robots_url": f"{origin}/robots.txt",
+                "target_url_hash": _sha256(target_url),
+                "checked_at": cached["checked_at"],
+                "user_agent": self.policy.user_agent,
+                "status": observed,
+                "http_status": cached.get("http_status"),
+                "fetch_error_code": cached.get("fetch_error_code"),
+                "retry_after": cached.get("retry_after"),
+                "retry_at": cached.get("retry_at"),
+                "matched_rule": robots_matching_rule(cached, target_url, self.policy.user_agent),
+                "rules_hash": _sha256(cached.get("rules", "")) if status == "checked" else None,
+                "from_cache": from_cache,
+                "decision": "stop_rate_limited"
+                if limited
+                else "advisory_continue"
+                if advisory
+                else "allow"
+                if allowed
+                else "stop",
+                "policy_version": PUBLIC_HTTP_ROBOTS_POLICY_VERSION
+                if advisory
+                else self.policy.version,
+            }
+        )
+        if limited:
+            raise SourceFetchError(
+                "rate_limited", "robots/origin rate limit must stop dispatch", http_status=429
+            )
+        if not allowed and not advisory:
             raise SourceFetchError("robots_disallowed", "robots.txt does not allow this request")
-        return status
+        return observed if advisory else status
 
     def _fetch_document_url(
         self,
         url: str,
         root_domain: str,
         conditional: dict[str, str] | None = None,
+        *,
+        acquisition_route: str | None = None,
     ) -> tuple[_FetchedResponse, str]:
         canonical = canonicalize_source_url(
             url,
@@ -1292,12 +1503,19 @@ class TrustedSourceFetcher:
             allow_test_http=self.allow_test_http,
             allow_private_test_hosts=self.allow_private_test_hosts,
         )
-        robots_status = self._robots_check(canonical, root_domain)
-        response = self._fetch_following_redirects(
-            canonical,
-            root_domain,
-            headers=conditional,
+        robots_status = self._robots_check(
+            canonical, root_domain, acquisition_route=acquisition_route
         )
+        log_start = len(self.request_log)
+        try:
+            response = self._fetch_following_redirects(
+                canonical,
+                root_domain,
+                headers=conditional,
+            )
+        finally:
+            for row in self.request_log[log_start:]:
+                row["acquisition_phase"] = "body"
         return response, robots_status
 
     @staticmethod
@@ -1324,6 +1542,16 @@ class TrustedSourceFetcher:
         }
 
     def _response_or_error(self, response: _FetchedResponse) -> None:
+        if response.status_code == 401:
+            raise SourceFetchError(
+                "authentication_required", "source requires authentication", http_status=401
+            )
+        if response.status_code == 403:
+            raise SourceFetchError("access_controlled", "source denied access", http_status=403)
+        if response.status_code == 429:
+            raise SourceFetchError(
+                "rate_limited", "source rate limited the request", http_status=429
+            )
         if response.status_code == 404:
             raise SourceFetchError("http_not_found", "source returned HTTP 404", http_status=404)
         if response.status_code >= 400:
@@ -1343,6 +1571,7 @@ class TrustedSourceFetcher:
         retention_policy: str,
         conditional_state: dict[str, dict[str, str | None]],
         excerpt_selector: Callable[[str], str] | None = None,
+        acquisition_route: str | None = None,
     ) -> FetchBatchResult:
         keep_excerpt = retention_policy == "minimal_excerpt"
         documents: list[DiscoveredDocument] = []
@@ -1359,6 +1588,7 @@ class TrustedSourceFetcher:
             canonical_start,
             root_domain,
             self._conditional_headers(conditional_state.get(canonical_start)),
+            acquisition_route=acquisition_route,
         )
         if response.status_code == 304:
             unchanged_urls.append(canonical_start)
@@ -1579,6 +1809,33 @@ class TrustedSourceFetcher:
         else:
             raise SourceFetchError("unsupported_source_type", "unsupported source type")
 
+        for document in documents:
+            document.metadata["source_acquisition"] = {
+                "acquisition_route": acquisition_route or "STRUCTURED_PUBLIC_SOURCE",
+                "robots_observations": list(self.robots_observations),
+                "acquisition_policy_version": PUBLIC_HTTP_ROBOTS_POLICY_VERSION
+                if acquisition_route == "PUBLIC_STANDARD_HTTP"
+                and self.policy.robots_mode == "advisory_public_http"
+                else self.policy.version,
+                "fetched_under_policy": self.policy.robots_mode,
+                "technical_access_status": "public_readable",
+                "fetched_at": datetime.now(UTC).isoformat(),
+                "request_count": self.request_count,
+                "total_bytes": self.downloaded_bytes,
+                "source_response_bytes": sum(
+                    int(row.get("bytes", 0))
+                    for row in self.request_log
+                    if row.get("acquisition_phase") == "body"
+                ),
+                "auxiliary_response_bytes": sum(
+                    int(row.get("bytes", 0))
+                    for row in self.request_log
+                    if row.get("acquisition_phase") == "robots"
+                ),
+                "elapsed_ms": sum(int(row.get("elapsed_ms", 0)) for row in self.request_log),
+                "rendering_provider": None,
+                "automatic": True,
+            }
         return FetchBatchResult(
             documents=documents,
             unchanged_urls=unchanged_urls,

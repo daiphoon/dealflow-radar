@@ -102,7 +102,7 @@ export type FinancingObservation = {
 };
 
 export type MatterObservation = {
-  relations?: {event_id: string; type: string; reason: string}[];
+  relations?: {event_id: string; type: string; reason: string; candidate_evidence_id?: string; candidate_source_url?: string}[];
   temporal_status?: string; source_channel?: string; source_published_on?: string | null;
   information_status?: string; processing_version?: string; merge_decision?: string;
   kind: string; fact_version: string; category: string; subtype: string; label: string;
@@ -262,6 +262,7 @@ export type ReviewWorkbenchItem = {
   company_legal_name: string | null;
   event: Event | null;
   mention_text: string | null;
+  source_context?: {kind: string; related_entity: string; relation: string; excerpt: string; canonical_url: string; document_id: string} | null;
   match_rule: string | null;
   match_confidence: string | null;
   resolution_status: string | null;

@@ -64,6 +64,7 @@ from backend.app.research_subject import (
 )
 from backend.app.services import user_has_role
 from backend.app.source_fetcher import (
+    PUBLIC_HTTP_ROBOTS_POLICY_VERSION,
     SourceFetchError,
     TrustedSourceFetcher,
     UrlSafetyError,
@@ -511,12 +512,21 @@ def _identity_fingerprint(company: Company) -> str:
     )
 
 
-def _initial_coverage(policy: WebResearchPolicy, *, watchlist: bool = False) -> dict[str, object]:
+def _initial_coverage(
+    policy: WebResearchPolicy, *, watchlist: bool = False, reference_at: datetime | None = None
+) -> dict[str, object]:
+    reference = reference_at or utc_now()
+    if reference.tzinfo is None:
+        raise ValueError("research reference must include timezone")
     short_topics = policy.incremental_research_enabled and not watchlist
     return {
         "research_intent": "discovery",
         "research_scope": "limited_scope_check",
-        "reference_at": utc_now().isoformat(),
+        "reference_at": reference.isoformat(),
+        "event_window_start": (reference - timedelta(days=policy.recent_change_window_days))
+        .date()
+        .isoformat(),
+        "event_window_end": reference.date().isoformat(),
         "event_window_days": policy.recent_change_window_days,
         "policy_version": policy.version,
         "query_strategy_version": SHORT_QUERY_STRATEGY_VERSION
@@ -569,6 +579,8 @@ def prepare_pending_research_requests(
     session: Session,
     user: User,
     policy: WebResearchPolicy,
+    *,
+    reference_at: datetime | None = None,
 ) -> int:
     if not user_has_role(session, user.id, "platform_admin"):
         raise WebResearchAccessError("platform_admin role required")
@@ -608,8 +620,14 @@ def prepare_pending_research_requests(
         if job is not None and job.trigger_type == "watchlist":
             # Finish the bounded check first; the full manual request then reuses its cache.
             continue
+        if (
+            job is not None
+            and reference_at is not None
+            and job.coverage.get("reference_at") != reference_at.isoformat()
+        ):
+            raise ValueError("active research reference differs from frozen contract")
         if job is None:
-            coverage = _initial_coverage(policy)
+            coverage = _initial_coverage(policy, reference_at=reference_at)
             if request.request_type == "refresh":
                 coverage["research_scope"] = "bounded_full_scope_refresh"
             if policy.incremental_research_enabled and (
@@ -1913,7 +1931,11 @@ def _process_readability_fallback(session, user, job, company, policy, providers
         seen.add(url)
         parsed = urlsplit(url)
         rule = robots.get(f"{parsed.scheme}://{parsed.netloc}")
-        if rule is not None and not robots_rule_allows(rule, url, policy.user_agent):
+        if (
+            policy.robots_mode == "enforce"
+            and rule is not None
+            and not robots_rule_allows(rule, url, policy.user_agent)
+        ):
             excluded["robots_disallowed"] += 1
             continue
         added.append(candidate)
@@ -2993,6 +3015,7 @@ def _fetch_policy(
 ) -> SourceMonitoringPolicy:
     return SourceMonitoringPolicy(
         version=policy.version,
+        robots_mode=policy.robots_mode,
         max_requests_per_run=remaining_requests,
         max_download_bytes_per_run=remaining_bytes,
         max_response_bytes=policy.max_response_bytes,
@@ -3197,6 +3220,7 @@ def _fetch_candidate(
     http_status: int | None = None
     transport_failures = []
     fetch_request_log = []
+    robots_observations = []
     usage = None
     fetch_accounted = False
     if cached_document is not None:
@@ -3316,6 +3340,7 @@ def _fetch_candidate(
                     start_url=url,
                     retention_policy="minimal_excerpt",
                     conditional_state={},
+                    acquisition_route="PUBLIC_STANDARD_HTTP",
                     **(
                         {
                             "excerpt_selector": BusinessExcerptSelector(
@@ -3328,6 +3353,7 @@ def _fetch_candidate(
                 )
                 fetch_calls = result.request_count
                 downloaded_bytes = result.downloaded_bytes
+                robots_observations = list(getattr(fetcher, "robots_observations", []))
                 if not result.documents:
                     error_code = "no_fetchable_document"
                 else:
@@ -3422,6 +3448,11 @@ def _fetch_candidate(
                                     "event_created": event_created,
                                     "quality_gate": quality.to_dict(),
                                     "source_access_status": candidate["source_access_status"],
+                                    "acquisition_route": "PUBLIC_STANDARD_HTTP",
+                                    "robots_observations": robots_observations,
+                                    "acquisition_policy_version": PUBLIC_HTTP_ROBOTS_POLICY_VERSION
+                                    if policy.robots_mode == "advisory_public_http"
+                                    else policy.version,
                                     "coverage_category": quality.event_type,
                                     "matter_categories": list(quality.matter_categories),
                                     "searched_topics": [
@@ -3464,6 +3495,7 @@ def _fetch_candidate(
                 ]
             finally:
                 fetch_request_log = list(getattr(fetcher, "request_log", []))
+                robots_observations = list(getattr(fetcher, "robots_observations", []))
                 fetcher.close()
         if not fetch_accounted:
             job.external_calls += fetch_calls
@@ -3525,6 +3557,11 @@ def _fetch_candidate(
                         fetch_calls,
                         http_status,
                     ),
+                    "acquisition_route": "PUBLIC_STANDARD_HTTP",
+                    "robots_observations": robots_observations,
+                    "acquisition_policy_version": PUBLIC_HTTP_ROBOTS_POLICY_VERSION
+                    if policy.robots_mode == "advisory_public_http"
+                    else policy.version,
                     "coverage_category": candidate.get("coverage_category"),
                     "attempted_at": utc_now().isoformat(),
                     "checked_at": None,

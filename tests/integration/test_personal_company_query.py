@@ -398,11 +398,21 @@ def test_demo_evidence_detail_renders_change_and_hides_unsupported_payloads(
     )
 
 
+@pytest.mark.parametrize(
+    ("checked_at", "period_key"),
+    [
+        (datetime(2026, 9, 30, 15, 59, tzinfo=UTC), "2026-09"),
+        (datetime(2026, 9, 30, 16, 1, tzinfo=UTC), "2026-10"),
+    ],
+)
 def test_company_suggestions_are_bounded_scoped_and_read_only(
     client: TestClient,
     migrated_app: FastAPI,
     monkeypatch: pytest.MonkeyPatch,
+    checked_at: datetime,
+    period_key: str,
 ) -> None:
+    monkeypatch.setattr("backend.app.personal_features.utc_now", lambda: checked_at)
     prefix_company_id = demo_uuid("suggestion-prefix-company")
     contains_company_id = demo_uuid("suggestion-contains-company")
     alias_company_id = demo_uuid("suggestion-alias-company")
@@ -573,7 +583,6 @@ def test_company_suggestions_are_bounded_scoped_and_read_only(
         )
         assert session.scalar(select(func.count()).select_from(UsageLedger)) == usage_ledger_count
 
-        period_key = datetime.now(UTC).strftime("%Y-%m")
         monthly_limit = migrated_app.state.settings.personal_entitlement_policy.monthly_search_limit
         session.add_all(
             [
@@ -582,7 +591,7 @@ def test_company_suggestions_are_bounded_scoped_and_read_only(
                     operation="company_search",
                     period_key=period_key,
                     idempotency_key=f"suggestion-quota-{index}",
-                    created_at=datetime.now(UTC),
+                    created_at=checked_at,
                 )
                 for index in range(monthly_limit)
             ]

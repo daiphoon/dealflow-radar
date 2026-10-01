@@ -723,7 +723,8 @@ def test_rule_missed_model_candidate_reaches_supported_ledger(database, tmp_path
     curated.curator(database)
     with Session(database.app, expire_on_commit=False) as session:
         user, company = initial(session, tmp_path, mode="identity_only")
-        body = "示例山海本轮筹得1亿元融资资金。"
+        # 新规则已覆盖“融资”后置表达；继续用未命中规则的原文验证独立模型入口。
+        body = "示例山海本轮筹得1亿元资金。"
         missing, _, doc, _ = ingest(session, user, company, body, "https://example.com/model-gap")
         assert missing is None
         proposed, rejected = validate_proposals(

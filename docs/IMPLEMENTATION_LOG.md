@@ -1,5 +1,25 @@
 # 实施记录
 
+## 2026-10-01：PR #109 融资情态与否定对象定点修复
+
+- 任务/关键文件：`financing_semantics`、`matter_validation`、`research_matters` 及正式生命周期回归；融资语义 v2、字段校验 v5、提取 v8，prompt 不变。保护其他工作区和原封存材料，无新 migration、依赖或 UI 修改。
+- 实际命令：SQLite/非 owner PostgreSQL 的 rules、正确 Mock 及过度确定 Mock 失败回归；正式 identity→存储→API→报告 GET/reload/复用/权限；核心回归、四候选与冻结 40 对回放；Ruff/format、npm audit、秘密扫描及 `git diff --check`。准确 head 与合并后完整 Verify、实际数量及后续真实任务结果以本轮统一私有回执为准。
+- 验证/限制：预测、未完成和未到账不得成为完成、实际发生日或已取得金额；资金用途及无关否定按对象隔离。原 13/15 自动 SAME 和两条待核保持，历史回执/gold 不回写；只读自查不宣称独立盲验。单公司 B→A 仅在审查/CI/合并闸门后执行，不修改生产或补跑真实任务求通过。
+
+## 2026-10-01：PR #109 核心事项生命周期与安全放行
+
+- 任务/关键文件：Next `package.json`/lock；`financing_semantics`、`research_matters`、validation/comparison/storage；当前 API/报告、待核工作台和真实渲染测试。仅延续现有 PR，原四候选、历史 gold/回执、schema 0036 保留；根工作区已有用户修改未触碰。
+- 实际命令：真实入口失败回归→定向修复；虚构正式 identity/approve/Mock request→Worker→API/report，SQLite/非 owner PostgreSQL；四候选与 40 对及两条 SAME 正逆序/重试回放；`pytest -q -ra -p no:cacheprovider`；Ruff/format、迁移 check、frontend test/typecheck/build/audit、Compose config、Docker build、Gitleaks、`git diff --check`。准确 head 的完整 CI 与实际数量在统一私有交付包留证。
+- 验证/限制：完成与未交割、反证当前投影、旧报告过时和再批准拒绝分别测试；历史内容摘要不变。13/15 自动 SAME 保持，另外两条正式待核不计成功。有限挑战保留初始失败、后续只为已见回归；真实模型泛化/业务召回与生产漏洞暴露未验证。旧哈希兼容及新版规则覆盖原 Mock-gap 文案造成的回归分别定位，不削弱篡改或许可断言。
+- 边界：无新 migration、真实研究/模型/Provider、生产操作、自动合并或部署；不启动新留出、Worker/Watchlist/MCP/隧道。最终 READY/HOLD 严格按 G1—G4 实际门槛决定。
+
+## 2026-09-30：M2-F 证据、事项、获取与真实状态工程收口
+
+- 任务/关键文件：`source_fetcher`/policy/network 与 ADR-0029；`research_matters`/validation/comparison/storage；`research_evaluation`、`research_validation_contract`、参考参数及共享 completion/API/组件。公开说明见 [25 M2-F](25-m2-f-engineering-closure.md)，旧封存输入不回写，根目录已有用户文档修改保留。
+- 实际命令：真实入口失败 pytest → 最小修复 → 定向回归；非 owner PostgreSQL 封存片段双版本回放和完整内容摘要；完整 `pytest -q -ra -p no:cacheprovider`；Ruff/format、SQLite/PostgreSQL migration check、前端 test/typecheck/build、Compose/Docker、公开候选树 Gitleaks 及 `git diff --check`。准确 PR head/远端 Verify 以统一交付包实际证据为准。
+- 测试结果：首轮完整后端 1464 通过/48 条件跳过（767.76 秒），前端 37 通过及类型/构建；最初完整回归的 5 项 IPO/获取失败枚举问题已修正并保留失败日志。最后审查发现有效空/注释/Sitemap robots 的 enforce 兼容性退化，失败回归后最小修正，Fetcher 定向 63 通过；最终全套和准确 head Verify 见统一包。合成关系 macro-F1 0.97494、逐类 recall 最低 0.90、ROUNDUP 10/10、严重错误合并 0；实施者生成的合成集不冒充独立业务留出。schema 0036、历史 migration 无变化。
+- 未解决阻断：`M2_F_HOLD`，困难历史关系 macro-F1 0.24411；编号轮次得到原文支持，但同一事项正式回放仍为四个候选，概念去重尚未闭合。真实新 prompt 收益和旧 URL 恢复未验证。无真实项目研究/模型/Jina、生产操作、合并、部署或新留出。
+
 ## 2026-09-29：M2-R 网络能力与如实交付候选
 
 - 任务/关键文件：`research_network.py` / `source_fetcher.py`、`research_completion.py` / 研究与巡检投影、`personal_features.py` / lead 许可及 v4 报告、页面状态；[ADR-0028](DECISIONS/ADR-0028-bounded-research-completion.md) 与 [交付说明 24](24-m2-r-truthful-delivery.md)。不改历史迁移或旧实验回执，不提高默认调用上限。
@@ -1089,3 +1109,10 @@
 - 关键文件：`release_ops/compose.py`、`actions.py`、`metadata.py`、归档/SSH `bridge.py`、只读 `host.py`、正式配置回归、同路径隔离测试、必要CI及运行说明；业务/migration/冻结部署配置不变。
 - 实际命令：官方Compose2.40.3校验安装；正式CLI失败回归；`pytest tests/unit/test_ops_release.py tests/unit/test_ops_bridge.py tests/integration/test_ops_compose_contract.py`；显式本机冻结镜像 `test_ops_release_compose.py`；Ruff/format、diff/private/Secret核对。完整Verify和最终候选现场只读证据见统一私有交付。
 - 结果/阻塞：修前真实KeyError被复现，普通CI额外归档冻结基线并调用旧正式CLI复现默认profile事故；本机最终12项真实Compose回归通过；修后配置回归通过，拒绝缺服务/错镜像/开启开关及检查器故障，SSH成功不覆盖检查器失败。同路径演练和最终head证据分别留存，不把模拟browser标记当生产认证。生产仍0036/只读/停应用/静态维护；旧attempt和unknown保留；新PR不合并，新的集中恢复另批。
+
+## 2026-10-01 — M2-F / PR #109 概念身份续作
+
+- 关键文件：新增文内 `matter_identity`；抽取、比较/存储、四层评测和 Fetcher 429；直接单元/正式身份导入与 non-owner PG/报告回归、25号工程说明及看板。schema 0036和模型prompt不变，未修改历史migration。
+- 实际命令：正文/正式身份失败回归；隔离PG下完整 `pytest -q -p no:cacheprovider --tb=short -ra`；定向 CLI/429/并发/撤证和保留原件双顺序回放；SQLite/PostgreSQL `alembic check`；前端 `npm test/typecheck/build`；production/Safe Degrade/diagnostic Compose config、API/frontend本地Docker build；Ruff/check format、Gitleaks及 `git diff --check`。
+- 结果：最终新虚构基库完整后端1519通过/49条件跳过；前端37通过、类型和构建通过；RLS定向21通过。完整首次失败是UTC/上海跨月夹具，测试固定边界前后时点，业务额度规则未改；复用基库造成4项重复记录失败，保留日志后换新基库验证，未弱化断言。四候选正式入库为1事项/4原观测，全部来源/未知日期保留，顺序/重试/正式报告读取通过。准确新head的远端Verify以统一私有包为准，不复用历史CI。
+- 阻塞：保持 `M2_F_HOLD`。冻结gold正例13/15，另两对未闭合；独立挑战5通过/1失败/3未完整覆盖，后置融资完成表达漏抽、计划否认口径及未覆盖契约均如实保留。旧0/13/0/5未建立业务评分有效性，不改原回执或调gold救分。真实项目搜索/获取/模型和生产操作0，同PR普通提交后不合并、不部署、不启动新留出。
