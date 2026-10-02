@@ -1795,6 +1795,7 @@ def _event_out(
     allow_platform_admin_private: bool = False,
     as_of: datetime | None = None,
     preloaded: dict | None = None,
+    include_analysis: bool = True,
 ) -> EventOut:
     evidence_rows = (
         preloaded["evidence"]
@@ -1966,7 +1967,7 @@ def _event_out(
     display_kind = event_display_kind(session, event)
     analysis_output = None
     research_analysis_output = None
-    if event.visibility_scope == PLATFORM_SHARED_SCOPE:
+    if include_analysis and event.visibility_scope == PLATFORM_SHARED_SCOPE:
         current_input_filter = True
         if is_tender_event(event):
             from backend.app.investor_analysis import _analysis_input_hash, _analysis_request
@@ -3569,7 +3570,9 @@ def current_shared_company_content(
     return results
 
 
-def _company_event_outputs(session, events, user, *, allow_organization_private):
+def _company_event_outputs(
+    session, events, user, *, allow_organization_private, include_analysis=True
+):
     # 仅在当前已授权请求内批量读取；不在 Session 或跨用户缓存中保存私有结果。
     if not events:
         return []
@@ -3600,6 +3603,8 @@ def _company_event_outputs(session, events, user, *, allow_organization_private)
         .order_by(InvestorChangeAnalysis.created_at.desc()),
     }
     for key, query in queries.items():
+        if key == "analyses" and not include_analysis:
+            continue
         for row in session.scalars(query):
             bundles[row.event_id][key].append(row)
     return [
@@ -3609,6 +3614,7 @@ def _company_event_outputs(session, events, user, *, allow_organization_private)
             user,
             allow_organization_private=allow_organization_private,
             preloaded=bundles[event.id],
+            include_analysis=include_analysis,
         )
         for event in events
     ]
