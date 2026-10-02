@@ -26,14 +26,14 @@ from backend.app.models import Event, PersonalEventViewReceipt, PersonalReportRe
 from backend.app.providers import MockResearchProvider
 from backend.app.services import seed_demo_entities
 from scripts.bootstrap_local_database import bootstrap_application_role
-from tests.integration import test_curated_import as curated
-from tests.integration.test_incremental_research import initial
 from tests.integration.test_personal_changes_reports import (
     PERSONAL_HEADERS,
     SHARED_COMPANY_ID,
     _add_shared_event,
 )
-from tests.integration.test_research_matter_storage import ingest
+from tests.support import curated_import as curated
+from tests.support.incremental_research import initial
+from tests.support.research_matter_storage import ingest
 
 
 def runtime(image, url, *args):
@@ -92,6 +92,7 @@ def snapshot(engine, *, legacy_columns=False):
     return result
 
 
+@pytest.mark.postgres
 def test_populated_postgres_0035_upgrade_and_guarded_rollback(tmp_path, monkeypatch):
     admin_url = os.getenv("DATABASE_ADMIN_URL")
     if not admin_url or make_url(admin_url).host not in {"localhost", "127.0.0.1"}:

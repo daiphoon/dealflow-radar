@@ -25,7 +25,7 @@ from tests.integration.test_personal_changes_reports import (
     _add_shared_event,
     _set_report_limit,
 )
-from tests.integration.test_tender_storage import database as database
+from tests.support.tender_storage import database as database
 
 
 @pytest.fixture

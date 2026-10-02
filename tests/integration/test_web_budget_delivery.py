@@ -32,7 +32,7 @@ from tests.integration.test_bounded_web_research import (
     RecordingFetcherFactory,
     _providers,
 )
-from tests.integration.test_tender_storage import database as database
+from tests.support.tender_storage import database as database
 
 D = Decimal
 

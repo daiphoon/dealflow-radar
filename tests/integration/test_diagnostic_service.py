@@ -10,7 +10,7 @@ from sqlalchemy.exc import DBAPIError
 from backend.app.diagnostic_mcp import create_mcp_app
 from backend.app.diagnostics import TOOLS, DiagnosticService, Principal, build_diagnostic_engine
 from scripts.bootstrap_diagnostics import bootstrap
-from tests.integration import test_curated_import as curated
+from tests.support import curated_import as curated
 
 database = curated.database
 

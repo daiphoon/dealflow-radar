@@ -13,9 +13,9 @@ from backend.app.fact_support import materialize_event_fact_ledger
 from backend.app.models import EventEvidence, User
 from backend.app.research_matters import digest
 from backend.app.services import get_company_detail
-from tests.integration import test_curated_import as curated
-from tests.integration import test_research_matter_storage as matter_storage
-from tests.integration.test_incremental_research import initial
+from tests.support import curated_import as curated
+from tests.support import research_matter_storage as matter_storage
+from tests.support.incremental_research import initial
 
 database = matter_storage.database
 ingest = matter_storage.ingest
@@ -305,7 +305,7 @@ def test_same_document_additional_fields_versions_and_retraction(database, tmp_p
     from backend.app.research_matters import extract_matters
     from backend.app.research_subject import load_subject
     from backend.app.web_research_service import _source
-    from tests.integration.test_research_matter_storage import POLICY
+    from tests.support.research_matter_storage import POLICY
 
     curated.curator(database)
     with Session(database.app, expire_on_commit=False) as session:
@@ -441,7 +441,7 @@ def test_postgres_same_document_concurrent_observation(database, tmp_path):
     from backend.app.research_matters import extract_matters
     from backend.app.research_subject import load_subject
     from backend.app.web_research_service import _source
-    from tests.integration.test_research_matter_storage import POLICY
+    from tests.support.research_matter_storage import POLICY
 
     curated.curator(database)
     with Session(database.app, expire_on_commit=False) as session:
@@ -718,7 +718,7 @@ def test_rule_missed_model_candidate_reaches_supported_ledger(database, tmp_path
     from backend.app.research_matters import validate_proposals
     from backend.app.research_subject import load_subject
     from backend.app.web_research_service import _source
-    from tests.integration.test_research_matter_storage import POLICY
+    from tests.support.research_matter_storage import POLICY
 
     curated.curator(database)
     with Session(database.app, expire_on_commit=False) as session:

@@ -4,10 +4,10 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from backend.app.models import EventEvidence, EventObservation
-from tests.integration import test_curated_import as curated
 from tests.integration.test_diagnostic_service import diagnostic as diagnostic
-from tests.integration.test_incremental_research import initial
-from tests.integration.test_research_matter_storage import ingest
+from tests.support import curated_import as curated
+from tests.support.incremental_research import initial
+from tests.support.research_matter_storage import ingest
 
 database = curated.database
 

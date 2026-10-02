@@ -41,7 +41,7 @@ from backend.app.web_search import (
     SearchRequest,
     SearchResult,
 )
-from tests.integration import test_incremental_research as incremental
+from tests.support import incremental_research as incremental
 
 database = incremental.database
 

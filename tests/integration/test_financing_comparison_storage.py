@@ -13,8 +13,8 @@ from backend.app.financing_events import SCHEMA_VERSION
 from backend.app.models import Company, Event, EventEvidence, EventObservation, RawDocument, User
 from backend.app.services import get_company_detail
 from tests.curated_fixtures import CREDIT_CODE
-from tests.integration import test_curated_import as curated
-from tests.integration import test_incremental_research as base
+from tests.support import curated_import as curated
+from tests.support import incremental_research as base
 
 database = base.database
 offline = base.offline

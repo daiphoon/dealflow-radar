@@ -23,6 +23,14 @@
 
 ## 2. 有效执行检查点
 
+- **当前唯一里程碑：DR-CI-MCP-FEISHU-20261002-R1**。正式基线 main `d6edae70bb4201584d69ef0c4cfa1ba6bcd50e82`。PR-A 只做测量、公共测试设施、层次与四 job/严格 Verify；PR-B 只做四项业务只读工具、独立控制存储和 OAuth/飞书最小适配。见 [27 CI减负](27-ci-validation-budget.md)。
+- **工程证据**：同组72项模板前后90.27→43.57秒；真实独立副本/commit/rollback/非owner PG 保留。准确候选 head、完整 CI、制品分支及后续 MCP 证据在统一私有交付包记录，不以本机样本推算 CI SLA。
+- **M3路线**：标准HTTPS MCP＋OAuth＋飞书身份确认＋内部权限映射；Tunnel路线放弃。真实飞书配置和 ChatGPT 网页调用待集中激活批准，Mock不算真实网页闭环。
+- **边界**：本轮不自动合并/部署、改变生产 schema/权限或开放真实数据；研究/模型调用与生产操作为0。根工作区既有未提交材料及封存记录保护。
+- 更新日期：2026-10-02。
+
+### 封存的 PR #110 检查点
+
 - **当前唯一里程碑：运行契约与固定基准日收口＋M3-A接入预检，独立候选送审**。基线 main `408ec6cf8abbf608cb59e4828480268f314dc465` / tree `fcde523e7e1b3a1850c0faf713d025db2822b8fe`；#109已合并，不继续旧分支、不回滚。见 [26 运行与日期契约](26-runner-reference-m3-readiness.md)。
 - **工程证据**：正式 session factory + 每事务身份重绑；同一版本化 runner 在规则/Mock模型两条路径调用正式 Worker 到合法 native 终态。job/query/抽取/新 v5报告和实际 Next.js 页面均以 Asia/Shanghai 为2026-09-29，窗口2025-09-29至2026-09-29；旧报告/hash/幂等与跨用户拒绝保持。schema0036、融资语义/归并/robots/预算规则和依赖不改。
 - **历史结论不改**：#109 ENGINEERING PASS；旧B INCONCLUSIVE/partial、旧A NOT_RUN、旧报告固定窗口FAIL；旧封存材料/hash保持。新Mock通过不等于修复旧实验、真实召回或业务PASS。
