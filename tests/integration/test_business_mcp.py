@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from backend.app.business_read import (
     BusinessReadService,
     build_business_engine,
+    safe_projection,
     safe_text,
     safe_url,
 )
@@ -162,6 +163,21 @@ def test_four_tool_nonempty_story_matches_formal_web_and_business_content_unchan
         str(i.id)
         for i in website.events + website.unconfirmed_leads + website.platform_unconfirmed_leads
     }
+    by_id = {i["id"]: i for i in matters["items"]}
+    for item in website.events + website.unconfirmed_leads + website.platform_unconfirmed_leads:
+        expected = item.model_dump(mode="json")
+        for field in (
+            "summary",
+            "curated_versions",
+            "fact_ledger",
+            "fact_version",
+            "source_quality",
+            "published_on",
+            "observed_at",
+            "tender_observations",
+        ):
+            assert by_id[str(item.id)][field] == safe_projection(expected[field])
+    assert any(i["curated_versions"] for i in matters["items"])
     listed = call(story, "list_company_reports", company_id=str(story.cid))
     assert len(listed["items"]) == 1 and listed["items"][0]["id"] == story.website["id"]
     saved = call(story, "get_saved_report", report_id=story.website["id"])

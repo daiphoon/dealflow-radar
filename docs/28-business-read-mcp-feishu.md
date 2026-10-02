@@ -15,6 +15,8 @@
 
 当前研究按网站相同的本人请求关联、状态及排序读取，复用 `research_result`；不能让较新但未关联的任务取代网站状态。固定窗口复用正式 `reference_fields` 核对，缺失/冲突保持null，不按读取当天生成窗口。正式刷新请求及Worker会话仅用于虚构回归准备，MCP自身不创建请求或任务；queued/partial/failed与历史未知窗口通过non-owner只读比对。
 
+事项字段使用当前 `EventOut` 的真实名称（`summary`、`curated_versions` 等）；保留人工版本中的 `not_assessed`、日期精度/口径、事实support与反证状态。回归逐字段比对正式网站投影，不仅比对事项ID；没有另建评分或改变事实/归并语义。
+
 业务源首版仅适配既有 PostgreSQL 业务库。逻辑 source ID、公司ID、本人report ID均由私有 grant 明确列出；其他服务器文件、数据库、租户和内部投资数据未覆盖。原诊断角色不能用于正文读取。
 
 `bootstrap_business_mcp` 只创建**新**专用角色；固定21张表的必要列，不 `GRANT ALL public`，不改普通应用角色。用户仅id/tenant/status；投资仅RLS依赖键，不含金额。正式ORM许可需要的原文行仅在受RLS约束的服务内使用，不外发RawDocument整包。启动拒绝超级用户、BYPASSRLS、建库/建角色、继承角色、表owner和列写权限。每事务先READ ONLY再绑正式身份，真实提交/回滚与连接回收保持；数据库连接和业务并发各2。

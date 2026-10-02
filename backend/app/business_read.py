@@ -510,29 +510,39 @@ class BusinessReadService:
                         "occurred_at",
                         "occurred_on",
                         "published_at",
+                        "published_on",
+                        "observed_at",
                         "title",
-                        "fact_summary",
+                        "summary",
                         "status",
                         "direction",
                         "materiality_score",
                         "risk_severity",
                         "confidence_score",
+                        "source_quality",
                         "display_kind",
                         "information_status",
                         "temporal_status",
                         "facts",
+                        "fact_version",
+                        "semantic_version",
+                        "fact_ledger",
                         "uncertainties",
                         "evidence",
                         "matter_observations",
-                        "curated_observations",
+                        "curated_versions",
                         "financing_observations",
+                        "tender_observations",
+                        "publication_route",
+                        "publication_policy_version",
+                        "publication_reasons",
                     }
                     item = {k: v for k, v in item.items() if k in keep}
                     for e in item.get("evidence", []):
                         e["excerpt"] = safe_text(e.get("excerpt", ""))[:800]
                         if not e.get("link_display_allowed"):
                             e["canonical_url"], e["final_url"] = "", None
-                    for k in ("title", "fact_summary"):
+                    for k in ("title", "summary"):
                         if k in item:
                             item[k] = safe_text(item[k])
                     items.append(item)
