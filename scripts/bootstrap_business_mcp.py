@@ -47,8 +47,17 @@ READ_COLUMNS.update(
             "created_by_user_id",
             "coverage",
             "created_at",
+            "status",
+            "policy_version",
         ),
-        "personal_company_requests": ("company_id", "owner_user_id", "research_job_id"),
+        "personal_company_requests": (
+            "id",
+            "company_id",
+            "owner_user_id",
+            "research_job_id",
+            "status",
+            "created_at",
+        ),
         "event_sharing_decisions": ("id", "source_observation_id", "source_event_id", "action"),
     }
 )

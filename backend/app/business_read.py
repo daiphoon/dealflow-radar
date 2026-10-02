@@ -14,6 +14,7 @@ from uuid import UUID
 from sqlalchemy import create_engine, event, or_, select, text
 from sqlalchemy.orm import load_only
 
+from backend.app.business_dates import reference_fields
 from backend.app.database import build_session_factory, request_session
 from backend.app.models import (
     Company,
@@ -22,6 +23,7 @@ from backend.app.models import (
     Event,
     EventEvidence,
     PersonalCompanyReport,
+    PersonalCompanyRequest,
     RawDocument,
     Source,
     Tenant,
@@ -30,6 +32,7 @@ from backend.app.models import (
 from backend.app.personal_features import _report_reference_ids, get_personal_company_report
 from backend.app.report_permissions import report_evidence_permission, report_lead_permission
 from backend.app.research_completion import stored_completion
+from backend.app.research_outcome import research_result
 from backend.app.services import _company_event_outputs, _readable_scope_clause
 
 TOOLS = {
@@ -536,15 +539,65 @@ class BusinessReadService:
                 # 被许可/数据源过滤的记录不冒充“没有事项”。
                 omitted = len(raw[:limit]) - len(allowed)
                 job = s.scalar(
-                    select(CompanyResearchJob.coverage)
-                    .where(
-                        CompanyResearchJob.company_id == UUID(cid),
-                        CompanyResearchJob.created_by_user_id == user.id,
+                    select(CompanyResearchJob)
+                    .options(
+                        load_only(
+                            CompanyResearchJob.coverage,
+                            CompanyResearchJob.status,
+                            CompanyResearchJob.policy_version,
+                        )
                     )
-                    .order_by(CompanyResearchJob.created_at.desc())
+                    .join(
+                        PersonalCompanyRequest,
+                        PersonalCompanyRequest.research_job_id == CompanyResearchJob.id,
+                    )
+                    .where(
+                        PersonalCompanyRequest.owner_user_id == user.id,
+                        PersonalCompanyRequest.company_id == UUID(cid),
+                        CompanyResearchJob.company_id == UUID(cid),
+                        PersonalCompanyRequest.status.in_(
+                            [
+                                "research_queued",
+                                "researching",
+                                "partial",
+                                "completed",
+                                "failed",
+                                "budget_deferred",
+                            ]
+                        ),
+                        CompanyResearchJob.status.in_(
+                            [
+                                "queued",
+                                "running",
+                                "partial",
+                                "completed",
+                                "failed",
+                                "budget_deferred",
+                            ]
+                        ),
+                    )
+                    .order_by(
+                        PersonalCompanyRequest.created_at.desc(), PersonalCompanyRequest.id.desc()
+                    )
                     .limit(1)
                 )
-                completion = stored_completion(job if job else {})
+                outcome = research_result(job)
+                completion = (
+                    outcome.completion.model_dump(mode="json")
+                    if outcome and outcome.completion
+                    else stored_completion({})
+                )
+                window = None
+                if job and outcome:
+                    try:
+                        fields = reference_fields(
+                            job.coverage.get("reference_at"), job.coverage.get("event_window_days")
+                        )
+                        if all(job.coverage.get(k, v) == v for k, v in fields.items()):
+                            window = {"reference_at": job.coverage["reference_at"], **fields}
+                    except (ValueError, TypeError):
+                        pass
+                # 旧任务缺少或冲突的参考日保持未知，不以今天重造窗口。
         truncated = len(raw) > limit
         state["offset"] += limit
         result = {
@@ -555,6 +608,8 @@ class BusinessReadService:
         if tool == "get_company_matters":
             result.update(
                 research_completion=completion,
+                research_window=window,
+                research_result=outcome.model_dump(mode="json") if outcome else None,
                 permission_omitted=omitted,
                 information_gap="未检查范围不表示公司没有相关事项。",
             )

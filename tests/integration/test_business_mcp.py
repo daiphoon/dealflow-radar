@@ -5,6 +5,7 @@ import json
 import resource
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -294,6 +295,100 @@ def test_server_side_scope_rls_write_denial_revoke_and_no_business_side_effect(s
     story.store.revoke("grant", story.grant.id)
     with pytest.raises(PermissionError):
         call(story, "get_saved_report", report_id=story.website["id"])
+
+
+def test_current_research_read_matches_linked_website_job_and_fixed_window(story):
+    from backend.app.config import WebResearchPolicy
+    from backend.app.models import CompanyResearchJob, PersonalCompanyRequest
+    from backend.app.web_research_service import prepare_pending_research_requests
+    from scripts.run_web_research_worker import _with_worker_session
+
+    reference = datetime.fromisoformat("2026-09-29T00:00:00+08:00")
+    with TestClient(story.app) as client:
+        response = client.post(
+            f"/api/v1/me/company-requests/refresh/{story.cid}", headers=story.headers
+        )
+        assert response.status_code == 200, response.text
+        request_id = UUID(response.json()["id"])
+
+    def prepare(s, user):
+        prepare_pending_research_requests(
+            s, user, WebResearchPolicy(incremental_research_enabled=True), reference_at=reference
+        )
+        return s.get(PersonalCompanyRequest, request_id).research_job_id
+
+    job_id = _with_worker_session(story.app.state.settings, ALPHA_USER_ID, ALPHA_TENANT_ID, prepare)
+    assert job_id is not None
+    reads = []
+    # 未关联用户请求的较新任务不能取代网站当前任务；只造虚构数据，不执行研究。
+    with request_session(story.app.state.session_factory, ALPHA_USER_ID, ALPHA_TENANT_ID) as s:
+        s.add(
+            CompanyResearchJob(
+                company_id=story.cid,
+                created_by_user_id=ALPHA_USER_ID,
+                status="failed",
+                policy_version="bounded-web-v1",
+                coverage={"stop_reason": "http_limit_reached"},
+            )
+        )
+        s.commit()
+
+    def compare():
+        before = snapshot(story.database.owner)
+        output = call(story, "get_company_matters", company_id=str(story.cid))
+        with request_session(story.app.state.session_factory, ALPHA_USER_ID, ALPHA_TENANT_ID) as s:
+            website = get_company_detail(
+                s,
+                s.get(User, ALPHA_USER_ID),
+                story.cid,
+                story.app.state.settings.refresh_policy,
+                auto_refresh_enabled=False,
+            ).personal_research_result
+        assert output["research_completion"] == website.completion.model_dump(mode="json")
+        assert snapshot(story.database.owner) == before
+        reads.append(
+            {
+                "completion": output["research_completion"],
+                "window": output["research_window"],
+                "website_completion_equal": True,
+                "business_contents_unchanged": True,
+            }
+        )
+        return output
+
+    first = compare()
+    assert first["research_window"]["business_reference_date"] == "2026-09-29"
+    assert first["research_window"]["event_window_start"] == "2025-09-29"
+    assert first["research_window"]["event_window_end"] == "2026-09-29"
+    for state, docs in (("partial", [{"status": "created"}]), ("failed", [{"status": "failed"}])):
+        with request_session(story.app.state.session_factory, ALPHA_USER_ID, ALPHA_TENANT_ID) as s:
+            job = s.get(CompanyResearchJob, job_id)
+            job.status = state
+            job.coverage = {
+                **job.coverage,
+                "search_groups": {},
+                "documents": docs,
+                "stop_reason": "http_limit_reached" if state == "failed" else None,
+            }
+            s.get(PersonalCompanyRequest, request_id).status = state
+            s.commit()
+        assert compare()["research_completion"]["status"] == state
+    with request_session(story.app.state.session_factory, ALPHA_USER_ID, ALPHA_TENANT_ID) as s:
+        job = s.get(CompanyResearchJob, job_id)
+        job.coverage = {"documents": [{"status": "failed"}], "stop_reason": "http_limit_reached"}
+        s.commit()
+    assert compare()["research_window"] is None
+    import os
+    from pathlib import Path
+
+    if os.environ.get("BUSINESS_MCP_WINDOW_EVIDENCE_PATH"):
+        Path(os.environ["BUSINESS_MCP_WINDOW_EVIDENCE_PATH"]).write_text(
+            json.dumps(
+                {"synthetic_only": True, "provider_model_calls": 0, "reads": reads},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
 
 
 def test_paging_source_withdrawal_restart_concurrency_and_stored_hash(story):
