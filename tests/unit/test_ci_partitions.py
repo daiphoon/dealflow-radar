@@ -48,3 +48,4 @@ def test_actual_marker_parameter_and_release_boundary():
     assert group_for(item("tests/x.py::rls", True)) == "postgres"
     assert group_for(item("tests/x.py::case[sqlite-a]")) == "python"
     assert group_for(item("tests/integration/test_m1_safe_degrade.py::case")) == "release"
+    assert group_for(item("tests/integration/test_ops_compose_contract.py::case")) == "release"
