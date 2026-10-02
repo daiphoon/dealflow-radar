@@ -380,3 +380,35 @@ def test_feishu_transport_failure_is_closed_and_never_follows_arbitrary_location
     with pytest.raises(PermissionError, match="feishu_identity_unavailable"):
         asyncio.run(gateway.identity("mock_code"))
     assert set(calls) <= {gateway.TOKEN, gateway.USER}
+
+
+def test_error_redirect_issuer_preserves_exact_registered_query(tmp_path):
+    app, oauth, _ = setup(tmp_path)
+    callback = CALLBACK + "?fixed=1"
+    oauth.redirects = (callback,)
+    with TestClient(app, base_url=RESOURCE) as client:
+        response = client.post(
+            "/register",
+            json={
+                "redirect_uris": [callback],
+                "token_endpoint_auth_method": "none",
+                "grant_types": ["authorization_code"],
+                "response_types": ["code"],
+                "scope": "dealflow.company.read",
+            },
+        )
+        assert response.status_code == 201, response.text
+        rejected = client.get(
+            "/authorize",
+            params={
+                **params(response.json()["client_id"]),
+                "redirect_uri": callback,
+                "scope": "dealflow.write",
+            },
+            follow_redirects=False,
+        )
+        assert rejected.status_code == 302
+        query = parse_qs(urlsplit(rejected.headers["location"]).query)
+        assert query["fixed"] == ["1"] and query["error"] == ["invalid_scope"]
+        assert query.get("iss") == [RESOURCE]
+        assert oauth.gateway.calls == 0

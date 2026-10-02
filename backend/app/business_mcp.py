@@ -283,10 +283,7 @@ def create_business_mcp(service, oauth):
                     for key, value in message["headers"]:
                         if key.lower() == b"location":
                             url = urlsplit(value.decode())
-                            if (
-                                urlunsplit((url.scheme, url.netloc, url.path, "", ""))
-                                in oauth.redirects
-                            ):
+                            if url[:3] == urlsplit(raw["redirect_uri"])[:3]:
                                 query = dict(parse_qsl(url.query))
                                 query["iss"] = oauth.resource
                                 value = urlunsplit(
