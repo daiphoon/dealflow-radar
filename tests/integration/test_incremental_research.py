@@ -1,7 +1,4 @@
 from dataclasses import replace
-from datetime import UTC, datetime
-from types import SimpleNamespace
-from uuid import uuid4
 
 import httpx
 import pytest
@@ -10,7 +7,7 @@ from alembic.config import Config
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from backend.app.config import PersonalEntitlementPolicy, RefreshPolicy, WebResearchPolicy
+from backend.app.config import PersonalEntitlementPolicy, RefreshPolicy
 from backend.app.database import set_request_context
 from backend.app.demo import ALPHA_USER_ID, BETA_TENANT_ID, BETA_USER_ID
 from backend.app.financing_events import SCHEMA_VERSION, digest
@@ -36,70 +33,23 @@ from backend.app.research_subject import (
     short_business_query,
 )
 from backend.app.services import AccessDeniedError, get_company_detail
-from backend.app.source_fetcher import DiscoveredDocument, TrustedSourceFetcher
+from backend.app.source_fetcher import TrustedSourceFetcher
 from backend.app.web_research_service import (
     _candidate_event,
-    _content_quality_decision,
-    _raw_document,
     _source,
     prepare_pending_research_requests,
     run_web_research_worker_once,
 )
 from backend.app.web_search import MockSearchProvider, SearchResult
-from tests.curated_fixtures import CREDIT_CODE
-from tests.integration import test_curated_import as curated
-
-database = curated.database
-POLICY = WebResearchPolicy(incremental_research_enabled=True)
-DAY = datetime(2026, 6, 1, tzinfo=UTC)
-
-
-@pytest.fixture(autouse=True)
-def offline(monkeypatch):
-    monkeypatch.setattr(
-        httpx.HTTPTransport, "handle_request", lambda *_: pytest.fail("Unexpected real HTTP call")
-    )
-
-
-def initial(session, tmp_path, mode="initial_data"):
-    curated.apply(session, curated.loaded(tmp_path, mode=mode))
-    user = curated.enter(session)
-    company = session.scalar(select(Company).where(Company.credit_code == CREDIT_CODE))
-    return user, company
-
-
-def ingest(session, user, company, body, url="https://example.com/financing", day=DAY):
-    subject = load_subject(session, company)
-    source = _source(session)
-    discovered = DiscoveredDocument(
-        canonical_url=url,
-        title="示例融资披露",
-        published_at=day,
-        content_hash=digest(body),
-        excerpt=body,
-        http_status=200,
-        etag=None,
-        last_modified=None,
-        link_health_status="healthy",
-        metadata={"extraction_method": "business_passage"},
-    )
-    quality = _content_quality_decision(
-        subject,
-        title=discovered.title,
-        excerpt=body,
-        published_at=day,
-        observed_at=datetime(2026, 9, 13, tzinfo=UTC),
-        policy=POLICY,
-    )
-    document, new = _raw_document(
-        session, source, subject, {}, discovered, SimpleNamespace(id=uuid4()), quality
-    )
-    session.flush()
-    event, created, quality = _candidate_event(
-        session, subject, document, source, POLICY, new_document=new, actor=user
-    )
-    assert quality.eligible
-    return event, document, created
+from tests.support import curated_import as curated
+from tests.support.incremental_research import (
+    DAY,
+    POLICY,
+    ingest,
+    initial,
+)
+from tests.support.incremental_research import database as database
+from tests.support.incremental_research import offline as offline
 
 
 def test_baseline_new_sources_correction_and_retry_keep_one_event(database, tmp_path):

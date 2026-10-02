@@ -33,8 +33,8 @@ from backend.app.web_research_service import (
 )
 from backend.app.web_search import MockSearchProvider, SearchResult
 from tests.curated_fixtures import workbook_file
-from tests.integration import test_curated_import as curated
-from tests.integration.test_incremental_research import initial
+from tests.support import curated_import as curated
+from tests.support.incremental_research import initial
 
 database = curated.database
 POLICY = WebResearchPolicy(incremental_research_enabled=True, topic_planning_enabled=True)

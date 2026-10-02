@@ -13,38 +13,22 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  APP_MODE: demo
+  EXTERNAL_CALLS_ENABLED: "false"
+  TRUSTED_SOURCE_CALLS_ENABLED: "false"
+  PAID_API_CALLS_ENABLED: "false"
+  AUTO_REFRESH_ENABLED: "false"
+  AUTO_PUBLISH_ENABLED: "false"
+  RUN_EXTERNAL_TESTS: "false"
+  CI_PROFILE_PATH: ci-profile.jsonl
+  CI_PARTITION_PATH: partition.json
+
 jobs:
-  verify:
-    name: Verify
+  static_frontend:
+    name: Static and frontend
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    env:
-      APP_MODE: demo
-      EXTERNAL_CALLS_ENABLED: "false"
-      TRUSTED_SOURCE_CALLS_ENABLED: "false"
-      PAID_API_CALLS_ENABLED: "false"
-      AUTO_REFRESH_ENABLED: "false"
-      AUTO_PUBLISH_ENABLED: "false"
-      RUN_EXTERNAL_TESTS: "false"
-      DATABASE_ADMIN_URL: postgresql+psycopg://demo_user:ci_owner_password@127.0.0.1:5432/equity_radar_ci
-      DATABASE_URL: postgresql+psycopg://equity_app:ci_app_password@127.0.0.1:5432/equity_radar_ci
-      APP_DATABASE_USER: equity_app
-      APP_DATABASE_PASSWORD: ci_app_password
-      POSTGRES_RLS_DATABASE_URL: postgresql+psycopg://equity_app:ci_app_password@127.0.0.1:5432/equity_radar_ci
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_DB: equity_radar_ci
-          POSTGRES_USER: demo_user
-          POSTGRES_PASSWORD: ci_owner_password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U demo_user -d equity_radar_ci"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+    timeout-minutes: 25
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -55,17 +39,20 @@ jobs:
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           python-version: "3.12"
+          enable-cache: true
+
+      - name: Install backend dependencies
+        run: uv sync --frozen --all-groups
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24.21.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Pin supported npm audit client
         run: npm install --global npm@11.9.0 --no-audit --no-fund
-
-      - name: Install backend dependencies
-        run: uv sync --frozen --all-groups
 
       - name: Install frontend dependencies
         working-directory: frontend
@@ -122,13 +109,97 @@ jobs:
           uv run --frozen ruff check backend migrations scripts tests
           uv run --frozen ruff format --check backend migrations scripts tests
 
-      - name: Verify SQLite migrations
+      - name: Check and build frontend
+        working-directory: frontend
         run: |
-          sqlite_path="${RUNNER_TEMP}/dealflow-radar-ci.db"
-          rm -f "${sqlite_path}"
-          DATABASE_URL="sqlite:///${sqlite_path}" uv run --frozen alembic upgrade head
-          DATABASE_URL="sqlite:///${sqlite_path}" uv run --frozen alembic check
-          DATABASE_URL="sqlite:///${sqlite_path}" uv run --frozen alembic downgrade base
+          npm test
+          npm run typecheck
+          npm run build
+
+  python:
+    name: Python validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install backend dependencies
+        run: uv sync --frozen --all-groups
+
+      - name: Measure original fixture subset on the same runner
+        if: github.head_ref == 'codex/ci-fixture-budget'
+        env:
+          PROFILE_DATABASE: sqlite
+        run: |
+          git fetch --no-tags --depth=1 origin d6edae70bb4201584d69ef0c4cfa1ba6bcd50e82
+          baseline="${RUNNER_TEMP}/baseline-source"
+          mkdir -p "${baseline}/tests/support"
+          git archive d6edae70bb4201584d69ef0c4cfa1ba6bcd50e82 | tar -x -C "${baseline}"
+          cp tests/support/ci_profile.py "${baseline}/tests/support/ci_profile.py"
+          touch "${baseline}/tests/support/__init__.py"
+          cd "${baseline}"
+          CI_BASELINE_SUBSET_DATABASE="${PROFILE_DATABASE}" CI_PROFILE_PATH="${RUNNER_TEMP}/baseline-profile.jsonl" "${GITHUB_WORKSPACE}/.venv/bin/pytest" -p tests.support.ci_profile tests/integration/test_m2_f_financing_semantic_guard.py -vv --durations=20
+      - name: Run actual collected python partition
+        run: uv run --frozen pytest -p tests.support.ci_partition -p tests.support.ci_profile --ci-group python -vv --durations=20 --junitxml="${RUNNER_TEMP}/junit.xml"
+      - name: Preserve partition, phase timings and JUnit
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-evidence-python
+          path: |
+            partition.json
+            ci-profile.jsonl
+            ${{ runner.temp }}/junit.xml
+            ${{ runner.temp }}/baseline-profile.jsonl
+            ${{ runner.temp }}/m1-safe-degrade-digests.json
+          if-no-files-found: error
+  postgres:
+    name: Postgres validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_ADMIN_URL: postgresql+psycopg://demo_user:ci_owner_password@127.0.0.1:5432/equity_radar_ci
+      DATABASE_URL: postgresql+psycopg://equity_app:ci_app_password@127.0.0.1:5432/equity_radar_ci
+      APP_DATABASE_USER: equity_app
+      APP_DATABASE_PASSWORD: ci_app_password
+      POSTGRES_RLS_DATABASE_URL: postgresql+psycopg://equity_app:ci_app_password@127.0.0.1:5432/equity_radar_ci
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: equity_radar_ci
+          POSTGRES_USER: demo_user
+          POSTGRES_PASSWORD: ci_owner_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U demo_user -d equity_radar_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install backend dependencies
+        run: uv sync --frozen --all-groups
 
       - name: Prepare PostgreSQL RLS test database
         run: |
@@ -136,6 +207,87 @@ jobs:
           DATABASE_URL="${DATABASE_ADMIN_URL}" uv run --frozen alembic check
           DATABASE_URL="${DATABASE_ADMIN_URL}" uv run --frozen python -m scripts.seed_demo
           uv run --frozen python -m scripts.bootstrap_local_database
+
+      - name: Measure original fixture subset on the same runner
+        if: github.head_ref == 'codex/ci-fixture-budget'
+        env:
+          PROFILE_DATABASE: postgresql
+        run: |
+          git fetch --no-tags --depth=1 origin d6edae70bb4201584d69ef0c4cfa1ba6bcd50e82
+          baseline="${RUNNER_TEMP}/baseline-source"
+          mkdir -p "${baseline}/tests/support"
+          git archive d6edae70bb4201584d69ef0c4cfa1ba6bcd50e82 | tar -x -C "${baseline}"
+          cp tests/support/ci_profile.py "${baseline}/tests/support/ci_profile.py"
+          touch "${baseline}/tests/support/__init__.py"
+          cd "${baseline}"
+          CI_BASELINE_SUBSET_DATABASE="${PROFILE_DATABASE}" CI_PROFILE_PATH="${RUNNER_TEMP}/baseline-profile.jsonl" "${GITHUB_WORKSPACE}/.venv/bin/pytest" -p tests.support.ci_profile tests/integration/test_m2_f_financing_semantic_guard.py -vv --durations=20
+      - name: Run actual collected postgres partition
+        run: uv run --frozen pytest -p tests.support.ci_partition -p tests.support.ci_profile --ci-group postgres -vv --durations=20 --junitxml="${RUNNER_TEMP}/junit.xml"
+      - name: Preserve partition, phase timings and JUnit
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-evidence-postgres
+          path: |
+            partition.json
+            ci-profile.jsonl
+            ${{ runner.temp }}/junit.xml
+            ${{ runner.temp }}/baseline-profile.jsonl
+            ${{ runner.temp }}/m1-safe-degrade-digests.json
+          if-no-files-found: error
+  release:
+    name: Release validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DATABASE_ADMIN_URL: postgresql+psycopg://demo_user:ci_owner_password@127.0.0.1:5432/equity_radar_ci
+      DATABASE_URL: postgresql+psycopg://equity_app:ci_app_password@127.0.0.1:5432/equity_radar_ci
+      APP_DATABASE_USER: equity_app
+      APP_DATABASE_PASSWORD: ci_app_password
+      POSTGRES_RLS_DATABASE_URL: postgresql+psycopg://equity_app:ci_app_password@127.0.0.1:5432/equity_radar_ci
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: equity_radar_ci
+          POSTGRES_USER: demo_user
+          POSTGRES_PASSWORD: ci_owner_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U demo_user -d equity_radar_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install backend dependencies
+        run: uv sync --frozen --all-groups
+
+      - name: Prepare PostgreSQL RLS test database
+        run: |
+          DATABASE_URL="${DATABASE_ADMIN_URL}" uv run --frozen alembic upgrade head
+          DATABASE_URL="${DATABASE_ADMIN_URL}" uv run --frozen alembic check
+          DATABASE_URL="${DATABASE_ADMIN_URL}" uv run --frozen python -m scripts.seed_demo
+          uv run --frozen python -m scripts.bootstrap_local_database
+
+      - name: Verify SQLite migrations
+        run: |
+          sqlite_path="${RUNNER_TEMP}/dealflow-radar-ci.db"
+          rm -f "${sqlite_path}"
+          DATABASE_URL="sqlite:///${sqlite_path}" uv run --frozen alembic upgrade head
+          DATABASE_URL="sqlite:///${sqlite_path}" uv run --frozen alembic check
+          DATABASE_URL="sqlite:///${sqlite_path}" uv run --frozen alembic downgrade base
 
       - name: Install isolated Compose 2.40.3 contract test binary
         run: |
@@ -146,16 +298,6 @@ jobs:
           "${compose_binary}" version
           echo "M1_COMPOSE_BINARY=${compose_binary}" >> "${GITHUB_ENV}"
           git fetch --no-tags --depth=1 origin f5a5a09908d8c3334204c4a6a6e365635c51c8d4
-
-      - name: Run backend tests
-        run: uv run --frozen pytest -q
-
-      - name: Check and build frontend
-        working-directory: frontend
-        run: |
-          npm test
-          npm run typecheck
-          npm run build
 
       - name: Validate production deployment configuration
         env:
@@ -251,11 +393,38 @@ jobs:
           export M1_NEW_RUNTIME_IMAGE="$(docker image inspect --format '{{.Id}}' dealflow-radar-backend:m5a-local)"
           export M1_NEW_FRONTEND_IMAGE="$(docker image inspect --format '{{.Id}}' dealflow-radar-frontend:m5a-local)"
           export M1_EVIDENCE_PATH="${RUNNER_TEMP}/m1-safe-degrade-digests.json"
-          uv run --frozen pytest -q tests/integration/test_m1_safe_degrade.py
+          uv run --frozen pytest -p tests.support.ci_partition -p tests.support.ci_profile --ci-group release -vv --durations=20 --junitxml="${RUNNER_TEMP}/junit.xml"
 
-      - name: Preserve synthetic Safe Degrade row digests
+      - name: Preserve partition, phase timings and JUnit
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: m1-safe-degrade-synthetic-digests
-          path: ${{ runner.temp }}/m1-safe-degrade-digests.json
+          name: test-evidence-release
+          path: |
+            partition.json
+            ci-profile.jsonl
+            ${{ runner.temp }}/junit.xml
+            ${{ runner.temp }}/baseline-profile.jsonl
+            ${{ runner.temp }}/m1-safe-degrade-digests.json
           if-no-files-found: error
+  verify:
+    name: Verify
+    if: always()
+    needs: [static_frontend, python, postgres, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Download test selection evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: test-evidence-*
+          path: ci-evidence
+      - name: Require every job and exact partition union
+        env:
+          CI_JOB_RESULTS: '{"static_frontend":"${{ needs.static_frontend.result }}","python":"${{ needs.python.result }}","postgres":"${{ needs.postgres.result }}","release":"${{ needs.release.result }}"}'
+        run: python scripts/verify_ci_partitions.py ci-evidence

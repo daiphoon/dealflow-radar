@@ -8,8 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.models import EventObservation, RawDocument
-from tests.integration.test_curated_import import apply, curator, detail_for_curator, enter, loaded
-from tests.integration.test_curated_import import database as database
+from tests.support.curated_import import apply, curator, detail_for_curator, enter, loaded
+from tests.support.curated_import import database as database
 
 
 @pytest.mark.parametrize(

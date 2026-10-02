@@ -12,9 +12,9 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
-from tests.integration import test_curated_import as curated
 from tests.integration.test_diagnostic_service import diagnostic as diagnostic
 from tests.integration.test_release_migration import snapshot
+from tests.support import curated_import as curated
 
 database = curated.database
 

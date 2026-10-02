@@ -15,6 +15,7 @@ from backend.app.main import create_app
 from backend.app.matter_comparison import compare_matters
 from backend.app.matter_identity import context_for
 from backend.app.models import (
+    Company,
     CompanyAlias,
     CompanyResearchJob,
     Event,
@@ -30,9 +31,9 @@ from backend.app.research_matters import extract_matters, validate_proposals
 from backend.app.research_subject import load_subject
 from backend.app.services import get_company_detail
 from backend.app.web_research_service import _source
-from tests.integration import test_curated_import as curated
-from tests.integration.test_incremental_research import initial
-from tests.integration.test_research_matter_storage import ingest
+from tests.support import curated_import as curated
+from tests.support.incremental_research import initial
+from tests.support.research_matter_storage import ingest
 
 database = curated.database
 
@@ -192,7 +193,7 @@ def test_postgres_same_occurrence_concurrency_and_withdrawn_support(database, tm
     def run(i):
         with Session(database.app) as session:
             user = curated.enter(session)
-            company = session.get(curated.Company, company_id)
+            company = session.get(Company, company_id)
             barrier.wait(timeout=10)
             event, _, _, _ = ingest(
                 session, user, company, body, f"https://example.com/concurrent/{i}"
@@ -206,7 +207,7 @@ def test_postgres_same_occurrence_concurrency_and_withdrawn_support(database, tm
     assert ids[0] == ids[1]
     with Session(database.app) as session:
         user = curated.enter(session)
-        company = session.get(curated.Company, company_id)
+        company = session.get(Company, company_id)
         old = session.get(Event, ids[0])
         observations_before = {
             r.id: r.candidate_payload for r in session.scalars(select(EventObservation))

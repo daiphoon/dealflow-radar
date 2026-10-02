@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.config import RefreshPolicy, WebResearchPolicy
 from backend.app.financing_semantics import statement
-from backend.app.matter_validation import scoped_status
+from backend.app.matter_validation import scoped_status, validate_field
 from backend.app.models import EventObservation
 from backend.app.research_matter_storage import persist_matters
 from backend.app.research_matters import digest, extract_matters, validate_proposals
@@ -18,9 +18,9 @@ from backend.app.research_subject import load_subject
 from backend.app.services import get_company_detail
 from backend.app.source_fetcher import DiscoveredDocument
 from backend.app.web_research_service import _content_quality_decision, _raw_document, _source
-from tests.integration import test_curated_import as curated
-from tests.integration.test_incremental_research import initial
-from tests.integration.test_m2_f_core_lifecycle import (
+from tests.support import curated_import as curated
+from tests.support.incremental_research import initial
+from tests.support.m2_f_core_lifecycle import (
     DAY,
     capture,
     proposed,
@@ -198,8 +198,61 @@ CORE = [
 ]
 
 
+# 近义情态在正式解析/校验层全覆盖；每个存储机制仅保留代表性完整链。
+STORE_CASES = [
+    c
+    for c in CORE
+    if c[0]
+    in {"expected_close", "funds_not_received", "unrelated_denial", "completed", "funds_positive"}
+]
+
+
 @pytest.mark.parametrize("route", ["rules", "mock_correct", "mock_overstated"])
-@pytest.mark.parametrize("name,tail,status,expected_phase", CORE, ids=[c[0] for c in CORE])
+def test_financing_amount_and_date_variants_formal_validation(database, tmp_path, route):
+    curated.curator(database)
+    with Session(database.app) as session:
+        _, company = initial(session, tmp_path, mode="identity_only")
+        subject = load_subject(session, company)
+        for name, tail, status, expected_phase in CORE:
+            body = company.legal_name + tail
+            fields = {
+                "financing": {"value": "3200万元", "quote": body.rstrip("。"), "role": "financing"}
+            }
+            match = re.search(r"2026年\d+月\d+日", body)
+            if match:
+                fields["occurred"] = {
+                    "value": match.group(),
+                    "quote": body.rstrip("。"),
+                    "role": "occurred",
+                }
+            rows, rejected = candidates(subject, body, route, status, fields=fields)
+            assert len(rows) == 1, (name, rejected)
+            payload = rows[0].payload()
+            # 规则草稿和Mock草稿在正式存储前均经过同一逐字段校验；
+            # 此处调用生产校验，完整存储副作用由代表性案例另行验证。
+            payload["fields"] = {
+                key: value
+                for key, value in payload["fields"].items()
+                if validate_field(
+                    value["role"],
+                    value["value"],
+                    value["quote"],
+                    rows[0].action,
+                    rows[0].subtype,
+                )[0]
+            }
+            assert payload["status"] == status, name
+            assert "financing_stage:" + expected_phase in payload["issues"], name
+            if status == "planned":
+                assert not {"financing", "date", "occurred"} & payload["fields"].keys(), name
+            else:
+                assert payload["fields"]["financing"]["value"] == "3200万元", name
+
+
+@pytest.mark.parametrize("route", ["rules", "mock_correct", "mock_overstated"])
+@pytest.mark.parametrize(
+    "name,tail,status,expected_phase", STORE_CASES, ids=[c[0] for c in STORE_CASES]
+)
 def test_financing_boundaries_formal_store_api_report(
     database, tmp_path, route, name, tail, status, expected_phase
 ):

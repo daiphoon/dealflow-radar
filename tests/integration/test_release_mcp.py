@@ -25,11 +25,11 @@ from backend.app.diagnostics import TOOLS, Deadline
 from backend.app.models import CompanyResearchJob, Event
 from backend.app.personal_features import create_refresh_request
 from backend.app.web_research_service import prepare_pending_research_requests
-from tests.integration import test_curated_import as curated
 from tests.integration.test_diagnostic_service import diagnostic as diagnostic
-from tests.integration.test_incremental_research import initial
 from tests.integration.test_release_migration import snapshot
-from tests.integration.test_research_matter_storage import ingest
+from tests.support import curated_import as curated
+from tests.support.incremental_research import initial
+from tests.support.research_matter_storage import ingest
 
 database = curated.database
 

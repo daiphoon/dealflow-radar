@@ -36,7 +36,7 @@ from backend.app.models import (
 )
 from backend.app.providers import ManualResearchImportProvider
 from backend.app.services import import_manual_research
-from tests.integration.test_tender_storage import (
+from tests.support.tender_storage import (
     CASES,
     COMPANY_ID,
     _actor,
@@ -44,7 +44,7 @@ from tests.integration.test_tender_storage import (
     _persist,
     _source_document,
 )
-from tests.integration.test_tender_storage import (
+from tests.support.tender_storage import (
     database as database,
 )
 

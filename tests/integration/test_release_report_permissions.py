@@ -12,7 +12,7 @@ from tests.integration.test_personal_changes_reports import (
     SHARED_COMPANY_ID,
     _add_shared_event,
 )
-from tests.integration.test_tender_storage import database as database
+from tests.support.tender_storage import database as database
 
 
 @pytest.mark.parametrize(

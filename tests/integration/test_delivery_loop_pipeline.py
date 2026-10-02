@@ -14,9 +14,9 @@ from backend.app.research_extraction import document_matters
 from backend.app.research_subject import load_subject
 from backend.app.services import get_company_detail
 from backend.app.web_research_budget import SCOPE, WebResearchBudgetDeferred, subject_key
-from tests.integration import test_curated_import as curated
-from tests.integration.test_incremental_research import initial
-from tests.integration.test_research_matter_storage import POLICY, ingest
+from tests.support import curated_import as curated
+from tests.support.incremental_research import initial
+from tests.support.research_matter_storage import POLICY, ingest
 
 database = curated.database
 

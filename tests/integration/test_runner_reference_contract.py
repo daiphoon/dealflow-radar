@@ -44,8 +44,8 @@ from backend.app.web_search import MockSearchProvider, SearchResult
 from scripts import research_validation_runner as runner
 from scripts.research_validation_contract import runtime_binding
 from scripts.run_web_research_worker import _with_worker_session
-from tests.integration import test_curated_import as curated
-from tests.integration.test_incremental_research import initial
+from tests.support import curated_import as curated
+from tests.support.incremental_research import initial
 
 database = curated.database
 REF = datetime.fromisoformat("2026-09-29T00:00:00+08:00")
@@ -255,7 +255,7 @@ class OfflineBoundaries:
             code = "mock"
 
             def extract(self, payload):
-                from tests.integration.test_m2_f_core_lifecycle import proposed
+                from tests.support.m2_f_core_lifecycle import proposed
 
                 owner.model_inputs.append(json.loads(payload["messages"][1]["content"]))
                 return {

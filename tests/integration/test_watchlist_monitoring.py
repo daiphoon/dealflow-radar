@@ -45,8 +45,8 @@ from tests.integration.test_bounded_web_research import (
     RecordingFetcherFactory,
     _providers,
 )
-from tests.integration.test_tender_storage import database as database
 from tests.integration.test_web_budget_delivery import _admins, _policy, _session
+from tests.support.tender_storage import database as database
 
 
 def policy(**changes):

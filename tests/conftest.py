@@ -4,15 +4,12 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.app.config import Settings
 from backend.app.main import create_app
-from backend.app.providers import MockResearchProvider
-from backend.app.services import seed_demo_entities
+from tests.support.database_templates import database_templates as database_templates
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,11 +57,11 @@ def manual_import_payload() -> dict[str, object]:
 
 
 @pytest.fixture
-def migrated_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
-    database_url = f"sqlite:///{tmp_path / 'test.db'}"
+def migrated_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database_templates
+) -> Iterator[FastAPI]:
+    database_url = database_templates.copy(False, tmp_path / "test.db")
     monkeypatch.setenv("DATABASE_URL", database_url)
-    config = Config(str(ROOT / "alembic.ini"))
-    command.upgrade(config, "head")
     app = create_app(
         Settings(
             database_url=database_url,
@@ -74,9 +71,6 @@ def migrated_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Fa
             auto_refresh_enabled=False,
         )
     )
-    with app.state.session_factory() as session:
-        seed_demo_entities(session, MockResearchProvider().load())
-        session.commit()
     yield app
     app.state.engine.dispose()
 

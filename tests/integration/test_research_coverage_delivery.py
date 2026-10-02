@@ -14,7 +14,7 @@ from tests.integration.test_bounded_web_research import (
     _grant_platform_admin,
     _providers,
 )
-from tests.integration.test_tender_storage import database as database
+from tests.support.tender_storage import database as database
 
 
 def test_worker_coverage_and_owner_only_reading_under_database_permissions(database):
