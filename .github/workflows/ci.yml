@@ -21,8 +21,8 @@ env:
   AUTO_REFRESH_ENABLED: "false"
   AUTO_PUBLISH_ENABLED: "false"
   RUN_EXTERNAL_TESTS: "false"
-  CI_PROFILE_PATH: ${{ runner.temp }}/ci-profile.jsonl
-  CI_PARTITION_PATH: ${{ runner.temp }}/partition.json
+  CI_PROFILE_PATH: ci-profile.jsonl
+  CI_PARTITION_PATH: partition.json
 
 jobs:
   static_frontend:
@@ -156,8 +156,8 @@ jobs:
         with:
           name: test-evidence-python
           path: |
-            ${{ runner.temp }}/partition.json
-            ${{ runner.temp }}/ci-profile.jsonl
+            partition.json
+            ci-profile.jsonl
             ${{ runner.temp }}/junit.xml
             ${{ runner.temp }}/baseline-profile.jsonl
             ${{ runner.temp }}/m1-safe-degrade-digests.json
@@ -229,8 +229,8 @@ jobs:
         with:
           name: test-evidence-postgres
           path: |
-            ${{ runner.temp }}/partition.json
-            ${{ runner.temp }}/ci-profile.jsonl
+            partition.json
+            ci-profile.jsonl
             ${{ runner.temp }}/junit.xml
             ${{ runner.temp }}/baseline-profile.jsonl
             ${{ runner.temp }}/m1-safe-degrade-digests.json
@@ -401,8 +401,8 @@ jobs:
         with:
           name: test-evidence-release
           path: |
-            ${{ runner.temp }}/partition.json
-            ${{ runner.temp }}/ci-profile.jsonl
+            partition.json
+            ci-profile.jsonl
             ${{ runner.temp }}/junit.xml
             ${{ runner.temp }}/baseline-profile.jsonl
             ${{ runner.temp }}/m1-safe-degrade-digests.json
