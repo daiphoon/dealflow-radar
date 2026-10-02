@@ -19,7 +19,40 @@
 
 业务源首版仅适配既有 PostgreSQL 业务库。逻辑 source ID、公司ID、本人report ID均由私有 grant 明确列出；其他服务器文件、数据库、租户和内部投资数据未覆盖。原诊断角色不能用于正文读取。
 
-`bootstrap_business_mcp` 只创建**新**专用角色；固定21张表的必要列，不 `GRANT ALL public`，不改普通应用角色。用户仅id/tenant/status；投资仅RLS依赖键，不含金额。正式ORM许可需要的原文行仅在受RLS约束的服务内使用，不外发RawDocument整包。启动拒绝超级用户、BYPASSRLS、建库/建角色、继承角色、表owner和列写权限。每事务先READ ONLY再绑正式身份，真实提交/回滚与连接回收保持；数据库连接和业务并发各2。
+## 显式数据库列合同（PR #112 定点收口）
+
+`business_read_contract.py::READ_COLUMNS` 是版本化、手写的 20 表列合同；不遍历 ORM 模型。专用 Session 使用 `load_only(..., raiseload=True)`，JSON 用受限表达式加载；未声明字段不会隐式 lazy load。网站默认仍加载原正式投影，MCP 仅关闭未使用的分析摘要读取，不改许可判断。
+
+| 表 | 显式列 | 查询依据 |
+| --- | --- | --- |
+| `companies` | `id`, `tenant_id`, `credit_code`, `legal_name`, `registered_region`, `identity_status`, `visibility_scope` | 四工具公司身份、共享范围、正式 RLS / identity_status |
+| `company_aliases` | `id`, `company_id`, `alias`, `verification_status`, `visibility_scope`, `owner_user_id`, `owner_tenant_id` | find_company 的已验证别名与当前用户可见性 |
+| `sources` | `id`, `code`, `name`, `source_quality`, `license_status` | 正式证据来源名称/质量/当前许可；不需要 base_url/config |
+| `raw_documents` | `id`, `source_id`, `title`, `canonical_url`, `published_at`, `published_on`, `observed_at`, `license_status`, `visibility_scope`, `owner_user_id`, `owner_tenant_id`, `content_hash` | permission_inputs / report_evidence_permission：出处与许可；JSON 另走受限视图 |
+| `events` | `id`, `company_id`, `owner_user_id`, `owner_tenant_id`, `visibility_scope`, `event_type`, `event_subtype`, `status`, `direction`, `materiality_score`, `risk_severity`, `confidence_score`, `source_quality`, `title`, `summary`, `facts`, `uncertainties`, `occurred_at`, `published_at`, `published_on`, `observed_at`, `fingerprint_version`, `publication_route`, `publication_policy_version`, `publication_reasons` | 正式 _company_event_outputs：事项事实、阶段、反证、发布状态及权限过滤 |
+| `event_evidence` | `id`, `event_id`, `raw_document_id`, `source_event_evidence_id`, `owner_user_id`, `owner_tenant_id`, `visibility_scope`, `evidence_excerpt`, `span_hash`, `support_type`, `display_source_name`, `display_source_quality`, `display_title`, `display_canonical_url`, `display_published_at`, `display_published_on`, `display_observed_at`, `display_url_health_status`, `display_url_http_status`, `display_url_checked_at`, `display_final_url`, `display_license_status`, `display_allowed`, `display_detail_payload` | 正式证据投影与 evidence_signature；保留获准短摘录及不可变 display 快照 |
+| `event_facts` | `id`, `event_id`, `fact_key`, `name`, `value`, `unit`, `position`, `occurrence_count` | 正式事实名称/值/单位、稳定 fact_key 与排序 |
+| `event_fact_supports` | `id`, `event_id`, `event_fact_id`, `event_evidence_id`, `support_status`, `support_reasons`, `policy_version`, `assessed_at` | 正式支持/反证状态；evidence_signature 另走受限视图 |
+| `event_observations` | `id`, `event_id`, `schema_version`, `fact_version`, `observation_kind`, `occurred_on`, `date_precision`, `created_at` | 人工版本、不可变 fact_version、日期口径；candidate JSON 另走受限视图 |
+| `personal_company_reports` | `id`, `owner_user_id`, `company_id`, `company_legal_name`, `report_version`, `title`, `as_of`, `content_hash`, `source_event_ids`, `markdown`, `created_at` | 本人存档标题/正文/hash/版本、引用许可及分页；不需 idempotency_key |
+| `users` | `id`, `tenant_id`, `status` | active_user 与正式 user/tenant 权限；无邮箱/个人资料 |
+| `tenants` | `id`, `status` | 当前租户 active 状态 |
+| `roles` | `id`, `code` | 0036 RLS 的角色代码 |
+| `user_role_assignments` | `user_id`, `role_id`, `valid_until` | 0036 RLS 当前用户角色及到期判定 |
+| `investments` | `company_id`, `fund_id`, `tenant_id` | 0036 RLS 公司/基金/租户关联键；无金额、估值或持仓比例 |
+| `fund_access_grants` | `fund_id`, `user_id`, `valid_until` | 0036 RLS 基金授权及到期判定 |
+| `entity_mentions` | `id`, `raw_document_id`, `candidate_company_id`, `resolution_status`, `mention_text`, `visibility_scope`, `owner_user_id`, `owner_tenant_id` | 正式原文身份许可及正文 mention 边界；id 是 ORM 主键，mention_text 是既有许可输入 |
+| `company_research_jobs` | `id`, `company_id`, `created_by_user_id`, `coverage`, `created_at`, `status`, `policy_version` | 正式 research_result / stored_completion / reference_fields；不取 query、processing_trace、错误正文 |
+| `personal_company_requests` | `id`, `company_id`, `owner_user_id`, `research_job_id`, `status`, `created_at` | 与网站相同的本人请求关联/最新任务排序 |
+| `event_sharing_decisions` | `id`, `source_observation_id`, `source_event_id`, `action` | 正式 curated 版本 visibility 与原观测分享/撤回判断 |
+
+`RawDocument.payload`、`EventFactSupport.deterministic_checks`、`EventObservation.candidate_payload` 不再整列授权给 reader。三个 `security_barrier` 视图分别只提供 excerpt/source_windows/四个来源检查字段/curated_record 布尔；evidence_signature；正式人工/招投标版本需要的 event_fields/metadata/reviewed_at/sources/evidence_ids/candidate/field_links。不提供原文整包、created_by 或处理 trace；缺键与显式 null 区别保留。完整 InvestorChangeAnalysis 权限删除。
+
+视图拥有者是另一新建 NOLOGIN、NOSUPERUSER、NOBYPASSRLS、NOINHERIT 角色，不拥有任何业务表、没有角色成员资格，只获得三个 JSON 源列与 `PROJECTION_RLS_COLUMNS` 明列的 RLS 依赖列。reader 只能 SELECT 三个视图，不能 SET ROLE 成为投影拥有者。视图使用该低权限拥有者执行原表 RLS，事务的正式 user/tenant 上下文不变；非 owner PG 验证另一用户读取私人原文视图返回零行。没有高权 SECURITY DEFINER 函数或事实副本。视图并未使用 security_invoker=true（那会要求 reader 重获底层整包列）；依据 [PostgreSQL 16 CREATE VIEW 的 RLS 语义](https://www.postgresql.org/docs/16/sql-createview.html)。
+
+两个现有完整 JSON 例外明确保留：`event_evidence.display_detail_payload` 参与正式 evidence_signature 的整体完整性校验，裁剪会导致合法证据支持被错误撤销；`company_research_jobs.coverage` 被正式 research_result/stored_completion/reference_fields 读取，包含完成状态与窗口。它们不是任意模型新增字段；MCP 不原样输出，仅返回正式允许的投影。前者仍可能包含保存的展示详情，后者可能含诊断细节；生产批准须接受此内部读边界。进一步键级拆分会改变现有签名/完成度合同，本轮不修改。报告 markdown 是获准正文而非可删除的冗余。其他明确事实 JSON（facts/uncertainties）保留事实含义。
+
+安装仅创建新 reader、上述新 NOLOGIN 角色、专用 schema 和三个视图，不运行 Alembic、不改普通应用角色或既有0036业务结构。reader 无写权限、BYPASSRLS、继承扩权和表owner，事务 READ ONLY；业务连接与并发各2。未来安装仅对新角色执行，不能把旧宽权限角色当成已收窄。完整旧→新列差异和实际被拒 SELECT 证据在本轮私有包。
 
 ## 唯一认证路线
 
@@ -47,7 +80,11 @@ ChatGPT网页私有应用 → 专用HTTPS Streamable HTTP → 本站OAuth/DCR/PK
 | 请求/响应 | 16KiB / 128KiB；分页20、报告8192字符且明确分块 |
 | 查询/连接 | statement 2500ms、lock 500ms、pool等候1秒；HTTP工具5秒，超时后实际查询结束才释放槽位 |
 
-控制存储选一种：独立权限600的SQLite文件/私有控制卷。仅写client/授权事务/token摘要/撤销/脱敏审计/滚动配额，不写业务库；过期授权记录清理、审计31日保留。审计含操作/结果/耗时/SQL数/返回行数/字节，不含正文、cookie、token、code或查询参数。飞书必要身份调用独立计数。
+控制存储选一种：独立权限600的SQLite文件/私有控制卷。仅写client/授权事务/token摘要/撤销/脱敏审计/滚动配额，不写业务库；过期授权记录清理、审计31日保留。每次 `/mcp` 请求先生成32位 request ID，响应 `X-Request-ID` 与审计一致；不进入事实正文/hash。记录白名单工具、grant ID 的 SHA-256 安全标识及 grant 版本；对象只在正式授权和查询完成后记录获准 company/report ID。前置401、SDK参数错误、scope/对象拒绝、共享总额度/并发拒绝和查询超时均可定位。没有任意参数、原始查询词、正文、cookie、token、code或RPC调用方id。
+
+`mcp_http` 表示HTTP结果，`business_read` 同ID记录最终工具结果；内部 query_outcome 与终态分开。外层超时/末次撤权/断连后，晚完成线程只能补查询指标，不能改成 returned。客户端实际是否收到内容始终 unknown。最后正文发送前先提交审计；写入失败返回503，不交敏感正文。四工具共享原60/1000/64MiB滚动预算，tool字段不拆额度。
+
+新增列通过独立控制SQLite的可重入升级添加，旧行和滚动用量保留。审计31天、详细行最多50,000；MCP入口全局600次/分钟、20,000次/日，超限拒绝并只按小时累加噪声（保留31天），不按随机token/IP无限建行。容量满时fail closed，不删除窗口内配额来继续服务。飞书必要身份调用独立计数。
 
 `scripts.run_business_mcp` 默认关闭，必须显式 `MCP_BUSINESS_ENABLED=true`。配置来自600私有文件，拒绝symlink/宽权限/过大文件；数据库使用独立 `MCP_BUSINESS_DATABASE_URL`。私有JSON需resource、精确 `client_redirect_uris`、`feishu_app_id`、secret/cursor文件路径、`identity_grants`（tenant_key/open_id及Grant对象）、可选日/分钟额度。Grant包含id、内部user_id/tenant_id、company_ids/report_ids/source_ids、scopes及UTC epoch expires_at。真实值不进入Git、应用.env或聊天。
 
@@ -63,6 +100,6 @@ ChatGPT网页私有应用 → 专用HTTPS Streamable HTTP → 本站OAuth/DCR/PK
 
 快速协议负例不建业务库。少量真实non-owner PG故事从正式curated导入及网站保存报告开始，验证四工具非空、当前网站一致、跨用户/RLS、撤权/撤源/分页、并发、超时、重启与全表内容摘要不变。Mock飞书和HTTP协议通过不等于真实网页连接；实际head/CI、延迟/SQL/字节、小样本限制、完整失败记录见本轮统一私有交付包。
 
-当前目标交付：`MCP_BUSINESS_READ_IMPLEMENTED` + OAuth/飞书Mock通过；ChatGPT网页和真实生产业务读取均 `WAITING_PRODUCTION_ACTIVATION`。真实App/账户/网页资格尚待本人按当时管理页验收，不创建Apps、不开放真实数据。
+当前目标交付：`MCP_PATCH_READY_FOR_REVIEW`；准确head完整Verify以本轮统一包为准。ChatGPT网页和真实生产业务读取均 `WAITING_PRODUCTION_ACTIVATION`。真实App/账户/网页资格尚待本人按当时管理页验收，不创建Apps、不开放真实数据。
 
 协议依据：[OpenAI MCP认证](https://developers.openai.com/plugins/build/auth)、[飞书官方CLI认证路径](https://github.com/larksuite/cli/blob/main/internal/auth/paths.go)、[飞书官方CLI最小基础身份scope](https://pkg.go.dev/github.com/larksuite/cli/shortcuts/contact)。动态账户资格和App权限以激活时现场为准。

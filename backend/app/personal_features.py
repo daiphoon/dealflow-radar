@@ -1675,7 +1675,7 @@ def _report_out(
     )
 
 
-def _safe_report_out(session, user, report, *, reused=False):
+def _safe_report_out(session, user, report, *, reused=False, include_analysis=True):
     from backend.app.models import EventEvidence
 
     output = _report_out(report, reused=reused)
@@ -1718,7 +1718,14 @@ def _safe_report_out(session, user, report, *, reused=False):
         from backend.app.services import _event_out
 
         current_events = [
-            _event_out(session, event, user, allow_organization_private=False) for event in rows
+            _event_out(
+                session,
+                event,
+                user,
+                allow_organization_private=False,
+                include_analysis=include_analysis,
+            )
+            for event in rows
         ]
 
         # RLS 可能只隐藏多来源中的一条，不能用“该事项仍有证据”证明旧引用仍可发出。
@@ -1981,6 +1988,8 @@ def get_personal_company_report(
     session: Session,
     user: User,
     report_id: UUID,
+    *,
+    include_analysis: bool = True,
 ) -> PersonalCompanyReportOut:
     report = session.scalar(
         select(PersonalCompanyReport).where(
@@ -1990,4 +1999,4 @@ def get_personal_company_report(
     )
     if report is None:
         raise PersonalFeatureNotFoundError("report not found")
-    return _safe_report_out(session, user, report)
+    return _safe_report_out(session, user, report, include_analysis=include_analysis)

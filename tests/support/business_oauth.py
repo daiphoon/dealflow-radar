@@ -119,3 +119,37 @@ def exchange(client, client_id, code, **override):
             **override,
         },
     )
+
+
+def login(client):
+    cid = register(client)
+    return exchange(client, cid, authorization_code(client, cid)).json()["access_token"]
+
+
+def invoke(client, token=None, tool="find_company", arguments=None):
+    headers = {"Accept": "application/json, text/event-stream"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    return client.post(
+        "/mcp",
+        headers=headers,
+        json={
+            "jsonrpc": "2.0",
+            "id": "untrusted_rpc_id_do_not_log",
+            "method": "tools/call",
+            "params": {
+                "name": tool,
+                "arguments": arguments or {"query": "private_query_do_not_log"},
+            },
+        },
+    )
+
+
+def rows(store, response):
+    with store.transaction() as c:
+        return [
+            dict(r)
+            for r in c.execute(
+                "SELECT * FROM audit WHERE request_id=?", (response.headers["x-request-id"],)
+            )
+        ]

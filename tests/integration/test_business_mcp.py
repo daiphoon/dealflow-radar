@@ -133,6 +133,9 @@ def story(database, tmp_path):
         engine.dispose()
         app.state.engine.dispose()
         with database.owner.begin() as c:
+            c.execute(text(f'DROP SCHEMA "{role}_projection" CASCADE'))
+            c.execute(text(f'DROP OWNED BY "{role}_projection"'))
+            c.execute(text(f'DROP ROLE "{role}_projection"'))
             c.execute(text(f'DROP OWNED BY "{role}"'))
             c.execute(text(f'DROP ROLE "{role}"'))
 
@@ -213,6 +216,17 @@ def test_four_tool_nonempty_story_matches_formal_web_and_business_content_unchan
                 },
             )
             assert response.status_code == 200, response.text
+            correlation = response.headers["x-request-id"]
+            with story.store.transaction() as c:
+                audit = dict(
+                    c.execute(
+                        "SELECT * FROM audit WHERE request_id=? AND operation='business_read'",
+                        (correlation,),
+                    ).fetchone()
+                )
+            assert audit["tool"] == tool and audit["grant_version"] == story.grant.version
+            assert audit["outcome"] == "returned" and audit["delivery"] == "unknown"
+            assert json.loads(audit["objects"])
             assert not response.json()["result"].get("isError"), response.text
             assert "read_unavailable" not in response.text and "read_denied" not in response.text
     assert snapshot(story.database.owner) == before
@@ -220,19 +234,16 @@ def test_four_tool_nonempty_story_matches_formal_web_and_business_content_unchan
         audits = list(
             c.execute("SELECT outcome,sql_count,bytes FROM audit WHERE operation='business_read'")
         )
-        assert audits and all(r["outcome"] == "ok" and r["sql_count"] > 0 for r in audits)
+        assert audits and all(
+            r["outcome"] in {"query_complete", "returned"} and r["sql_count"] > 0 for r in audits
+        )
     assert story.service.engine.pool.size() == 2 and story.service.engine.pool.checkedout() == 0
     import os
     from pathlib import Path
 
     if os.environ.get("BUSINESS_MCP_EVIDENCE_PATH"):
         with story.store.transaction() as c:
-            metrics = [
-                dict(r)
-                for r in c.execute(
-                    "SELECT operation,outcome,seconds,sql_count,rows,bytes FROM audit"
-                )
-            ]
+            metrics = [dict(r) for r in c.execute("SELECT * FROM audit")]
         Path(os.environ["BUSINESS_MCP_EVIDENCE_PATH"]).write_text(
             json.dumps(
                 {
@@ -302,6 +313,11 @@ def test_server_side_scope_rls_write_denial_revoke_and_no_business_side_effect(s
         "INSERT INTO usage_ledger(id) VALUES(gen_random_uuid())",
         "SELECT email FROM users",
         "SELECT amount FROM investments",
+        "SELECT payload FROM raw_documents",
+        "SELECT base_url FROM sources",
+        "SELECT analysis_output FROM investor_change_analyses",
+        "SELECT idempotency_key FROM personal_company_reports",
+        "SELECT evidence_locator FROM event_fact_supports",
         "CREATE TABLE mcp_forbidden(id int)",
     ]:
         with pytest.raises(DBAPIError):
@@ -524,3 +540,149 @@ def test_low_trust_content_does_not_change_tool_surface_or_trigger_business_writ
         with pytest.raises(PermissionError):
             story.service.call(story.grant.id, BUSINESS_SCOPES, tool, {})
     assert snapshot(story.database.owner) == before
+
+
+def test_explicit_columns_survive_model_extension_and_projection_obeys_rls(story):
+    import importlib
+
+    from sqlalchemy import Column, Text
+
+    from backend.app.business_read_contract import READ_COLUMNS
+    from scripts import bootstrap_business_mcp
+
+    synthetic = Column("future_private_note", Text)
+    Company.__table__.append_column(synthetic)
+    extra_role = "mcp_future_" + uuid4().hex[:12]
+    extra_engine = None
+    try:
+        with story.database.owner.begin() as c:
+            c.execute(text("ALTER TABLE companies ADD COLUMN future_private_note text"))
+        installer = importlib.reload(bootstrap_business_mcp)
+        installer.bootstrap(
+            story.database.owner.url.render_as_string(hide_password=False),
+            extra_role,
+            "isolated_future_only",
+        )
+        url = story.database.owner.url.set(username=extra_role, password="isolated_future_only")
+        extra_engine = build_business_engine(url.render_as_string(hide_password=False))
+        with pytest.raises(DBAPIError):
+            with extra_engine.connect() as c:
+                c.execute(text("SELECT future_private_note FROM companies"))
+        assert "future_private_note" not in READ_COLUMNS["companies"]
+        # 从数据库角度验证投影 owner 也受 RLS，不能把私人原文借视图跨用户读出。
+        schema = story.service.engine.url.username + "_projection"
+        with story.database.owner.connect() as c:
+            document_id = c.scalar(
+                text("SELECT id FROM raw_documents WHERE owner_user_id=:user LIMIT 1"),
+                {"user": ALPHA_USER_ID},
+            )
+            assert document_id is not None
+        with request_session(story.service.factory, BETA_USER_ID, BETA_TENANT_ID) as s:
+            assert (
+                s.scalar(
+                    text(f'SELECT count(*) FROM "{schema}".raw_documents_read WHERE id=:id'),
+                    {"id": document_id},
+                )
+                == 0
+            )
+        with request_session(story.service.factory, ALPHA_USER_ID, ALPHA_TENANT_ID) as s:
+            projected = s.scalar(
+                text(f'SELECT payload FROM "{schema}".raw_documents_read WHERE id=:id'),
+                {"id": document_id},
+            )
+            assert set(projected) <= {
+                "curated_record",
+                "excerpt",
+                "source_windows",
+                "_source_verification",
+            }
+            assert isinstance(projected["curated_record"], bool)
+            assert set(projected["_source_verification"]) <= {
+                "status",
+                "http_status",
+                "checked_at",
+                "final_url",
+            }
+        with story.database.owner.connect() as c:
+            roles = c.execute(
+                text(
+                    "SELECT rolname,rolsuper,rolbypassrls,rolinherit,rolcanlogin FROM "
+                    "pg_roles WHERE rolname=:role"
+                ),
+                {"role": schema},
+            ).one()
+            assert tuple(roles[1:]) == (False, False, False, False)
+            assert (
+                c.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_auth_members WHERE member=(SELECT oid FROM "
+                        "pg_roles WHERE rolname=:role)"
+                    ),
+                    {"role": schema},
+                )
+                == 0
+            )
+        before = snapshot(story.database.owner)
+        assert call(story, "get_saved_report", report_id=story.website["id"])["markdown"]
+        assert snapshot(story.database.owner) == before
+    finally:
+        Company.__table__._columns.remove(synthetic)
+        if extra_engine:
+            extra_engine.dispose()
+            with story.database.owner.begin() as c:
+                c.execute(text(f'DROP SCHEMA "{extra_role}_projection" CASCADE'))
+                for role in (extra_role + "_projection", extra_role):
+                    c.execute(text(f'DROP OWNED BY "{role}"'))
+                    c.execute(text(f'DROP ROLE "{role}"'))
+
+
+def test_http_audit_permission_quota_and_actual_postgres_timeout(story, monkeypatch):
+    app, oauth, _ = setup(story.tmp / "http_denials", service=story.service, grant=story.grant)
+    from tests.support.business_oauth import invoke, login, rows
+
+    evidence = []
+    before = snapshot(story.database.owner)
+    with TestClient(app, base_url=RESOURCE) as client:
+        token = login(client)
+        response = invoke(client, token, "get_saved_report", {"report_id": str(uuid4())})
+        evidence.extend(rows(story.store, response))
+        assert "report_not_authorized" in response.text
+        assert all(r["objects"] == "{}" for r in rows(story.store, response))
+        value = oauth.store.get("access", token)
+        oauth.store.put(
+            "access", token, {**value, "scopes": ["dealflow.company.read"]}, value["expires_at"]
+        )
+        response = invoke(client, token, "get_saved_report", {"report_id": story.website["id"]})
+        evidence.extend(rows(story.store, response))
+        assert "scope_or_grant_rejected" in response.text
+        oauth.store.put("access", token, value, value["expires_at"])
+        with monkeypatch.context() as patch:
+            patch.setattr(story.service, "minute", 1)
+            response = invoke(client, token)
+        evidence.extend(rows(story.store, response))
+        assert "quota_exceeded" in response.text
+
+        def timeout(s, *args):
+            s.execute(text("SELECT pg_sleep(4)"))
+
+        with monkeypatch.context() as patch:
+            patch.setattr(story.service, "_read", timeout)
+            response = invoke(client, token)
+        evidence.extend(rows(story.store, response))
+        assert "read_timeout" in response.text
+        timeout_audit = next(
+            r for r in rows(story.store, response) if r["operation"] == "business_read"
+        )
+        assert (
+            timeout_audit["reason"] == "read_timeout"
+            and timeout_audit["query_outcome"] == "read_error"
+        )
+        assert timeout_audit["sql_count"] > 0
+    assert snapshot(story.database.owner) == before
+    import os
+    from pathlib import Path
+
+    if os.environ.get("BUSINESS_MCP_DENIAL_EVIDENCE_PATH"):
+        Path(os.environ["BUSINESS_MCP_DENIAL_EVIDENCE_PATH"]).write_text(
+            json.dumps(evidence, indent=2)
+        )

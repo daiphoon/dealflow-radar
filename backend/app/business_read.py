@@ -15,7 +15,9 @@ from sqlalchemy import create_engine, event, or_, select, text
 from sqlalchemy.orm import load_only
 
 from backend.app.business_dates import reference_fields
+from backend.app.business_read_contract import install_read_loaders
 from backend.app.database import build_session_factory, request_session
+from backend.app.mcp_control import digest
 from backend.app.models import (
     Company,
     CompanyAlias,
@@ -144,6 +146,7 @@ class BusinessReadService:
             raise ValueError("cursor_key_too_short")
         self.engine, self.store, self.cursor_key = engine, store, cursor_key
         self.factory = build_session_factory(engine)
+        install_read_loaders(self.factory, engine.url.username + "_projection")
         self.slots = threading.BoundedSemaphore(2)
         self.max_bytes, self.minute, self.day = max_bytes, minute, day
         self.context = threading.local()
@@ -219,23 +222,28 @@ class BusinessReadService:
                 raise ValueError("invalid_cursor") from None
         return limit, state
 
-    def call(self, grant_id, scopes, tool, params, *, grant_version=None):
+    def call(self, grant_id, scopes, tool, params, *, grant_version=None, audit_id=None):
         start = time.monotonic()
-        if not self.slots.acquire(blocking=False):
-            raise PermissionError("concurrency_limit")
-        audit_id, outcome, size, rows, primary_error = None, "denied", 0, 0, None
-        self.context.sql_count = 0
-        try:
-            grant = self.store.grant(grant_id)
-            if not grant or (grant_version is not None and grant.version != grant_version):
-                raise PermissionError("scope_or_grant_rejected")
+        managed = audit_id is None
+        if managed:
             audit_id = self.store.quota(
-                grant.id,
+                digest(grant_id),
                 "business_read",
                 minute=self.minute,
                 day=self.day,
                 reserve_bytes=self.max_bytes,
+                tool=tool if tool in TOOLS else "unknown",
+                grant_version=grant_version,
             )
+        acquired = self.slots.acquire(blocking=False)
+        outcome, size, rows, objects, primary_error = "denied", 0, 0, {}, None
+        self.context.sql_count = 0
+        try:
+            if not acquired:
+                raise PermissionError("concurrency_limit")
+            grant = self.store.grant(grant_id)
+            if not grant or (grant_version is not None and grant.version != grant_version):
+                raise PermissionError("scope_or_grant_rejected")
             if TOOLS.get(tool) not in scopes or TOOLS.get(tool) not in grant.scopes:
                 raise PermissionError("scope_or_grant_rejected")
             allowed = (
@@ -273,7 +281,18 @@ class BusinessReadService:
             size = len(json.dumps(result, ensure_ascii=False).encode())
             if size > self.max_bytes:
                 raise ValueError("response_too_large")
-            rows, outcome = len(result.get("items", [])), "ok"
+            rows, outcome = len(result["items"]) if "items" in result else 1, "query_complete"
+            if tool == "find_company":
+                objects = {"company_ids": [r["company_id"] for r in result["items"]]}
+            elif tool == "get_saved_report":
+                objects = {
+                    "report_id": str(UUID(params["report_id"])),
+                    "company_id": result["company_id"],
+                }
+            else:
+                objects = {"company_id": str(UUID(params["company_id"]))}
+                if tool == "list_company_reports":
+                    objects["report_ids"] = [r["id"] for r in result["items"]]
             return result
         except BaseException as error:
             primary_error = error
@@ -283,19 +302,23 @@ class BusinessReadService:
         finally:
             try:
                 if audit_id is not None:
-                    self.store.finish(
+                    self.store.query_finish(
                         audit_id,
                         outcome,
                         time.monotonic() - start,
                         self.context.sql_count,
                         rows,
                         size,
+                        objects,
                     )
+                    if managed:
+                        self.store.finish(audit_id, outcome, time.monotonic() - start)
             except Exception:
                 if primary_error is None:
                     raise
             finally:
-                self.slots.release()
+                if acquired:
+                    self.slots.release()
 
     def source_allowed(self, s, evidence, grant):
         seen = set()
@@ -328,7 +351,9 @@ class BusinessReadService:
                 "created_at": report.created_at,
                 "report_version": report.report_version,
             }
-        output = get_personal_company_report(s, user, report.id).model_dump(mode="json")
+        output = get_personal_company_report(s, user, report.id, include_analysis=False).model_dump(
+            mode="json"
+        )
         if output["history_status"] == "restricted":
             output["markdown"] = None
         return output
@@ -498,7 +523,9 @@ class BusinessReadService:
                         for e in evidence
                     ):
                         allowed.append(r)
-                outputs = _company_event_outputs(s, allowed, user, allow_organization_private=False)
+                outputs = _company_event_outputs(
+                    s, allowed, user, allow_organization_private=False, include_analysis=False
+                )
                 items = []
                 for out in outputs:
                     item = out.model_dump(mode="json")

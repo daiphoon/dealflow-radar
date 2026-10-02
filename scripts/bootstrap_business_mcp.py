@@ -5,62 +5,13 @@ import os
 import psycopg
 from psycopg import sql
 
-from backend.app import models
+from backend.app.business_read_contract import (
+    CONTRACT_VERSION,
+    PROJECTION_RLS_COLUMNS,
+    PROJECTIONS,
+    READ_COLUMNS,
+)
 from scripts.bootstrap_local_database import ROLE_NAME_PATTERN, _connection_kwargs
-
-# ORM 复用正式投影所需的固定模型。无账本写表、持仓金额、用户 PII 或全部 schema 授权。
-MODELS = (
-    models.Company,
-    models.CompanyAlias,
-    models.Source,
-    models.RawDocument,
-    models.Event,
-    models.EventEvidence,
-    models.EventObservation,
-    models.EventFact,
-    models.EventFactSupport,
-    models.InvestorChangeAnalysis,
-    models.PersonalCompanyReport,
-)
-READ_COLUMNS = {
-    model.__tablename__: tuple(c.name for c in model.__table__.columns) for model in MODELS
-}
-READ_COLUMNS.update(
-    {
-        "users": ("id", "tenant_id", "status"),
-        "tenants": ("id", "status"),
-        "roles": ("id", "code"),
-        "user_role_assignments": ("user_id", "role_id", "valid_until"),
-        "investments": ("company_id", "fund_id", "tenant_id"),
-        "fund_access_grants": ("fund_id", "user_id", "valid_until"),
-        "entity_mentions": (
-            "raw_document_id",
-            "candidate_company_id",
-            "resolution_status",
-            "visibility_scope",
-            "owner_user_id",
-            "owner_tenant_id",
-        ),
-        "company_research_jobs": (
-            "id",
-            "company_id",
-            "created_by_user_id",
-            "coverage",
-            "created_at",
-            "status",
-            "policy_version",
-        ),
-        "personal_company_requests": (
-            "id",
-            "company_id",
-            "owner_user_id",
-            "research_job_id",
-            "status",
-            "created_at",
-        ),
-        "event_sharing_decisions": ("id", "source_observation_id", "source_event_id", "action"),
-    }
-)
 
 
 def bootstrap(admin_url, role, password):
@@ -70,6 +21,8 @@ def bootstrap(admin_url, role, password):
         or role in {"postgres", "public"}
     ):
         raise ValueError("invalid_reader_role")
+    if len(role) > 40:
+        raise ValueError("reader_role_too_long")
     kwargs = _connection_kwargs(admin_url)
     if kwargs["user"] == role or kwargs["password"] == password:
         raise ValueError("dedicated_credentials_required")
@@ -96,7 +49,60 @@ def bootstrap(admin_url, role, password):
                     sql.SQL(",").join(map(sql.Identifier, columns)), sql.Identifier(table), name
                 )
             )
-    return {"role": role, "tables": sorted(READ_COLUMNS), "mode": "select_only"}
+        # NOLOGIN 投影所有者不是业务表 owner，无 BYPASSRLS/成员资格；RLS 仍按事务身份执行。
+        projection = sql.Identifier(role + "_projection")
+        cur.execute(
+            sql.SQL(
+                "CREATE ROLE {} NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE"
+                " NOINHERIT NOREPLICATION"
+            ).format(projection)
+        )
+        cur.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(projection))
+        cur.execute(sql.SQL("CREATE SCHEMA {} AUTHORIZATION {}").format(projection, projection))
+        cur.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(projection, name))
+        # 现有 RLS 子查询依赖 events 的身份列，不能由高权 owner 代读。
+        for table, columns in PROJECTION_RLS_COLUMNS.items():
+            cur.execute(
+                sql.SQL("GRANT SELECT ({}) ON public.{} TO {}").format(
+                    sql.SQL(",").join(map(sql.Identifier, columns)),
+                    sql.Identifier(table),
+                    projection,
+                )
+            )
+        for table, (field, expression) in PROJECTIONS.items():
+            cur.execute(
+                sql.SQL("GRANT SELECT (id,{}) ON public.{} TO {}").format(
+                    sql.Identifier(field), sql.Identifier(table), projection
+                )
+            )
+            cur.execute(
+                sql.SQL(
+                    "CREATE VIEW {}.{} WITH (security_barrier=true) AS SELECT id, {} AS {} "
+                    "FROM public.{}"
+                ).format(
+                    projection,
+                    sql.Identifier(table + "_read"),
+                    sql.SQL(expression),
+                    sql.Identifier(field),
+                    sql.Identifier(table),
+                )
+            )
+            cur.execute(
+                sql.SQL("ALTER VIEW {}.{} OWNER TO {}").format(
+                    projection, sql.Identifier(table + "_read"), projection
+                )
+            )
+            cur.execute(
+                sql.SQL("GRANT SELECT ON {}.{} TO {}").format(
+                    projection, sql.Identifier(table + "_read"), name
+                )
+            )
+    return {
+        "role": role,
+        "tables": sorted(READ_COLUMNS),
+        "mode": "select_only",
+        "contract": CONTRACT_VERSION,
+    }
 
 
 if __name__ == "__main__":
