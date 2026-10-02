@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 RELEASE_FILES = {
+    "test_ops_compose_contract.py",
     "test_m1_safe_degrade.py",
     "test_ops_release_compose.py",
     "test_ops_release_containers.py",
