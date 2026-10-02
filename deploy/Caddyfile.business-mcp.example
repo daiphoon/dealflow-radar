@@ -1,0 +1,10 @@
+# 候选独立站点；不包含在当前 production Caddy，不自动取得证书或启用。
+# 替换为当次批准的专用域名与已验证内网 upstream；不使用通配域名。
+mcp.example.invalid {
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+    }
+    reverse_proxy business-mcp:8050
+}

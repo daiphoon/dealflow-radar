@@ -24,7 +24,8 @@
 ## 2. 有效执行检查点
 
 - **当前唯一里程碑：DR-CI-MCP-FEISHU-20261002-R1**。正式基线 main `d6edae70bb4201584d69ef0c4cfa1ba6bcd50e82`。PR-A 只做测量、公共测试设施、层次与四 job/严格 Verify；PR-B 只做四项业务只读工具、独立控制存储和 OAuth/飞书最小适配。见 [27 CI减负](27-ci-validation-budget.md)。
-- **工程证据**：同组72项模板前后90.27→43.57秒；真实独立副本/commit/rollback/非owner PG 保留。准确候选 head、完整 CI、制品分支及后续 MCP 证据在统一私有交付包记录，不以本机样本推算 CI SLA。
+- **工程证据**：PR-A同组72项模板前后90.27→43.57秒；准确候选Verify已通过，观察CI并行9分57秒/16.98 runner分钟，原fixture同节点Ubuntu测量留证。真实独立副本/commit/rollback/非owner PG 保留；风险映射见27，不能推算SLA。
+- **业务MCP候选**：四工具＋当前正式投影/许可＋non-owner只读PG＋独立SQLite控制状态＋锁定SDK的DCR/PKCE/飞书桥已实现，见 [28 业务只读MCP](28-business-read-mcp-feishu.md)。四种实际非空读取、撤权/跨用户/分页/超时/重启和42业务表＋schema表摘要不变由虚构环境验证。PR-B依赖PR-A的测试设施；准确head/CI以统一交付包为准。
 - **M3路线**：标准HTTPS MCP＋OAuth＋飞书身份确认＋内部权限映射；Tunnel路线放弃。真实飞书配置和 ChatGPT 网页调用待集中激活批准，Mock不算真实网页闭环。
 - **边界**：本轮不自动合并/部署、改变生产 schema/权限或开放真实数据；研究/模型调用与生产操作为0。根工作区既有未提交材料及封存记录保护。
 - 更新日期：2026-10-02。

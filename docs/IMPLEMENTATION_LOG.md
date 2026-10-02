@@ -1,5 +1,11 @@
 # 实施记录
 
+## 2026-10-02：业务只读MCP与飞书OAuth候选
+
+- 文件/任务：`business_read`、`business_mcp`、`business_mcp_auth`、`mcp_control`；专用角色初始化/启动脚本、optional Compose/Caddy候选；四项业务能力，不改网站、融资/归并、Provider或migration。
+- 实际命令：快速原生SDK DCR/PKCE/Mock飞书/刷新撤销负例；正式curated导入/网站报告后的non-owner PG读取、全内容摘要、分页/撤源/RLS、并发/超时；完整pytest、Ruff/format、迁移/Compose/镜像与准确head Verify、秘密扫描。
+- 结果/边界：非空四工具与网站一致、只读摘要保留；固定范围引用批量预载减少许可N+1，不缓存授权结果。修正SDK public撤销表单/resource绑定/frozen异常的薄适配；初始失败证据保留。当前真实飞书/ChatGPT网页和生产业务读取待一次集中激活；没有生产操作、研究/模型调用、合并或部署。
+
 ## 2026-10-02：CI设施减负候选
 
 - 任务/文件：`tests/support` 模板、公共帮助函数和可选阶段计时；融资变体下移正式校验层；四职责 CI job 与严格 Verify。业务代码、migration、Provider与权限规则不变。

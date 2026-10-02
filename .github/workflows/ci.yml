@@ -349,6 +349,21 @@ jobs:
             config --format json | python -c \
               'import json,sys; c=json.load(sys.stdin); d=c["services"]["diagnostic-mcp"]; assert d["profiles"] == ["diagnostic"]; assert d["read_only"] is True; assert d["cap_drop"] == ["ALL"]; assert d["ports"][0]["host_ip"] == "127.0.0.1"; assert c["networks"]["diagnostic"]["internal"] is True; assert d["restart"] == "no"; assert not any("docker.sock" in v.get("source", "") for v in d["volumes"])'
 
+      - name: Validate optional business MCP deployment isolation
+        env:
+          BUSINESS_MCP_IMAGE: ghcr.io/example/business-mcp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          MCP_BUSINESS_DATABASE_URL: postgresql+psycopg://mcp_reader:mock_only@database/equity_radar
+          MCP_TRUSTED_PROXY_IPS: 172.30.0.2
+          MCP_BUSINESS_CREDENTIALS_DIR: /tmp/business-mcp-credentials
+          MCP_BUSINESS_CONTROL_DIR: /tmp/business-mcp-control
+        run: |
+          docker compose --profile business-mcp \
+            --env-file deploy/single-host.env.example \
+            -f compose.production.yml -f deploy/compose.single-host.yml \
+            -f deploy/compose.business-mcp.yml \
+            config --format json | python -c \
+              'import json,sys; c=json.load(sys.stdin); s=c["services"]["business-mcp"]; assert s["profiles"]==["business-mcp"]; assert s["read_only"] and s["cap_drop"]==["ALL"]; assert s["ports"][0]["host_ip"]=="127.0.0.1"; assert s["restart"]=="no"; assert c["networks"]["business-mcp"]["internal"] is True; assert set(s["networks"])=={"business-mcp","mcp-auth-egress"}; assert "DATABASE_URL" not in s["environment"]; assert all(s["environment"][k]=="false" for k in ("EXTERNAL_CALLS_ENABLED","PAID_API_CALLS_ENABLED","AUTO_REFRESH_ENABLED","AUTO_PUBLISH_ENABLED","WEB_RESEARCH_WORKER_ENABLED","WATCHLIST_MONITOR_ENABLED")); assert not any("docker.sock" in v.get("source","") for v in s["volumes"]); assert all(v["read_only"] for v in s["volumes"] if v["target"]=="/credentials")'
+
       - name: Build production container images
         env:
           APP_MODE: production

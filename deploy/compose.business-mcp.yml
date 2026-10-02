@@ -1,0 +1,39 @@
+services:
+  business-mcp:
+    profiles: [business-mcp]
+    image: ${BUSINESS_MCP_IMAGE:?immutable approved image required}
+    command: [python, -m, scripts.run_business_mcp]
+    restart: "no"
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 384m
+    cpus: 0.5
+    ports: ["127.0.0.1:8050:8050"]
+    environment:
+      MCP_BUSINESS_ENABLED: "true"
+      MCP_BUSINESS_DATABASE_URL: ${MCP_BUSINESS_DATABASE_URL:?dedicated read-only role required}
+      MCP_BUSINESS_CONFIG_FILE: /credentials/business.json
+      MCP_BUSINESS_CONTROL_PATH: /control/control.db
+      MCP_TRUSTED_PROXY_IPS: ${MCP_TRUSTED_PROXY_IPS:?exact proxy addresses required}
+      EXTERNAL_CALLS_ENABLED: "false"
+      PAID_API_CALLS_ENABLED: "false"
+      AUTO_REFRESH_ENABLED: "false"
+      AUTO_PUBLISH_ENABLED: "false"
+      WEB_RESEARCH_WORKER_ENABLED: "false"
+      WATCHLIST_MONITOR_ENABLED: "false"
+    volumes:
+      - ${MCP_BUSINESS_CREDENTIALS_DIR:?private directory required}:/credentials:ro
+      - ${MCP_BUSINESS_CONTROL_DIR:?restricted control directory required}:/control
+    tmpfs: ["/tmp:size=16m,mode=1770"]
+    networks: [business-mcp, mcp-auth-egress]
+  database:
+    networks: [app, business-mcp]
+  proxy:
+    networks: [app, mcp-auth-egress]
+networks:
+  business-mcp:
+    internal: true
+  mcp-auth-egress: {}
