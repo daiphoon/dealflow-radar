@@ -21,7 +21,7 @@
 
 ChatGPT网页私有应用 → 专用HTTPS Streamable HTTP → 本站OAuth/DCR/PKCE → 中国飞书登录 → 预审批稳定身份映射 → 本MCP opaque token → 当前业务权限。
 
-复用锁定的 `mcp==2.2.0` 原生OAuth/client鉴别/PKCE/Streamable HTTP；没有新增OAuth依赖或IAM管理平台。只选择public DCR（`none`），不同时做CIMD和预配置客户端。元数据仅宣告实际实现的能力；精确redirect、resource/audience和S256，授权码一次使用。mcp 2.2.0的resource校验、public撤销表单及frozen异常兼容由薄边界补齐，未降低协议检查。
+复用锁定的 `mcp==2.2.0` 原生OAuth/client鉴别/PKCE/Streamable HTTP；没有新增OAuth依赖或IAM管理平台。只选择public DCR（`none`），不同时做CIMD和预配置客户端。登记未指定scope时仅声明三项read能力，不签发token或数据授权；实际scope仍须匹配预审批grant并经本人同意。元数据仅宣告实际实现的能力；精确redirect、resource/audience和S256，授权码一次使用。mcp 2.2.0的resource校验、public撤销表单及frozen异常兼容由薄边界补齐，未降低协议检查。
 
 本站路由为 `/.well-known/oauth-protected-resource`、`/.well-known/oauth-authorization-server`、`/authorize`、`/token`、`/register`、`/revoke`、`/mcp`。飞书桥为 `/feishu/start`、`/feishu/callback`、`/feishu/consent`。canonical resource/issuer均为同一专用HTTPS主机根；401含resource发现信息。真实ChatGPT redirect必须从当次管理页复制，不能照示例猜值。
 

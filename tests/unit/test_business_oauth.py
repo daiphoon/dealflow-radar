@@ -412,3 +412,33 @@ def test_error_redirect_issuer_preserves_exact_registered_query(tmp_path):
         assert query["fixed"] == ["1"] and query["error"] == ["invalid_scope"]
         assert query.get("iss") == [RESOURCE]
         assert oauth.gateway.calls == 0
+
+
+def test_dcr_without_scope_declares_only_read_capabilities_not_data_access(tmp_path):
+    app, oauth, _ = setup(tmp_path)
+    with TestClient(app, base_url=RESOURCE) as client:
+        registered = client.post(
+            "/register",
+            json={
+                "redirect_uris": [CALLBACK],
+                "token_endpoint_auth_method": "none",
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+            },
+        )
+        assert registered.status_code == 201, registered.text
+        assert set(registered.json()["scope"].split()) == {
+            "dealflow.company.read",
+            "dealflow.matter.read",
+            "dealflow.report.read",
+        }
+        assert (
+            client.post(
+                "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+            ).status_code
+            == 401
+        )
+        cid = registered.json()["client_id"]
+        response = exchange(client, cid, authorization_code(client, cid))
+        assert response.status_code == 200, response.text
+        assert "write" not in response.json()["scope"] and oauth.gateway.calls == 1

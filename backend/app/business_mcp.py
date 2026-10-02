@@ -35,7 +35,9 @@ def create_business_mcp(service, oauth):
             validate_token_resource=True,
             required_scopes=[],
             client_registration_options=ClientRegistrationOptions(
-                enabled=True, valid_scopes=list(BUSINESS_SCOPES), default_scopes=[]
+                enabled=True,
+                valid_scopes=list(BUSINESS_SCOPES),
+                default_scopes=list(BUSINESS_SCOPES),
             ),
             revocation_options=RevocationOptions(enabled=True),
         ),
