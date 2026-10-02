@@ -201,3 +201,29 @@ def test_control_upgrade_retains_quota_and_noise_is_bounded(tmp_path):
     assert store.begin_mcp("after_retention") is not None
     with store.transaction() as c:
         assert c.execute("SELECT count(*) FROM audit").fetchone()[0] == 1
+
+
+def test_interrupted_control_upgrade_does_not_reset_existing_quota(tmp_path, monkeypatch):
+    from backend.app import mcp_control
+
+    path = tmp_path / "interrupted.db"
+    with sqlite3.connect(path) as c:
+        c.execute(
+            "CREATE TABLE audit(at REAL,principal TEXT,operation TEXT,outcome "
+            "TEXT,seconds REAL,sql_count INTEGER,rows INTEGER,bytes INTEGER)"
+        )
+        c.execute(
+            "INSERT INTO audit VALUES(?, 'approved','business_read','ok',1,1,1,20)", (time.time(),)
+        )
+    path.chmod(0o600)
+
+    def interrupt(_):
+        raise RuntimeError("interrupted_upgrade")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(mcp_control, "digest", interrupt)
+        with pytest.raises(RuntimeError, match="interrupted_upgrade"):
+            ControlStore(path)
+    recovered = ControlStore(path)
+    with pytest.raises(PermissionError, match="quota_exceeded"):
+        recovered.quota(digest("approved"), "business_read", minute=1)

@@ -60,18 +60,21 @@ class ControlStore:
         fd = os.open(self.path, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
         os.close(fd)
         with self.transaction() as c:
-            c.executescript("""
-                CREATE TABLE IF NOT EXISTS records(
+            # executescript 会隐式提交前面的事务，升级中断会留下已加列但未转换的配额。
+            # 结构、旧 principal 转换及标记统一提交；失败后下一次启动仍可安全重试。
+            for statement in (
+                """CREATE TABLE IF NOT EXISTS records(
                     kind TEXT, key TEXT, value TEXT NOT NULL,
                     expires REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY(kind,key));
-                CREATE TABLE IF NOT EXISTS audit(
+                    PRIMARY KEY(kind,key))""",
+                """CREATE TABLE IF NOT EXISTS audit(
                     at REAL, principal TEXT, operation TEXT, outcome TEXT,
-                    seconds REAL, sql_count INTEGER, rows INTEGER, bytes INTEGER);
-                CREATE INDEX IF NOT EXISTS audit_window ON audit(principal,operation,at);
-                CREATE TABLE IF NOT EXISTS audit_noise(
-                    hour INTEGER PRIMARY KEY, count INTEGER NOT NULL);
-            """)
+                    seconds REAL, sql_count INTEGER, rows INTEGER, bytes INTEGER)""",
+                "CREATE INDEX IF NOT EXISTS audit_window ON audit(principal,operation,at)",
+                "CREATE TABLE IF NOT EXISTS audit_noise("
+                "hour INTEGER PRIMARY KEY,count INTEGER NOT NULL)",
+            ):
+                c.execute(statement)
             # 独立控制文件原地升级；旧行/滚动配额保留，不涉及业务 Alembic。
             columns = {r[1] for r in c.execute("PRAGMA table_info(audit)")}
             for name, definition in {

@@ -25,7 +25,7 @@
 
 - **当前唯一里程碑：DR-PR111-112-REVIEW-20261002-R1，PR #112 定点收口送审**。#111按准确head正常merge，main `616d17fb185172f5b1b3c94f071c7f179056613d` / tree `a99155cad8118cc0c492a8f7e678f9b1246d75fe` 与审查A树一致；[该main完整Verify](https://github.com/daiphoon/dealflow-radar/actions/runs/36996208332)成功。A分支保留，无新增性能工程。
 - **B只补两项**：同一PR改base为main、普通merge吸收；HTTP/业务审计共享关联ID，认证前拒绝/额度/并发/超时与最终返回分开，限量保留且失败关闭；显式20表/156列合同、三项受限JSON视图，去除59项旧reader列权限并仅补2项正式身份许可所需列。四工具、正式许可与网站语义保留，见[28 MCP合同](28-business-read-mcp-feishu.md)。
-- **验证**：non-owner PG四工具非空、与网站投影一致；43表（含schema表）内容摘要不变；新增列默认拒绝、视图RLS/源撤销/跨用户/游标和Mock OAuth通过。完整后端1730通过/62条件跳过后，补SDK HTTP200错误审计分型并定向51通过；最终准确head的完整Verify以本轮私有统一交付包为准，不冒用旧head绿色。
+- **验证**：non-owner PG四工具非空、与网站投影一致；43表（含schema表）内容摘要不变；新增列默认拒绝、视图RLS/源撤销/跨用户/游标和Mock OAuth通过。完整后端1730通过/62条件跳过后，补SDK HTTP200错误审计分型及控制库升级中断回归，定向52通过；最终准确head的完整Verify以本轮私有统一交付包为准，不冒用旧head绿色。
 - **生产与下一批准**：只读元数据核对确认现网47c4a5c、schema0036、Next16.3.4；本轮未激活MCP、未操作业务数据。B不自动合并，独立角色/视图、域名、飞书与唯一principal/首批2–3公司/报告/source、准确ChatGPT回调及制品digest集中待批准/填写；生产Next安全补丁独立批准。真实网页闭环未验证，Mock不冒充接通。
 - 更新日期：2026-10-02。
 

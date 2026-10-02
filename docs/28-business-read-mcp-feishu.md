@@ -84,7 +84,7 @@ ChatGPT网页私有应用 → 专用HTTPS Streamable HTTP → 本站OAuth/DCR/PK
 
 `mcp_http` 表示HTTP结果，`business_read` 同ID记录最终工具结果；内部 query_outcome 与终态分开。外层超时/末次撤权/断连后，晚完成线程只能补查询指标，不能改成 returned。客户端实际是否收到内容始终 unknown。最后正文发送前先提交审计；写入失败返回503，不交敏感正文。四工具共享原60/1000/64MiB滚动预算，tool字段不拆额度。
 
-新增列通过独立控制SQLite的可重入升级添加，旧行和滚动用量保留。审计31天、详细行最多50,000；MCP入口全局600次/分钟、20,000次/日，超限拒绝并只按小时累加噪声（保留31天），不按随机token/IP无限建行。容量满时fail closed，不删除窗口内配额来继续服务。飞书必要身份调用独立计数。
+新增列通过独立控制SQLite的可重入升级添加，旧行和滚动用量保留；建表/加列/旧principal转换处于同一事务，中断后重启不得重置额度。审计31天、详细行最多50,000；MCP入口全局600次/分钟、20,000次/日，超限拒绝并只按小时累加噪声（保留31天），不按随机token/IP无限建行。容量满时fail closed，不删除窗口内配额来继续服务。飞书必要身份调用独立计数。
 
 `scripts.run_business_mcp` 默认关闭，必须显式 `MCP_BUSINESS_ENABLED=true`。配置来自600私有文件，拒绝symlink/宽权限/过大文件；数据库使用独立 `MCP_BUSINESS_DATABASE_URL`。私有JSON需resource、精确 `client_redirect_uris`、`feishu_app_id`、secret/cursor文件路径、`identity_grants`（tenant_key/open_id及Grant对象）、可选日/分钟额度。Grant包含id、内部user_id/tenant_id、company_ids/report_ids/source_ids、scopes及UTC epoch expires_at。真实值不进入Git、应用.env或聊天。
 

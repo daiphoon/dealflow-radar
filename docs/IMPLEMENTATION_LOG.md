@@ -4,7 +4,7 @@
 
 - 关键文件：business_mcp/mcp_control 的有界HTTP与业务审计；business_read_contract/bootstrap 的显式列及低权限RLS视图；专用ORM加载；正式事项/报告仅选择不加载分析；快速Mock协议和少量非owner PG机制整链。业务migration、融资/归并/Provider规则不变。
 - 实际命令：准确head条件核对后 `gh pr merge 111 --merge --match-head-commit ...`；准确main Verify；#112 `gh pr edit --base main` 及普通merge；失败回归，完整 `pytest -q --durations=15`，补充SDK失败类型后 `pytest -q tests/unit/test_business_mcp_audit.py tests/unit/test_business_oauth.py tests/integration/test_business_mcp.py`；Ruff/check format、diff/private/秘密检查及最终head远端Verify。
-- 结果：A main为616d17f、tree与审查一致，所有职责job/Verify成功。B本地完整1730通过/62条件跳过（含真实non-owner PG），末次51定向通过；认证前拒绝、并发/额度/真实PG超时、撤权、断连、审计失败关闭、新增列拒绝和业务摘要不变留证。误用测试环境变量导致一次PG跳过已单列，正确变量下全部51通过，未以跳过冒充PG。
+- 结果：A main为616d17f、tree与审查一致，所有职责job/Verify成功。B本地完整1730通过/62条件跳过（含真实non-owner PG），末次52定向通过；认证前拒绝、并发/额度/真实PG超时、撤权、断连、审计失败关闭、新增列拒绝和业务摘要不变留证；额外失败回归确认executescript隐式提交可使中断升级漏计旧配额，改用单事务结构/数据升级。误用测试环境变量导致一次PG跳过已单列，正确变量下全部PG故事通过，未以跳过冒充PG。
 - 限制：B准确新head/CI见本轮私有统一报告，保持送审不合并；香港仅只读元数据，无生产变更/研究/模型调用。真实飞书/ChatGPT尚未接通，生产激活字段/JSON必要例外和Next安全发布批准集中列明，不改原封存材料。
 
 
