@@ -12,11 +12,11 @@ function load(relative,mocks={}) {
   return module.exports;
 }
 const report=(status='historical_snapshot')=>({id:'report',company_id:'company',title:'虚构报告',company_legal_name:'虚构公司',as_of:'2026-09-26T00:00:00Z',source_event_count:2,history_status:status,markdown:status==='restricted'?'报告来源权限或状态已变化，历史正文停止在线提供':'> 资料性质：虚构演示\n\n## 已审核的重要信息\n\n允许的正文',reused:false});
-async function render(status,result) {
+async function render(status,result,overrides={}) {
   const Page=load('app/reports/[id]/page.tsx',{
     'next/link':{default:({children,prefetch,...props})=>React.createElement('a',props,children)},
     '@/components/report-content':load('components/report-content.tsx'),
-    '@/lib/api':{getPersonalCompanyReport:async()=>report(status)},
+    '@/lib/api':{getPersonalCompanyReport:async()=>({...report(status),...overrides})},
     '@/lib/auth-navigation':{redirectIfAuthenticationRequired:async()=>{}},
   }).default;
   return renderToStaticMarkup(await Page({params:Promise.resolve({id:'report'}),searchParams:Promise.resolve({result})}));
@@ -46,6 +46,23 @@ test('撤权和过时状态优先于伪造成功参数，也在无 query 时显�
     assert.match(stale,/已过时/);assert.match(stale,/允许的正文/);assert.doesNotMatch(stale,/报告已生成|已直接为你打开/);
   }
 });
+for (const [name,count] of [['只有待核线索',1],['历史资料和待核混合',2]]) {
+  test(`${name}的报告页和列表不把全部引用宣称为已审核`,async()=>{
+    const data={...report(),created_at:'2026-09-26T00:00:00Z',source_event_count:count,report_version:'personal-company-v5',
+      markdown:'## 待核线索\n\n虚构待核事项，candidate / unconfirmed，缺少独立确认。'+(count===2?'\n\n## 历史资料（窗口外）\n\n虚构历史事项。':'')};
+    const detail=await render('historical_snapshot',undefined,data);
+    assert.match(detail,/虚构待核事项/);assert.match(detail,/candidate \/ unconfirmed/);
+    assert.doesNotMatch(detail,/条已审核事件|内容来自已审核资料|生成时已经审核的信息/);
+    const Page=load('app/reports/page.tsx',{
+      'next/link':{default:({children,prefetch,...props})=>React.createElement('a',props,children)},
+      '@/lib/api':{getPersonalCompanyReports:async()=>[data],getPersonalUsage:async()=>({reports:{used:1,limit:10,remaining:9}})},
+      '@/lib/auth-navigation':{redirectIfAuthenticationRequired:async()=>{}},
+    }).default;
+    const list=renderToStaticMarkup(await Page());
+    assert.match(list,/虚构报告/);assert.doesNotMatch(list,/条已审核事件|机构资料或未确认线索/);
+    assert.match(detail,/待核线索不代表事实已确认/);assert.match(list,/待核线索/);
+  });
+}
 test('真实 Server Action 跳转采用服务端状态，许可拒绝不提示成功',async()=>{
   class ApiError extends Error{constructor(status,detail){super(detail);this.status=status;this.detail=detail;}}
   for(const status of ['historical_snapshot','restricted','stale','denied']){

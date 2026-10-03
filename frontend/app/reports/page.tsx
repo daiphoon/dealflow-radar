@@ -25,7 +25,8 @@ export default async function PersonalReportsPage() {
           <p className="eyebrow">个人私有</p>
           <h1>我的公司报告</h1>
           <p>
-            报告只使用生成时已经审核、允许展示的信息，不包含基金投资数据、机构资料或未确认线索。
+            报告只使用生成时获准展示的资料，区分已确认资料、历史资料和待核线索。
+            待核线索不代表事实已确认，不包含基金投资数据或机构私有资料。
           </p>
         </section>
 
@@ -51,7 +52,7 @@ export default async function PersonalReportsPage() {
                     <p className="eyebrow">{formatDateTime(report.created_at)}</p>
                     <h3>{report.title}</h3>
                     <p className="muted">
-                      {report.source_event_count} 条已审核事件
+                      {report.source_event_count} 条引用事项
                     </p>
                   </div>
                   <div className="report-list-actions">

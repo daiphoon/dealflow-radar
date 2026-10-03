@@ -1,5 +1,11 @@
 # 实施记录
 
+## 2026-10-03：网站核心链路候选与 MCP 激活暂缓
+
+- 任务/关键文件：从正式 main `140ff6a5` 建立独立候选，保护根工作区和既有文档分支；只修报告详情/列表把待核引用误称已审核的问题，新增正式页面渲染回归，更新看板、29 网站发布边界和 28 MCP 暂缓状态。
+- 实际命令：GitHub main/tree/CI 只读核对；冻结 runtime 上运行定向 pytest，非 owner PG 的共享快照/隐藏来源对照；正式 runner 的 commit/rollback/重读/日期测试；实际新旧 amd64 镜像和 Caddy 的安全降级恢复测试；Docker Node 24 的 npm test/typecheck/build/audit；生产仅版本、开关、资源、schema 和限定 principal 许可元数据读取。
+- 结果/限制：网站获准已有报告由负责人确认可读，MCP source 追溯拒绝独立后置；UI 问题先失败再最小修复。首次容器缺 Git、私有检查器兼容与测试夹具错误保留，不修改业务门槛。最终数量、准确候选和制品证据见当轮统一私有包；未进行生产切换、数据写入、用户提权、真实研究或 MCP 激活。
+
 ## 2026-10-02：#111合并与#112审计/显式列收口
 
 - 关键文件：business_mcp/mcp_control 的有界HTTP与业务审计；business_read_contract/bootstrap 的显式列及低权限RLS视图；专用ORM加载；正式事项/报告仅选择不加载分析；快速Mock协议和少量非owner PG机制整链。业务migration、融资/归并/Provider规则不变。
