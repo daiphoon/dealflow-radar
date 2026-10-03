@@ -61,14 +61,15 @@ export default async function PersonalReportDetailPage({
             </p>
           </div>
           <div className="report-meta">
-            <span>{report.source_event_count} 条已审核事件</span>
+            <span>{report.source_event_count} 条引用事项</span>
           </div>
         </section>
 
         <section className="panel report-notice">
           <strong>阅读提示</strong>
           <p>
-            这份报告记录生成时已经审核的信息。此后如有新增、纠正或撤回，请以公司最新详情为准。
+            这份报告记录生成时的资料及研究完成状态，请按正文区分已确认资料、历史资料和待核线索。
+            待核线索不代表事实已确认。此后如有新增、纠正或撤回，请以公司最新详情为准。
           </p>
         </section>
 
@@ -78,7 +79,7 @@ export default async function PersonalReportDetailPage({
               <p className="eyebrow">结构化公司报告</p>
               <h2 id="report-content-title">报告正文</h2>
             </div>
-            <span className="muted">内容来自已审核资料</span>
+            <span className="muted">资料状态以正文分组和标注为准</span>
           </div>
           <ReportContent markdown={report.markdown} />
         </section>
